@@ -10,7 +10,9 @@ export const compareAllDatabases = async (connection, inputDir, update = false, 
         await connection.reconnect(); // Ensure the connection is open
     }
     // Read the expected databases from the input directory
-    const expectedDatabases = await fs.readdir(inputDir);
+    let expectedDatabases = await fs.readdir(inputDir);
+    //filter out diffs.json
+    expectedDatabases = expectedDatabases.filter(file => file !== 'diffs.json');
     // console.log('Expected databases from input directory:', expectedDatabases);
 
     // Check existing databases
@@ -57,7 +59,12 @@ export const compareAllDatabases = async (connection, inputDir, update = false, 
         if(options.database && options.database !== database){
             continue;
         }
+        if(missingDatabases.includes(database)){
+            console.log('Skipping database', database, 'because it is missing');
+            continue;
+        }
         const filePath = path.join(inputDir, database, `${database}.json`);
+
         try {
             const fileContent = await fs.readFile(filePath, 'utf-8');
             const expectedStructure = JSON.parse(fileContent);

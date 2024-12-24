@@ -3,7 +3,7 @@
 import mysql from 'mysql2';
 import util from 'util';
 import fs from 'fs';
-
+import path from 'path';
 import { cli } from './cli.js';
 import { dumpAllDatabases } from './dump.js';
 import { compareAllDatabases } from './compare.js';
@@ -54,7 +54,7 @@ class DBStructureChecker {
                 let diffs = await compareAllDatabases(checker.connection, argv.output, false, command, argv); // Dry run
                 let totalDiffs = Object.values(diffs).reduce((acc, arr) => acc + arr.length, 0);
                 console.log('Total differences count:', totalDiffs);
-                fs.writeFileSync(argv.output + '/diffs.json', JSON.stringify(diffs, null, 4));
+                fs.writeFileSync(path.join(argv.output, 'diffs.json'), JSON.stringify(diffs, null, 4));
             } else if (command === 'update') {
                 console.log('Updating the database structure based on JSON dumps');
                 let totalDiffs = Infinity; // Initialize with a large number
