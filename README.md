@@ -1,6 +1,6 @@
-# MySQLSync
+# MySQLSyncr
 
-MySQLSync is a command-line tool for managing and comparing MySQL database structures with JSON dumps. It allows users to dump the database structure, compare it with existing JSON files, and update the database based on those JSON definitions.
+MySQLSyncr is a command-line tool for managing and comparing MySQL database structures with JSON dumps. It allows users to dump the database structure, compare it with existing JSON files, and update the database based on those JSON definitions.
 
 ## Table of Contents
 
@@ -11,7 +11,7 @@ MySQLSync is a command-line tool for managing and comparing MySQL database struc
 - [Usage](#usage)
   - [Commands](#commands)
   - [Configuration Options](#configuration-options)
-- [Using MySQLSync as a Module](#using-mysqlsync-as-a-module)
+- [Using MySQLSyncr as a Module](#using-mysqlsyncr-as-a-module)
 - [Contributing](#contributing)
 - [License](#license)
 
@@ -29,27 +29,27 @@ MySQLSync is a command-line tool for managing and comparing MySQL database struc
 To install MySQLSync globally, allowing you to use it from the command line, run the following command:
 
 ```bash
-npm install -g mysqlsync
+npm install -g mysqlsyncr
 ```
 
-This will allow you to run the command as `mysqlsync` from anywhere in your terminal.
+This will allow you to run the command as `mysqlsyncr` from anywhere in your terminal.
 
 ### Local Installation
 
-If you prefer to use MySQLSync locally within a project, you can install it as a dependency:
+If you prefer to use MySQLSyncr locally within a project, you can install it as a dependency:
 
 ```bash
-npm install mysqlsync
+npm install mysqlsyncr
 ```
 
-This will add MySQLSync to your project's `node_modules` and allow you to use it within your project.
+This will add MySQLSyncr to your project's `node_modules` and allow you to use it within your project.
 
 ## Usage
 
 You can run MySQLSync commands using the following syntax:
 
 ```bash
-mysqlsync <command> [options]
+mysqlsyncr <command> [options]
 ```
 
 ### Commands
@@ -76,17 +76,17 @@ You can configure the following options when running the commands:
 
 1. **Dump the database structure**:
    ```bash
-   mysqlsync dump --host localhost --user root --password yourpassword
+   mysqlsyncr dump --host localhost --user root --password yourpassword
    ```
 
 2. **Compare the database structure with JSON dumps**:
    ```bash
-   mysqlsync compare --host localhost --user root --password yourpassword
+   mysqlsyncr compare --host localhost --user root --password yourpassword
    ```
 
 3. **Update the database structure based on JSON dumps**:
    ```bash
-   mysqlsync update --host localhost --user root --password yourpassword
+   mysqlsyncr update --host localhost --user root --password yourpassword
    ```
 
 ## Using MySQLSync as a Module
@@ -94,7 +94,7 @@ You can configure the following options when running the commands:
 If you want to use MySQLSync as a module in your own Node.js application, you can require it in your code:
 
 ```javascript
-import mysqlsync from 'mysqlsync';
+import mysqlsyncr from 'mysqlsyncr';
 
 // Example usage
 const config = {
@@ -107,7 +107,7 @@ const config = {
 
 ```javascript
 // app.js
-import mysqlsync from 'mysqlsync';
+import mysqlsyncr from 'mysqlsyncr';
 import fs from 'fs';
 import path from 'path';
 
@@ -123,7 +123,7 @@ const config = {
 async function dumpDatabase() {
     try {
         console.log('Dumping the database structure...');
-        await mysqlsync.dump(config);
+        await mysqlsyncr.dump(config);
         console.log('Database structure dumped successfully.');
     } catch (error) {
         console.error('Error dumping database:', error.message);
@@ -135,7 +135,7 @@ async function compareDatabase() {
     try {
         const inputDir = path.join(__dirname, 'db-dump'); // Directory where JSON dumps are stored
         console.log('Comparing the database structure with JSON dumps...');
-        const differences = await mysqlsync.compare(config, inputDir);
+        const differences = await mysqlsyncr.compare(config, inputDir);
         
         if (differences.length > 0) {
             console.log('Differences found:');
@@ -159,7 +159,7 @@ Make sure to check the source code for available functions and their usage.
 
 ## Contributing
 
-Contributions are welcome! If you would like to contribute to MySQLSync, please follow these steps:
+Contributions are welcome! If you would like to contribute to MySQLSyncr, please follow these steps:
 
 1. Fork the repository.
 2. Create a new branch for your feature or bug fix.
@@ -167,9 +167,6 @@ Contributions are welcome! If you would like to contribute to MySQLSync, please 
 4. Push your changes to your forked repository.
 5. Open a pull request to the main repository.
 
-### Code of Conduct
-
-Please adhere to the [Code of Conduct](CODE_OF_CONDUCT.md) when contributing to this project.
 
 ## License
 
