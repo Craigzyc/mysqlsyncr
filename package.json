@@ -1,6 +1,6 @@
 {
-  "name": "mysqlsync",
-  "version": "1.0.0",
+  "name": "mysqlsyncr",
+  "version": "1.0.1",
   "description": "",
   "main": "src/index.js",
   "type": "module",
@@ -10,7 +10,7 @@
     "start": "node src/index.js"
   },
   "bin": {
-    "mysqlsync": "src/index.js"
+    "mysqlsyncr": "src/index.js"
   },
   "author": "",
   "license": "ISC",

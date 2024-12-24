@@ -70,7 +70,6 @@ You can configure the following options when running the commands:
 | `password`  | `-p`  | Database password (required)                                              |                                |
 | `database`  | `-d`  | Target database                                                            | `null`                        |
 | `output`    | `-o`  | Output directory for dumping. Default is one level up from the current directory in a new folder called `db-dump` | `../db-dump`                  |
-| `input`     | `-i`  | Input directory for comparison                                             | `../db-dump`                  |
 | `verbose`   | `-v`  | Enable verbose logging (boolean)                                          | `false`                       |
 
 ### Example Usage
