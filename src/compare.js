@@ -16,15 +16,22 @@ export const compareAllDatabases = async (connection, inputDir, update = false, 
     // Check existing databases
     const existingDatabases = await getDatabases(connection);
     // console.log('Existing databases:', existingDatabases);
-
+    const allDifferences = {};
     const missingDatabases = [];
+    console.log('All differences:', allDifferences);
 
     // Note missing databases and prepare to create them
     for (const database of expectedDatabases) {
         if(options.database && options.database !== database){
             continue;
         }
+
         if (!existingDatabases.includes(database)) {
+            allDifferences[database] = [{
+                database: database,
+                type: 'missing_database',
+                message: 'Database not found'
+            }];
             missingDatabases.push(database);
         }
     }
@@ -42,12 +49,10 @@ export const compareAllDatabases = async (connection, inputDir, update = false, 
         console.error('Please run the command again with the --update flag to create missing databases.'); 
         console.error('Missing databases:');
         console.error(missingDatabases);
-        return;
     } else {
         console.log('All expected databases exist.');
     }
 
-    const allDifferences = {};
     for (const database of expectedDatabases) {
         if(options.database && options.database !== database){
             continue;
@@ -75,6 +80,5 @@ export const compareAllDatabases = async (connection, inputDir, update = false, 
             console.error(`Error processing database ${database}:`, err.message);
         }
     }
-
     return allDifferences;
 }
