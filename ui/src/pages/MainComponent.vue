@@ -802,54 +802,72 @@ export default {
                 }).onOk(async () => {
                     console.log('Overwriting existing dump')
                     await this.createNewDump(false)
+                    await this.getDatabasesFromExistingDumps()
+                    await this.fetchAllDifferences()
                 })
                 return
             }
 
-            let response = await axios
-                .post('http://localhost:3000/api/dump', {
+            this.$q.loading.show({
+                message: 'Creating new dump...',
+                spinnerColor: 'primary',
+                backgroundColor: 'grey-1',
+                spinnerSize: 80,
+                messageColor: 'primary',
+                customClass: 'custom-loading',
+            })
+
+            try {
+
+                let response = await axios.post('http://localhost:3000/api/dump', {
                     config: {
                         host: this.host,
                         port: this.port,
                         user: this.user,
                         password: this.password,
                         output: this.dbFolder,
-                        // database: this.database,
                     },
                 })
-                .catch((error) => {
-                    if (error.response.data.message) {
-                        this.$q.dialog({
-                            title: 'Error',
-                            message: error.response.data.message,
-                        })
-                    }
-                    console.error('Error creating new dump:', error)
-                    return
-                })
 
-            if (!response) return
-            if (response.data.message) {
-                this.$q.dialog({
-                    title: 'Error',
-                    message: response.data.message,
+                if (response.data.message) {
+                    this.$q.notify({
+                        type: 'positive',
+                        message: response.data.message,
+                        position: 'top'
+                    })
+                }
+
+                // Update loading message for each subsequent operation
+                this.$q.loading.show({
+                    message: 'Loading databases...',
+                    spinnerColor: 'primary',
+                    backgroundColor: 'grey-1',
+                    spinnerSize: 80,
+                    messageColor: 'primary',
+                    customClass: 'custom-loading',
                 })
-            }
-            this.differences = await this.fetchAllDifferences()
-            console.log('Differences in createNewDump:', this.differences)
-            if (
-                response.data &&
-                typeof response.data === 'object' &&
-                Object.keys(response.data).length > 0
-            ) {
-                this.existingDatabases = response.data
-                this.buildDatabaseTree()
-            } else {
-                this.existingDatabases = {}
+                await this.getDatabasesFromExistingDumps()
+
+                this.$q.loading.show({
+                    message: 'Fetching differences...',
+                    spinnerColor: 'primary',
+                    backgroundColor: 'grey-1',
+                    spinnerSize: 80,
+                    messageColor: 'primary',
+                    customClass: 'custom-loading',
+                })
+                await this.fetchAllDifferences()
+
+            } catch (error) {
+                this.$q.loading.hide()
                 this.$q.notify({
-                    message: 'Error creating new dump',
-                    color: 'red',
+                    type: 'negative',
+                    message: error.response?.data?.message || 'Error creating dump',
+                    position: 'top'
                 })
+                console.error('Error creating new dump:', error)
+            } finally {
+                this.$q.loading.hide()
             }
         },
         showIssueDetails(issue, node) {

@@ -7,7 +7,7 @@ import { applyDifferences } from './apply.js';
 import cors from 'cors';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
-import { readdir } from 'fs/promises';
+import { readdir, mkdir } from 'fs/promises';
 import { resolve } from 'path';
 
 export const startApiServer = (port) => {
@@ -137,6 +137,26 @@ export const startApiServer = (port) => {
             res.json({
                 currentPath: resolvedPath,
                 items: sortedItems
+            });
+        } catch (error) {
+            res.status(500).json({ error: error.message });
+        }
+    });
+
+    app.post('/api/create-folder', async (req, res) => {
+        try {
+            const { folderPath } = req.body;
+            console.log('Creating folder:', folderPath);
+            
+            const resolvedPath = folderPath.startsWith('/') || folderPath.match(/^[A-Z]:\\/)
+                ? resolve(folderPath)
+                : resolve(process.cwd(), folderPath);
+
+            await mkdir(resolvedPath, { recursive: true });
+            
+            res.json({
+                success: true,
+                path: resolvedPath
             });
         } catch (error) {
             res.status(500).json({ error: error.message });

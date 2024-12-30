@@ -21,6 +21,14 @@
                             <q-icon name="folder" color="primary" />
                         </template>
                     </q-input>
+                    <q-btn
+                        flat
+                        color="primary"
+                        icon="create_new_folder"
+                        label="New Folder"
+                        class="q-mt-sm"
+                        @click="promptNewFolder"
+                    />
                 </div>
 
                 <q-list bordered separator class="directory-list">
@@ -67,6 +75,30 @@
             </q-card-actions>
         </q-card>
     </q-dialog>
+
+    <!-- Add new folder dialog -->
+    <q-dialog v-model="newFolderDialog" persistent>
+        <q-card style="min-width: 300px">
+            <q-card-section class="row items-center">
+                <div class="text-h6">Create New Folder</div>
+            </q-card-section>
+
+            <q-card-section>
+                <q-input
+                    v-model="newFolderName"
+                    label="Folder Name"
+                    dense
+                    autofocus
+                    @keyup.enter="createNewFolder"
+                />
+            </q-card-section>
+
+            <q-card-actions align="right">
+                <q-btn flat label="Cancel" color="grey-7" v-close-popup />
+                <q-btn flat label="Create" color="primary" @click="createNewFolder" />
+            </q-card-actions>
+        </q-card>
+    </q-dialog>
 </template>
 
 <script>
@@ -87,7 +119,9 @@ export default {
     data() {
         return {
             currentPath: '',
-            items: []
+            items: [],
+            newFolderDialog: false,
+            newFolderName: ''
         }
     },
     computed: {
@@ -142,6 +176,38 @@ export default {
             if (item.isParent) return 'grey-7';
             if (item.isDirectory) return 'primary';
             return 'grey-6';
+        },
+
+        promptNewFolder() {
+            this.newFolderName = '';
+            this.newFolderDialog = true;
+        },
+
+        async createNewFolder() {
+            if (this.newFolderName.trim()) {
+                const newFolderPath = `${this.currentPath}/${this.newFolderName}`;
+
+                try {
+                    await axios.post('http://localhost:3000/api/create-folder', {
+                        folderPath: newFolderPath
+                    });
+
+                    // Refresh the current directory to show the new folder
+                    await this.loadFolderContents(this.currentPath);
+                    this.newFolderDialog = false;
+
+                    this.$q.notify({
+                        type: 'positive',
+                        message: 'Folder created successfully'
+                    });
+                } catch (error) {
+                    console.error('Error creating folder:', error);
+                    this.$q.notify({
+                        type: 'negative',
+                        message: 'Error creating folder'
+                    });
+                }
+            }
         }
     },
     async mounted() {
