@@ -2,8 +2,8 @@
     <q-dialog v-model="isOpen" persistent>
         <q-card class="folder-browser-card">
             <q-card-section class="header-section row items-center justify-between">
-                <div class="text-h6">Select Folder</div>
-                <q-btn icon="close" flat round dense v-close-popup />
+                <div class="text-h6 text-white">Select Folder</div>
+                <q-btn icon="close" flat round dense v-close-popup class="text-white" />
             </q-card-section>
 
             <q-card-section>
@@ -152,43 +152,46 @@ export default {
 
 <style scoped>
 .folder-browser-card {
-    min-width: 450px;
-    max-width: 700px;
-    border-radius: 8px;
-    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+    min-width: 600px;
+    max-width: 900px;
+    border-radius: 4px;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
 }
 
 .header-section {
-    background-color: #f5f5f5;
-    border-bottom: 1px solid #e0e0e0;
-    padding: 12px 20px;
+    background-color: var(--q-primary);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    padding: 16px 20px;
 }
 
 .path-section {
-    margin-bottom: 20px;
+    margin-bottom: 16px;
 }
 
 .current-path-input {
     font-family: monospace;
+    font-size: 13px;
 }
 
 .directory-list {
-    max-height: 400px;
+    max-height: 450px;
     overflow-y: auto;
     border-radius: 4px;
     border: 1px solid #e0e0e0;
 }
 
 .directory-item {
-    transition: background-color 0.2s;
+    transition: background-color 0.15s;
+    min-height: 40px;
 }
 
 .directory-item:hover {
-    background-color: #f0f4f8;
+    background-color: #f5f9ff;
 }
 
 .action-buttons {
-    padding: 16px;
+    padding: 12px 20px;
     border-top: 1px solid #e0e0e0;
+    background-color: #fafafa;
 }
 </style>
