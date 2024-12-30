@@ -1,10 +1,45 @@
 import { logger } from './loggers.js';
 
 export const applyDifferences = async (connection, database, differences) => {
-    await connection.query(`USE \`${database}\``);
+   
+    differences.sort((a, b) => {
+        //Sort to make sure we apply the differences in a logical order.
+        const typePriority = {
+            'missing_database': 1,
+            'missing_table': 2,
+            'extra_table': 2,
+            'missing_field': 3,
+            'extra_field': 3,
+            'mismatched_field': 3,
+            'missing_index': 4,
+            'extra_index': 4,
+            'mismatched_index': 4,
+            'missing_procedure': 5,
+            'mismatched_procedure': 5,
+            'missing_view': 6,
+            'mismatched_view': 6,
+            'extra_view': 6,
+            'missing_trigger': 7,
+            'mismatched_trigger': 7,
+            'extra_trigger': 7
+        };
+        
+        return (typePriority[a.type] || 999) - (typePriority[b.type] || 999);
+    })
+
 
     for (const diff of differences) {
         try {
+
+            if(diff.type == 'missing_database'){
+                const createDatabaseSQL = `CREATE DATABASE \`${differences[0].database}\`;`;
+                logger(`Executing: ${createDatabaseSQL}`);
+                await connection.query(createDatabaseSQL);
+                continue;
+            }
+
+
+            await connection.query(`USE \`${database}\``);
             if (diff.type === 'missing_table') {
                 const { tableName, createSQL } = diff;
                 logger(`Creating missing table ${tableName}`);
@@ -181,8 +216,11 @@ export const applyDifferences = async (connection, database, differences) => {
                 logger(`Executing: ${dropTriggerSQL}`);
                 await connection.query(dropTriggerSQL);
 
-
-
+            }else if(diff.type === 'missing_database'){
+                console.log('fixing missing database', diff.database)
+                const createDatabaseSQL = `CREATE DATABASE \`${diff.database}\`;`;
+                logger(`Executing: ${createDatabaseSQL}`);
+                await connection.query(createDatabaseSQL);
             } else {
                 logger(`Error applying difference of type:${diff.type}`, diff)
             }

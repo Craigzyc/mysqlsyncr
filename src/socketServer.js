@@ -5,12 +5,21 @@ import { compareAllDatabases } from './compare.js';
 import { DBStructureChecker } from './index.js'; // Import your DBStructureChecker class
 import { applyDifferences } from './apply.js';
 import cors from 'cors';
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
+import { readdir } from 'fs/promises';
+import { resolve } from 'path';
 
 export const startApiServer = (port) => {
     const app = express();
     app.use(cors({origin:'*'}));
     const server = http.createServer(app);
-    app.use(express.json()); // Middleware to parse JSON requests
+    app.use(express.json({ limit: '50mb' })); // Increased payload limit
+    app.use(express.urlencoded({ limit: '50mb', extended: true })); // Also handle URL-encoded data
+
+    const __filename = fileURLToPath(import.meta.url);
+    const __dirname = dirname(__filename);
+    app.use(express.static(join(__dirname, '../ui/dist/spa')));
 
     app.post('/api/getDatabasesFromExistingDumps', async (req, res) => {
         const { config } = req.body;
@@ -85,10 +94,55 @@ export const startApiServer = (port) => {
             }
         });
     });
-    
-    //serve the app from the ui folder
-    app.use(express.static('ui/dist/spa'));
 
+    app.post('/api/browse-folders', async (req, res) => {
+        try {
+            const { currentPath = process.cwd() } = req.body;   
+            console.log('Browsing folder:', currentPath);
+            
+            const resolvedPath = currentPath.startsWith('/') || currentPath.match(/^[A-Z]:\\/)
+                ? resolve(currentPath)
+                : resolve(process.cwd(), currentPath);
+
+            console.log('Resolved path:', resolvedPath);
+            
+            const contents = await readdir(resolvedPath, { withFileTypes: true });
+            
+            // Separate directories and files
+            const items = contents.map(dirent => ({
+                name: dirent.name,
+                path: join(resolvedPath, dirent.name),
+                isDirectory: dirent.isDirectory(),
+                isParent: false
+            }));
+
+            // Sort items: directories first, then files, both alphabetically
+            const sortedItems = items.sort((a, b) => {
+                if (a.isDirectory === b.isDirectory) {
+                    return a.name.localeCompare(b.name);
+                }
+                return a.isDirectory ? -1 : 1;
+            });
+
+            // Add parent directory option if not at root
+            if (resolvedPath !== resolve(resolvedPath, '..')) {
+                sortedItems.unshift({
+                    name: '..',
+                    path: resolve(resolvedPath, '..'),
+                    isDirectory: true,
+                    isParent: true
+                });
+            }
+
+            res.json({
+                currentPath: resolvedPath,
+                items: sortedItems
+            });
+        } catch (error) {
+            res.status(500).json({ error: error.message });
+        }
+    });
+    
     // Start the server
     server.listen(port, () => {
         console.log(`Server is running on http://localhost:${port}`);

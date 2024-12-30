@@ -1,41 +1,66 @@
 <template>
-    <q-page>
-        <div class="q-mb-md">
-            <q-btn @click="openSettings" label="Settings" color="primary" />
-            <q-btn
-                @click="
-                    Object.keys(existingDatabases).length === 0
-                        ? createNewDump()
-                        : createNewDump(true)
-                "
-                :label="
-                    Object.keys(existingDatabases).length === 0 ? 'Get New Dump' : 'Refresh Dump'
-                "
-                color="secondary"
-            />
+    <q-page class="q-pa-md">
+        <!-- Top Action Bar -->
+        <div class="row q-col-gutter-md q-mb-lg">
+            <div class="col-auto">
+                <q-btn @click="openSettings" icon="settings" label="Settings" color="primary" />
+            </div>
+            <div class="col-auto">
+                <q-btn
+                    @click="
+                        Object.keys(existingDatabases).length === 0
+                            ? createNewDump()
+                            : createNewDump(true)
+                    "
+                    :icon="Object.keys(existingDatabases).length === 0 ? 'download' : 'refresh'"
+                    :label="
+                        Object.keys(existingDatabases).length === 0 ? 'Get New Dump' : 'Refresh Dump'
+                    "
+                    color="secondary"
+                />
+            </div>
         </div>
 
-        <q-card v-if="!isDbSetup" class="q-mb-md">
+        <!-- Database Not Set Up Warning -->
+        <q-card v-if="!isDbSetup" class="q-mb-lg bg-warning text-white">
             <q-card-section>
-                <div class="text-h6">Database Not Set Up</div>
-                <div>Please configure your database settings.</div>
-                <q-btn @click="openSettings" label="Open Settings" color="primary" />
+                <div class="text-h6">
+                    <q-icon name="warning" class="q-mr-sm" />
+                    Database Not Set Up
+                </div>
+                <div class="q-mt-sm">Please configure your database settings to get started.</div>
+                <q-btn
+                    @click="openSettings"
+                    label="Open Settings"
+                    color="white"
+                    text-color="warning"
+                    class="q-mt-sm"
+                    unelevated
+                />
             </q-card-section>
         </q-card>
 
-        <q-card v-if="Object.keys(existingDatabases).length > 0" class="q-mb-md">
+        <!-- Database Structure Card -->
+        <q-card v-if="Object.keys(existingDatabases).length > 0" class="q-mb-lg">
+            <q-card-section class="bg-primary text-white">
+                <div class="text-h6">
+                    <q-icon name="account_tree" class="q-mr-sm" />
+                    Database Structure
+                </div>
+            </q-card-section>
+
             <q-card-section>
-                <div class="text-h6">Database Structure</div>
                 <q-tree
                     :nodes="databaseTree"
                     node-key="id"
                     v-model:expanded="expandedNodes"
                     @lazy-load="onLazyLoad"
+                    class="database-tree"
                 >
                     <template v-slot:default-header="prop">
                         <div class="row items-center full-width">
                             <div
-                                class="row items-center flex-grow-1"
+                                class="row items-center flex-grow-1 cursor-pointer"
                                 @click.stop="
                                     !['category', 'database', 'subcategory'].includes(
                                         prop.node.type,
@@ -51,7 +76,7 @@
                                     size="sm"
                                     class="q-mr-sm"
                                 />
-                                <div>{{ prop.node.label }}</div>
+                                <div class="text-weight-medium">{{ prop.node.label }}</div>
                                 <q-badge
                                     v-if="prop.node.diffCount"
                                     color="negative"
@@ -61,7 +86,6 @@
                                 </q-badge>
                             </div>
 
-                            <!-- Fix button with better spacing -->
                             <q-btn
                                 v-if="
                                     ['issue-group', 'issues', 'category', 'database'].includes(
@@ -100,6 +124,7 @@
                                     <q-input
                                         v-model="host"
                                         label="Database Host"
+                                        default="127.0.0.1"
                                         filled
                                         class="q-mb-md"
                                         required
@@ -114,6 +139,7 @@
                                     <q-input
                                         v-model="port"
                                         label="Database Port"
+                                        default="3306"
                                         type="number"
                                         filled
                                         class="q-mb-md"
@@ -129,6 +155,7 @@
                                     <q-input
                                         v-model="user"
                                         label="Database User"
+                                        default="root"
                                         filled
                                         class="q-mb-md"
                                         required
@@ -173,12 +200,23 @@
                                     <q-input
                                         v-model="dbFolder"
                                         label="Database Folder"
+                                        default="db-dump"
                                         filled
                                         class="q-mb-md"
                                         required
                                     >
                                         <template v-slot:prepend>
                                             <q-icon name="folder" />
+                                        </template>
+                                        <template v-slot:append>
+                                            <q-btn
+                                                flat
+                                                dense
+                                                icon="folder_open"
+                                                @click="showFolderBrowser = true"
+                                            >
+                                                <q-tooltip>Browse</q-tooltip>
+                                            </q-btn>
                                         </template>
                                     </q-input>
                                 </div>
@@ -345,13 +383,24 @@
                 </q-card-actions>
             </q-card>
         </q-dialog>
+
+        <FolderBrowser v-if="showFolderBrowser"
+            v-model="showFolderBrowser"
+            :initial-path="dbFolder"
+            @folder-selected="onFolderSelected"
+        />
     </q-page>
 </template>
 
 <script>
 import axios from 'axios'
+import FolderBrowser from '../components/FolderBrowser.vue'
+
 
 export default {
+    components: {
+        FolderBrowser
+    },
     data() {
         return {
             isDbSetup: false,
@@ -378,6 +427,7 @@ export default {
             selectedIssues: [],
             selectedNode: null,
             isNodeFixing: {}, // Tracks loading state for each node
+            showFolderBrowser: false,
         }
     },
     methods: {
@@ -399,7 +449,8 @@ export default {
             localStorage.setItem('dbConfig', JSON.stringify(dbConfig))
             this.isDbSetup = true
             this.closeSettings()
-            this.refreshDifferences()
+            this.getDatabasesFromExistingDumps()
+            this.fetchAllDifferences()
         },
         async refreshDifferences() {
             if (!this.isDbSetup) return
@@ -959,6 +1010,19 @@ export default {
                 this.isApplying = false
             }
         },
+        onFolderSelected(path) {
+            this.dbFolder = path;
+            // If you want to save the setting immediately
+            const dbConfig = {
+                host: this.host,
+                port: this.port,
+                user: this.user,
+                password: this.password,
+                database: this.database,
+                output: this.dbFolder,
+            }
+            localStorage.setItem('dbConfig', JSON.stringify(dbConfig));
+        },
     },
     mounted() {
         const dbConfig = localStorage.getItem('dbConfig')
@@ -978,14 +1042,47 @@ export default {
 }
 </script>
 
-<style>
-.sql-code {
-    white-space: pre-wrap;
-    word-wrap: break-word;
-    font-family: monospace;
-    margin: 0;
-    font-size: 14px;
-    line-height: 1.5;
-    overflow-x: auto;
+<style lang="scss">
+.database-tree {
+    .q-tree__node-header {
+        padding: 8px;
+        border-radius: 4px;
+        transition: background-color 0.3s;
+
+        &:hover {
+            background-color: #f5f5f5;
+        }
+    }
+
+    .q-tree__node--selected > .q-tree__node-header {
+        background-color: #e3f2fd;
+    }
+
+    .q-tree__node--child {
+        padding-left: 24px;
+    }
+
+    .q-icon {
+        font-size: 20px;
+    }
+}
+
+.q-card {
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+    border-radius: 8px;
+}
+
+.q-btn {
+    border-radius: 8px;
+}
+
+.text-h6 {
+    font-weight: 500;
+    letter-spacing: 0.25px;
+}
+
+.q-page {
+    max-width: 1400px;
+    margin: 0 auto;
 }
 </style>
