@@ -20,6 +20,7 @@ MySQLSyncr is a command-line tool for managing and comparing MySQL database stru
 - **Dump**: Export the database structure to JSON files.
 - **Compare**: Compare the current database structure with JSON dumps to identify differences.
 - **Update**: Update the database structure based on the provided JSON definitions.
+- **UI**: Open a web-based database browser interface.
 - **Verbose Logging**: Enable detailed logging for debugging purposes.
 
 ## Installation
@@ -57,6 +58,7 @@ mysqlsyncr <command> [options]
 - `dump`: Dumps the database structure to files.
 - `compare`: Compares the database structure with JSON dumps (dry run).
 - `update`: Updates the database structure based on JSON dumps.
+- `ui`: Opens a web-based database browser in your default system browser.
 
 ### Configuration Options
 
@@ -87,6 +89,11 @@ You can configure the following options when running the commands:
 3. **Update the database structure based on JSON dumps**:
    ```bash
    mysqlsyncr update --host localhost --user root --password yourpassword
+   ```
+
+4. **Open the database browser interface**:
+   ```bash
+   mysqlsyncr ui --host localhost --user root --password yourpassword
    ```
 
 ## Using MySQLSync as a Module
