@@ -8,7 +8,7 @@ import { cli } from './cli.js';
 import { dumpAllDatabases } from './dump.js';
 import { compareAllDatabases } from './compare.js';
 import { startApiServer } from './socketServer.js'; // Import the new socket server
-
+import open from 'open';
 
 class DBStructureChecker {
     constructor(config, targetDatabase = null) {
@@ -18,7 +18,7 @@ class DBStructureChecker {
         this.dumpAllDatabases = dumpAllDatabases;
         this.compareAllDatabases = compareAllDatabases;
         this.getDatabases = () => {
-            
+
             fs.readFileSync(path.join(__dirname, 'databases.json'), 'utf8');
         }
         this.connection.on('error', (err) => {
@@ -52,6 +52,9 @@ const PORT = process.env.PORT || 3000;
 
     if (command === 'ui') {
         startApiServer(PORT); // Start the Socket.IO server
+        console.log('Server started on port', PORT);
+        console.log('Open http://localhost:' + PORT + ' in your browser to use the UI');
+        await open(`http://localhost:${PORT}`);
     } else {
         // Handle other commands (dump, compare, update) as before
         const checker = new DBStructureChecker(config, argv.database);

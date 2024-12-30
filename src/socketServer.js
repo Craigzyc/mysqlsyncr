@@ -85,6 +85,9 @@ export const startApiServer = (port) => {
             }
         });
     });
+    
+    //serve the app from the ui folder
+    app.use(express.static('ui/dist/spa'));
 
     // Start the server
     server.listen(port, () => {
