@@ -86,25 +86,122 @@
         </q-card>
 
         <q-dialog v-model="settingsDialog" persistent>
-            <q-card>
-                <q-card-section>
-                    <div class="text-h6">Database Settings</div>
-                    <q-input v-model="host" label="Database Host" required />
-                    <q-input v-model="port" label="Database Port" type="number" required />
-                    <q-input v-model="user" label="Database User" required />
-                    <q-input
-                        v-model="password"
-                        label="Database Password"
-                        type="password"
-                        required
-                        autocomplete="off"
-                    />
-                    <q-input v-model="database" label="Database Name" required />
-                    <q-input v-model="dbFolder" label="Database Folder" required />
+            <q-card style="width: 90vw; max-width: 1200px">
+                <q-card-section class="bg-primary text-white">
+                    <div class="text-h5">Database Settings</div>
+                    <div class="text-subtitle2">Configure your database connection parameters</div>
                 </q-card-section>
-                <q-card-actions>
-                    <q-btn @click="saveSettings" label="Save" color="primary" />
-                    <q-btn @click="closeSettings" label="Cancel" color="secondary" />
+
+                <q-card-section class="q-pa-lg col scroll">
+                    <div class="row q-col-gutter-lg justify-center">
+                        <div class="col-12 col-sm-10">
+                            <div class="row q-col-gutter-md">
+                                <div class="col-12 col-sm-6">
+                                    <q-input
+                                        v-model="host"
+                                        label="Database Host"
+                                        filled
+                                        class="q-mb-md"
+                                        required
+                                    >
+                                        <template v-slot:prepend>
+                                            <q-icon name="dns" />
+                                        </template>
+                                    </q-input>
+                                </div>
+
+                                <div class="col-12 col-sm-6">
+                                    <q-input
+                                        v-model="port"
+                                        label="Database Port"
+                                        type="number"
+                                        filled
+                                        class="q-mb-md"
+                                        required
+                                    >
+                                        <template v-slot:prepend>
+                                            <q-icon name="settings_ethernet" />
+                                        </template>
+                                    </q-input>
+                                </div>
+
+                                <div class="col-12 col-sm-6">
+                                    <q-input
+                                        v-model="user"
+                                        label="Database User"
+                                        filled
+                                        class="q-mb-md"
+                                        required
+                                    >
+                                        <template v-slot:prepend>
+                                            <q-icon name="person" />
+                                        </template>
+                                    </q-input>
+                                </div>
+
+                                <div class="col-12 col-sm-6">
+                                    <q-input
+                                        v-model="password"
+                                        label="Database Password"
+                                        type="password"
+                                        filled
+                                        class="q-mb-md"
+                                        required
+                                        autocomplete="off"
+                                    >
+                                        <template v-slot:prepend>
+                                            <q-icon name="lock" />
+                                        </template>
+                                    </q-input>
+                                </div>
+
+                                <div class="col-12 col-sm-6">
+                                    <q-input
+                                        v-model="database"
+                                        label="Database Name"
+                                        filled
+                                        class="q-mb-md"
+                                        required
+                                    >
+                                        <template v-slot:prepend>
+                                            <q-icon name="database" />
+                                        </template>
+                                    </q-input>
+                                </div>
+
+                                <div class="col-12 col-sm-6">
+                                    <q-input
+                                        v-model="dbFolder"
+                                        label="Database Folder"
+                                        filled
+                                        class="q-mb-md"
+                                        required
+                                    >
+                                        <template v-slot:prepend>
+                                            <q-icon name="folder" />
+                                        </template>
+                                    </q-input>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </q-card-section>
+
+                <q-card-actions align="right" class="bg-white q-pa-md">
+                    <q-btn
+                        @click="closeSettings"
+                        label="Cancel"
+                        color="grey-7"
+                        flat
+                        class="q-px-md"
+                    />
+                    <q-btn
+                        @click="saveSettings"
+                        label="Save Settings"
+                        color="primary"
+                        unelevated
+                        class="q-px-md q-ml-sm"
+                    />
                 </q-card-actions>
             </q-card>
         </q-dialog>

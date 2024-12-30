@@ -161,8 +161,9 @@ export const applyDifferences = async (connection, database, differences) => {
 
 
             } else if (diff.type === 'missing_trigger') {
-                const createTriggerSQL = `CREATE TRIGGER \`${diff.triggerName}\` ${diff.definition.Event} ON \`${diff.definition.Table}\` FOR EACH ROW ${diff.definition.Definition}`;
-                logger(`Executing: ${createTriggerSQL}`);
+                const createTriggerSQL = diff.trigger.Definition;
+                console.log('fixing trigger', diff.trigger.Name)
+                console.log(`Executing: ${createTriggerSQL}`);
                 await connection.query(createTriggerSQL);
 
 
@@ -170,8 +171,8 @@ export const applyDifferences = async (connection, database, differences) => {
                 const dropTriggerSQL = `DROP TRIGGER IF EXISTS \`${diff.trigger.Name}\`;`;
                 logger(`Executing: ${dropTriggerSQL}`);
                 await connection.query(dropTriggerSQL);
-                const createTriggerSQL = `CREATE TRIGGER \`${diff.trigger.Name}\` ${diff.trigger.Event} ON \`${diff.trigger.Table}\` FOR EACH ROW ${diff.trigger.Definition}`;
-                logger(`Executing: ${createTriggerSQL}`);
+                const createTriggerSQL = diff.trigger.Definition;
+                console.log(`Executing: ${createTriggerSQL}`);
                 await connection.query(createTriggerSQL);
 
 
