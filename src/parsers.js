@@ -44,7 +44,8 @@ export const parseCreateTableSQL = (createTableSQL) => {
 
             // Set Default property if it exists
             if (columnMatch[5]) {
-                column.Default = columnMatch[5];
+                // console.log('columnMatch[5]', columnMatch[5], columnMatch[5].replace(/'/g, ''))
+                column.Default = columnMatch[5].replace(/'/g, '');
             }
 
             // Set AutoIncrement property if it exists

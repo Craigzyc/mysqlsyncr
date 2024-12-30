@@ -58,14 +58,19 @@ export const findDifferences = (expected, current) => {
         logger('Verifying Type Null and Default for table', tableName);
         for (const field of columns) {
             const currentField = current.tables[tableName].columns.find(f => f.Field === field.Field);
+            if (!currentField) {
+                console.error('Current field not found for', field.Field, 'in table', tableName);
+                differences.push({ type: 'missing_field', tableName, field });
+                continue;
+            }
             if (field.Type !== currentField.Type) {
-                differences.push({ type: 'mismatched_field', tableName, field });
+                differences.push({ type: 'mismatched_field', info: "Type", tableName, field, currentField });
             }
             if (field.Null !== currentField.Null) {
-                differences.push({ type: 'mismatched_field', tableName, field });
+                differences.push({ type: 'mismatched_field', info: "Null", tableName, field, currentField });
             }
             if (field.Default !== currentField.Default) {
-                differences.push({ type: 'mismatched_field', tableName, field });
+                differences.push({ type: 'mismatched_field', info: "Default", tableName, field, currentField });
             }
         }
 
@@ -130,14 +135,15 @@ export const findDifferences = (expected, current) => {
 
     // Compare stored procedures
     if (!expected.procedures) throw new Error('No procedures found in expected');
-    for (const [procName, contents] of Object.entries(expected.procedures)) {
-        if (!current.procedures[procName]) {
+    for (const [position, contents] of Object.entries(expected.procedures)) {
+        let procName = contents.Name;
+        let currentProc = current.procedures.find(p => p.Name === procName);
+        if (!currentProc) {
             console.log('missing_procedure', contents);
             differences.push({ type: 'missing_procedure', ...contents });
             continue;
         }
 
-        const currentProc = current.procedures[procName];
 
         // Check if the procedure definition matches
         if (currentProc.Definition !== contents.Definition) {
@@ -153,24 +159,41 @@ export const findDifferences = (expected, current) => {
     }
 
     // Compare views
-    if (!expected.views) throw new Error('No views found in expected');
-    for (const [viewName, expectedDefinition] of Object.entries(expected.views)) {
-        if (!current.views[viewName]) {
-            differences.push({ type: 'missing_view', viewName, definition: expectedDefinition });
-            continue;
+    if (expected.views || current.views) {
+        // Handle missing views (when expected has views but current doesn't have them)
+        if (expected.views && !current.views) {
+            for (const [viewName, expectedDefinition] of Object.entries(expected.views)) {
+                differences.push({ type: 'missing_view', viewName, definition: expectedDefinition });
+            }
         }
-
-        const currentDefinition = current.views[viewName];
-        if (currentDefinition !== expectedDefinition) {
-            differences.push({ type: 'mismatched_view', viewName, definition: expectedDefinition, current: currentDefinition });
+        // Handle extra views (when current has views but expected doesn't have them)
+        else if (current.views && !expected.views) {
+            for (const viewName of Object.keys(current.views)) {
+                differences.push({ type: 'extra_view', viewName });
+            }
         }
-    }
-
-    // Detect extra views
-    if (!current.views) throw new Error('No views found in current');
-    for (const viewName of Object.keys(current.views)) {
-        if (!expected.views[viewName]) {
-            differences.push({ type: 'extra_view', viewName });
+        // Compare views when both exist
+        else if (expected.views && current.views) {
+            // Check for missing and mismatched views
+            for (const [viewName, expectedDefinition] of Object.entries(expected.views)) {
+                if (!current.views[viewName]) {
+                    differences.push({ type: 'missing_view', viewName, definition: expectedDefinition });
+                } else if (current.views[viewName] !== expectedDefinition) {
+                    differences.push({ 
+                        type: 'mismatched_view', 
+                        viewName, 
+                        definition: expectedDefinition, 
+                        current: current.views[viewName] 
+                    });
+                }
+            }
+            
+            // Check for extra views
+            for (const viewName of Object.keys(current.views)) {
+                if (!expected.views[viewName]) {
+                    differences.push({ type: 'extra_view', viewName });
+                }
+            }
         }
     }
 

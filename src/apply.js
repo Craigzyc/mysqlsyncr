@@ -19,17 +19,17 @@ export const applyDifferences = async (connection, database, differences) => {
                 await connection.query(dropTableSQL);
 
             } else if (diff.type === 'missing_field') {
-                const defaultValue =
-                    diff.field.Default === 'CURRENT_TIMESTAMP'
-                        ? 'DEFAULT CURRENT_TIMESTAMP'
-                        : diff.field.Default !== null
-                            ? `DEFAULT '${diff.field.Default}'`
-                            : '';
-                const addFieldSQL = `ALTER TABLE \`${diff.tableName}\` ADD \`${diff.field.Field}\` ${diff.field.Type} ${diff.field.Null === 'NO' ? 'NOT NULL' : ''
-                    } ${defaultValue} ${diff.field.Extra || ''};`;
-                logger(`Executing: ${addFieldSQL}`);
+                // Step 1: Add column with DEFAULT NULL to handle existing records
+                const addFieldSQL = `ALTER TABLE \`${diff.tableName}\` ADD \`${diff.field.Field}\` ${diff.field.Type} DEFAULT NULL;`;
+                console.log(`Executing: ${addFieldSQL}`);
                 await connection.query(addFieldSQL);
 
+                // Step 2: If NOT NULL is required and no default was specified, modify the column to remove DEFAULT NULL
+                if (diff.field.NotNull && !diff.field.Default) {
+                    const modifyFieldSQL = `ALTER TABLE \`${diff.tableName}\` MODIFY \`${diff.field.Field}\` ${diff.field.Type} NOT NULL;`;
+                    console.log(`Executing: ${modifyFieldSQL}`);
+                    await connection.query(modifyFieldSQL);
+                }
 
             } else if (diff.type === 'extra_field') {
                 const dropFieldSQL = `ALTER TABLE \`${diff.tableName}\` DROP COLUMN \`${diff.field.Field}\`;`;
@@ -38,8 +38,13 @@ export const applyDifferences = async (connection, database, differences) => {
 
             } else if (diff.type === 'mismatched_field') {
                 const { tableName, field } = diff;
-                const dropFieldSQL = `ALTER TABLE \`${tableName}\` CHANGE \`${field.Field}\` \`${field.Field}\` ${field.Type} ${field.Null === 'NO' ? 'NOT NULL' : ''
-                    } ${field.Default === 'CURRENT_TIMESTAMP' ? 'DEFAULT CURRENT_TIMESTAMP' : field.Default !== null ? `DEFAULT '${field.Default}'` : ''};`;
+                const defaultClause = field.Default === 'CURRENT_TIMESTAMP' 
+                    ? 'DEFAULT CURRENT_TIMESTAMP'
+                    : field.Default !== undefined && field.Default !== null 
+                        ? `DEFAULT '${field.Default}'` 
+                        : '';
+                
+                const dropFieldSQL = `ALTER TABLE \`${tableName}\` CHANGE \`${field.Field}\` \`${field.Field}\` ${field.Type} ${field.NotNull ? 'NOT NULL' : ''} ${defaultClause};`;
                 logger(`Executing: ${dropFieldSQL}`);
                 await connection.query(dropFieldSQL);
 
