@@ -12,7 +12,7 @@ import { resolve } from 'path';
 
 export const startApiServer = (port) => {
     const app = express();
-    app.use(cors({origin:'*'}));
+    app.use(cors({ origin: '*' }));
     const server = http.createServer(app);
     app.use(express.json({ limit: '50mb' })); // Increased payload limit
     app.use(express.urlencoded({ limit: '50mb', extended: true })); // Also handle URL-encoded data
@@ -31,6 +31,12 @@ export const startApiServer = (port) => {
     app.post('/api/dump', async (req, res) => {
         const { config, database } = req.body;
         const checker = new DBStructureChecker(config, database);
+
+        checker.connection.on('error', (err) => {
+            console.error('Database connection error in route dump:', err);
+            res.status(500).json({ message: 'Database connection failed', error: err.message });
+        });
+
         checker.connection.on('connect', async () => {
             console.log('Connected to the database');
             checker.targetDatabase = database;
@@ -52,6 +58,12 @@ export const startApiServer = (port) => {
     app.post('/api/compare', async (req, res) => {
         const { config } = req.body;
         const checker = new DBStructureChecker(config, config.database);
+
+        checker.connection.on('error', (err) => {
+            console.error('Database connection error in route compare:', err);
+            res.status(500).json({ message: 'Database connection failed', error: err.message });
+        });
+
         checker.connection.on('connect', async () => {
             console.log('Connected to the database');
             checker.targetDatabase = config.database;
@@ -61,7 +73,7 @@ export const startApiServer = (port) => {
                 delete req.body.output;
                 console.log('Comparing the database structure with JSON dumps (dry run)');
                 let diffs = await compareAllDatabases(checker.connection, config.output, false, 'compare', config);
-                res.json(diffs);    
+                res.json(diffs);
             } catch (err) {
                 console.log(err);
                 console.log(req.body);
@@ -70,7 +82,7 @@ export const startApiServer = (port) => {
                 await checker.closeConnection();
             }
         })
-        
+
     });
 
     // API endpoint to apply differences
@@ -78,6 +90,12 @@ export const startApiServer = (port) => {
         const { config, database, diffs } = req.body;
         console.log('Applying differences:', diffs);
         const checker = new DBStructureChecker(config, database);
+
+        checker.connection.on('error', (err) => {
+            console.error('Database connection error in route apply:', err);
+            res.status(500).json({ message: 'Database connection failed', error: err.message });
+        });
+
         checker.connection.on('connect', async () => {
             console.log('Connected to the database');
             checker.targetDatabase = database;
@@ -97,17 +115,17 @@ export const startApiServer = (port) => {
 
     app.post('/api/browse-folders', async (req, res) => {
         try {
-            const { currentPath = process.cwd() } = req.body;   
+            const { currentPath = process.cwd() } = req.body;
             console.log('Browsing folder:', currentPath);
-            
+
             const resolvedPath = currentPath.startsWith('/') || currentPath.match(/^[A-Z]:\\/)
                 ? resolve(currentPath)
                 : resolve(process.cwd(), currentPath);
 
             console.log('Resolved path:', resolvedPath);
-            
+
             const contents = await readdir(resolvedPath, { withFileTypes: true });
-            
+
             // Separate directories and files
             const items = contents.map(dirent => ({
                 name: dirent.name,
@@ -147,13 +165,13 @@ export const startApiServer = (port) => {
         try {
             const { folderPath } = req.body;
             console.log('Creating folder:', folderPath);
-            
+
             const resolvedPath = folderPath.startsWith('/') || folderPath.match(/^[A-Z]:\\/)
                 ? resolve(folderPath)
                 : resolve(process.cwd(), folderPath);
 
             await mkdir(resolvedPath, { recursive: true });
-            
+
             res.json({
                 success: true,
                 path: resolvedPath
@@ -162,7 +180,7 @@ export const startApiServer = (port) => {
             res.status(500).json({ error: error.message });
         }
     });
-    
+
     // Start the server
     server.listen(port, () => {
         console.log(`Server is running on http://localhost:${port}`);

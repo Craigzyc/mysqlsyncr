@@ -25,136 +25,137 @@ describe('Create Table Parser', () => {
   CONSTRAINT \`CaseDX\` FOREIGN KEY (\`idCaseDX\`) REFERENCES \`Case_DX\` (\`idCaseDX\`) ON DELETE NO ACTION ON UPDATE NO ACTION
 ) ENGINE=InnoDB DEFAULT CHARSET=latin1 COMMENT='Keeps track of all active/inactive alarm rules used for the assets.\n';`;
 
-        const expectedOutput =     {                                                                                                       
+        const expectedOutput = {
             "name": "AlarmRuleHistory",
             "columns": [
-                {
-                    "Field": "idAlarmHistory",
-                    "Type": "int(11)",
-                    "NotNull": true,
-                    "AutoIncrement": true
-                },
-                {
-                    "Field": "idAsset",
-                    "Type": "int(11)",
-                    "NotNull": true
-                },
-                {
-                    "Field": "idCaseDX",
-                    "Type": "int(11)",
-                    "Default": "NULL"
-                },
-                {
-                    "Field": "idAlertRule",
-                    "Type": "int(11)",
-                    "Default": "NULL"
-                },
-                {
-                    "Field": "activeAlarmRule",
-                    "Type": "smallint(1)",
-                    "NotNull": true,
-                    "Default": "'0'"
-                },
-                {
-                    "Field": "alarmRule_StartDate",
-                    "Type": "timestamp",
-                    "Default": "NULL"
-                },
-                {
-                    "Field": "alarmRule_EndDate",
-                    "Type": "timestamp",
-                    "Default": "NULL"
-                },
-                {
-                    "Field": "dateCreated",
-                    "Type": "timestamp",
-                    "NotNull": true,
-                    "Default": "CURRENT_TIMESTAMP"
-                },
-                {
-                    "Field": "dateUpdated",
-                    "Type": "timestamp",
-                    "NotNull": true,
-                    "Default": "CURRENT_TIMESTAMP"
-                },
-                {
-                    "Field": "lastModifiedBy",
-                    "Type": "varchar(32)",
-                    "NotNull": true,
-                    "Default": "'System"
-                }
+              {
+                "Field": "idAlarmHistory",
+                "Type": "int(11)",
+                "NotNull": true,
+                "AutoIncrement": true
+              },
+              {
+                "Field": "idAsset",
+                "Type": "int(11)",
+                "NotNull": true
+              },
+              {
+                "Field": "idCaseDX",
+                "Type": "int(11)",
+                "Default": "NULL"
+              },
+              {
+                "Field": "idAlertRule",
+                "Type": "int(11)",
+                "Default": "NULL"
+              },
+              {
+                "Field": "activeAlarmRule",
+                "Type": "smallint(1)",
+                "NotNull": true,
+                "Default": "0"
+              },
+              {
+                "Field": "alarmRule_StartDate",
+                "Type": "timestamp",
+                "Default": "NULL"
+              },
+              {
+                "Field": "alarmRule_EndDate",
+                "Type": "timestamp",
+                "Default": "NULL"
+              },
+              {
+                "Field": "dateCreated",
+                "Type": "timestamp",
+                "NotNull": true,
+                "Default": "CURRENT_TIMESTAMP"
+              },
+              {
+                "Field": "dateUpdated",
+                "Type": "timestamp",
+                "NotNull": true,
+                "Default": "CURRENT_TIMESTAMP"
+              },
+              {
+                "Field": "lastModifiedBy",
+                "Type": "varchar(32)",
+                "NotNull": true,
+                "Default": "System"
+              }
             ],
             "indexes": [
-                {
-                    "ColumnName": [
-                        "`idAlarmHistory`"
-                    ],
-                    "Primary": true
-                },
-                {
-                    "ColumnName": [
-                        "`idAlertRule`"
-                    ],
-                    "Name": "AlertRule_idx"
-                },
-                {
-                    "ColumnName": [
-                        "`idCaseDX`"
-                    ],
-                    "Name": "CaseDX_idx"
-                },
-                {
-                    "ColumnName": [
-                        "`idAsset`"
-                    ],
-                    "Name": "Asset_idx"
-                }
+              {
+                "ColumnName": [
+                  "idAlarmHistory"
+                ],
+                "Primary": true,
+                "Name": "PRIMARY"
+              },
+              {
+                "ColumnName": [
+                  "idAlertRule"
+                ],
+                "Name": "AlertRule_idx"
+              },
+              {
+                "ColumnName": [
+                  "idCaseDX"
+                ],
+                "Name": "CaseDX_idx"
+              },
+              {
+                "ColumnName": [
+                  "idAsset"
+                ],
+                "Name": "Asset_idx"
+              }
             ],
             "constraints": [
-                {
-                    "Name": "AlertRule",
-                    "Type": "FOREIGN KEY",
-                    "ColumnName": [
-                        "`idAlertRule`"
-                    ],
-                    "References": {
-                        "Table": "`AlertRules`",
-                        "Column": "`idAlertRule`"
-                    },
-                    "OnDelete": "NO ACTION",
-                    "OnUpdate": "NO ACTION"
+              {
+                "Name": "AlertRule",
+                "Type": "FOREIGN KEY",
+                "ColumnName": [
+                  "idAlertRule"
+                ],
+                "References": {
+                  "Table": "AlertRules",
+                  "Column": "idAlertRule"
                 },
-                {
-                    "Name": "AlertRule",
-                    "Type": "FOREIGN KEY",
-                    "ColumnName": [
-                        "`idAsset`"
-                    ],
-                    "References": {
-                        "Table": "`Assets`",
-                        "Column": "`idAsset`"
-                    },
-                    "OnDelete": "NO ACTION",
-                    "OnUpdate": "NO ACTION"
+                "OnDelete": "NO ACTION",
+                "OnUpdate": "NO ACTION"
+              },
+              {
+                "Name": "AlertRule",
+                "Type": "FOREIGN KEY",
+                "ColumnName": [
+                  "idAsset"
+                ],
+                "References": {
+                  "Table": "Assets",
+                  "Column": "idAsset"
                 },
-                {
-                    "Name": "AlertRule",
-                    "Type": "FOREIGN KEY",
-                    "ColumnName": [
-                        "`idCaseDX`"
-                    ],
-                    "References": {
-                        "Table": "`Case_DX`",
-                        "Column": "`idCaseDX`"
-                    },
-                    "OnDelete": "NO ACTION",
-                    "OnUpdate": "NO ACTION"
-                }
+                "OnDelete": "NO ACTION",
+                "OnUpdate": "NO ACTION"
+              },
+              {
+                "Name": "AlertRule",
+                "Type": "FOREIGN KEY",
+                "ColumnName": [
+                  "idCaseDX"
+                ],
+                "References": {
+                  "Table": "Case_DX",
+                  "Column": "idCaseDX"
+                },
+                "OnDelete": "NO ACTION",
+                "OnUpdate": "NO ACTION"
+              }
             ],
             "engine": "InnoDB",
             "charset": "latin1",
             "collate": null
-        }
+          }
     
         
 

@@ -1,4 +1,3 @@
-
 export const parseCreateTableSQL = (createTableSQL) => {
     if(!createTableSQL) return null;
     const name = createTableSQL.match(/CREATE TABLE\s+`([^`]+)`/)[1];
@@ -32,9 +31,10 @@ export const parseCreateTableSQL = (createTableSQL) => {
         const indexMatch = indexRegex.exec(line);
         const constraintMatch = parseConstraint(line);
         if (columnMatch && !indexMatch && !constraintMatch) {
+            const columnType = parseColumnType(line);
             const column = {
                 Field: columnMatch[1],
-                Type: columnMatch[2]
+                Type: columnType
             };
 
             // Set Null property based on NOT NULL presence
@@ -116,15 +116,30 @@ export const parseConstraint = (sql) => {
     }else{
         onUpdate = 'NO ACTION';
     }
+    let columnName = match[1] || ''
+    columnName = columnName.replace(/`/g, '')
+    let table = match[2] || ''
+    table = table.replace(/`/g, '')
+    let column = match[3] || ''
+    column = column.replace(/`/g, '')
     return {
         Name: "AlertRule", // Replace with actual constraint name if needed
         Type: "FOREIGN KEY",
-        ColumnName: [match[1]], // Column in the current table
+        ColumnName: [columnName], // Column in the current table
         References: {
-            Table: match[2], // Referenced table
-            Column: match[3], // Referenced column
+            Table: table, // Referenced table
+            Column: column, // Referenced column
         },
         OnDelete: onDelete, 
         OnUpdate: onUpdate, 
     };
+};
+
+const parseColumnType = (line) => {
+    // Match type pattern including parameters, handling both single and double parameter types
+    const typeRegex = /`[^`]+`\s+([a-zA-Z]+(?:\([0-9]+(?:,[0-9]+)?\))?)/i;
+    const match = line.match(typeRegex);
+    
+    if (!match) return null;
+    return match[1]; // Returns the full type including parameters
 };

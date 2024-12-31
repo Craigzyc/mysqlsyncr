@@ -16,6 +16,7 @@ export const dumpAllDatabases = async (connection, command, options) => {
         await fs.writeFile(path.join(options.output , database, `${database}.json`), JSON.stringify(dbStructure, null, 4), 'utf-8');
         response[database] = dbStructure;
     }
+    await fs.writeFile(path.join(options.output, 'dumpInfo.json'), JSON.stringify({timestamp: new Date().toISOString(), version: process.env.npm_package_version}, null, 4), 'utf-8');
     return response;
 }
 
@@ -33,7 +34,7 @@ export const getDatabasesFromExistingDumps = async (options) => {
     let response = {}
     const databases = await fs.readdir(path.join(options.output));
     for (const database of databases) {
-        if(database.includes('diffs')){
+        if(database.includes('diffs') || database.includes('dumpInfo')){
             console.log('Skipping diffs folder')
             continue
         }

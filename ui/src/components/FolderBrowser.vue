@@ -211,7 +211,7 @@ export default {
         }
     },
     async mounted() {
-        await this.loadFolderContents(this.initialPath || process.cwd());
+        await this.loadFolderContents(this.initialPath || './');
     }
 }
 </script>

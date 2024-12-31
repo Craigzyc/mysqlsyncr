@@ -14,17 +14,19 @@ class DBStructureChecker {
     constructor(config, targetDatabase = null) {
         this.config = config;
         this.targetDatabase = targetDatabase;
-        this.connection = mysql.createConnection(this.config);
+        this.connection = mysql.createConnection(this.config)
         this.dumpAllDatabases = dumpAllDatabases;
         this.compareAllDatabases = compareAllDatabases;
         this.getDatabases = () => {
 
             fs.readFileSync(path.join(__dirname, 'databases.json'), 'utf8');
         }
-        this.connection.on('error', (err) => {
-            console.error('Database connection error:', err);
-        });
+        // this.connection.on('error', (err) => {
+        //     this.emit('error', err);
+        //     console.error('Database connection error:', err);
+        // });
         this.connection.query = util.promisify(this.connection.query); // Promisify for async/await
+
     }
 
     async reconnect() {

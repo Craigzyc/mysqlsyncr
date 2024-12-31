@@ -38,12 +38,12 @@ export const findDifferences = (expected, current) => {
         const expectedFieldNames = columns.map(f => f.Field);
 
         logger('Detecting missing fields for table', tableName);
-        // Detect missing fields
-        for (const field of columns) {
-            if (!currentFieldNames.includes(field.Field)) {
-                differences.push({ type: 'missing_field', tableName, field });
-            }
-        }
+        // // Detect missing fields
+        // for (const field of columns) {
+        //     if (!currentFieldNames.includes(field.Field)) {
+        //         differences.push({ type: 'missing_field', tableName, field });
+        //     }
+        // }
 
         logger('Detecting extra fields for table', tableName);
         // Detect extra fields

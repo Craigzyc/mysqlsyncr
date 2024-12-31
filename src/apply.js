@@ -65,6 +65,16 @@ export const applyDifferences = async (connection, database, differences) => {
                     console.log(`Executing: ${modifyFieldSQL}`);
                     await connection.query(modifyFieldSQL);
                 }
+                if(diff.field.Default){
+                    const defaultClause = diff.field.Default === 'CURRENT_TIMESTAMP' 
+                    ? 'DEFAULT CURRENT_TIMESTAMP'
+                    : diff.field.Default !== undefined && diff.field.Default !== null 
+                        ? `DEFAULT '${diff.field.Default}'` 
+                        : '';
+                    const modifyFieldSQL = `ALTER TABLE \`${diff.tableName}\` MODIFY \`${diff.field.Field}\` ${diff.field.Type} ${defaultClause};`;
+                    console.log(`Executing: ${modifyFieldSQL}`);
+                    await connection.query(modifyFieldSQL);
+                }
 
             } else if (diff.type === 'extra_field') {
                 const dropFieldSQL = `ALTER TABLE \`${diff.tableName}\` DROP COLUMN \`${diff.field.Field}\`;`;

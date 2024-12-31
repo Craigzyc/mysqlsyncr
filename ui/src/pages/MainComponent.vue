@@ -370,7 +370,7 @@
                         </q-table>
 
                         <q-btn
-                            @click="fixNodeIssues({ type: 'issues', children: selectedIssues })"
+                            @click="fixNodeIssues(this.selectedNode)"
                             :loading="isNodeFixing['all-issues']"
                             color="primary"
                             class="q-mt-md"
@@ -941,6 +941,7 @@ export default {
         },
         getDbNameFromNode(node) {
             // Extract database name from node ID (assumes format: "dbName-something-etc")
+            if(!node || !node.id) node = this.selectedNode
             if(node.id.startsWith('db-')){
                 return node.id.split('-')[1]
             }
@@ -1003,10 +1004,14 @@ export default {
                         const dbDifferences = this.differences[selectedDbName]
                         console.log('DB Differences:', dbDifferences)
                         if(type === 'tables'){
-                            issues.push(...dbDifferences.filter(diff => diff.type.includes('table')))
+                            console.log('Collecting table issues')
+                            console.log('DB Differences:', dbDifferences)
+                            issues.push(...dbDifferences.filter(diff => diff.type.includes('table') || diff.tableName))
                         }else if(type === 'views'){
+                            console.log('Collecting view issues')
                             issues.push(...dbDifferences.filter(diff => diff.type.includes('view')))
                         }else if(type === 'procedures'){
+                            console.log('Collecting procedure issues')
                             issues.push(...dbDifferences.filter(diff => diff.type.includes('procedure')))
                         }else{
                             console.error('Unknown type:', type)
