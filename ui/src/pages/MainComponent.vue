@@ -416,7 +416,7 @@ export default {
             user: 'root',
             password: '',
             database: '',
-            dbFolder: 'db-dump',
+            dbFolder: '',
             existingDatabases: [],
             databaseColumns: [
                 { name: 'name', label: 'Database Name', align: 'left', field: 'name' },
