@@ -1,6 +1,10 @@
+import { createRequire } from 'module';
 import fs from 'fs/promises';
 import path from 'path';
 import { getDatabases, getDatabaseStructure } from './getters.js';
+
+const require = createRequire(import.meta.url);
+const { version } = require('../package.json');
 
 export const dumpAllDatabases = async (connection, command, options) => {
     let response = {}
@@ -16,7 +20,8 @@ export const dumpAllDatabases = async (connection, command, options) => {
         await fs.writeFile(path.join(options.output , database, `${database}.json`), JSON.stringify(dbStructure, null, 4), 'utf-8');
         response[database] = dbStructure;
     }
-    await fs.writeFile(path.join(options.output, 'dumpInfo.json'), JSON.stringify({timestamp: new Date().toISOString(), version: process.env.npm_package_version}, null, 4), 'utf-8');
+
+    await fs.writeFile(path.join(options.output, 'dumpInfo.json'), JSON.stringify({timestamp: new Date().toISOString(), version: version}, null, 4), 'utf-8');
     return response;
 }
 
