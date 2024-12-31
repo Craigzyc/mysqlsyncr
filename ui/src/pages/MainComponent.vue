@@ -456,7 +456,7 @@ export default {
         async refreshDifferences() {
             if (!this.isDbSetup) return
             try {
-                const response = await axios.post('http://localhost:3000/api/compare', {
+                const response = await axios.post('/api/compare', {
                     config: {
                         host: this.host,
                         port: this.port,
@@ -474,7 +474,7 @@ export default {
         async getDatabasesFromExistingDumps() {
             try {
                 const response = await axios.post(
-                    `http://localhost:3000/api/getDatabasesFromExistingDumps`,
+                    `/api/getDatabasesFromExistingDumps`,
                     {
                         config: {
                             host: this.host,
@@ -764,7 +764,7 @@ export default {
             }))
         },
         async fetchAllDifferences() {
-            const response = await axios.post('http://localhost:3000/api/compare', {
+            const response = await axios.post('/api/compare', {
                 config: {
                     host: this.host,
                     port: this.port,
@@ -779,7 +779,7 @@ export default {
         async fetchDifferencesForSelectedDb() {
             if (Object.keys(this.existingDatabases).length > 0) {
                 const selectedDbName = Object.keys(this.existingDatabases)[0]
-                const response = await axios.post('http://localhost:3000/api/compare', {
+                const response = await axios.post('/api/compare', {
                     config: {
                         host: this.host,
                         port: this.port,
@@ -820,7 +820,7 @@ export default {
 
             try {
 
-                let response = await axios.post('http://localhost:3000/api/dump', {
+                let response = await axios.post('/api/dump', {
                     config: {
                         host: this.host,
                         port: this.port,
@@ -904,7 +904,7 @@ export default {
                 }
 
 
-                const response = await axios.post('http://localhost:3000/api/apply', {
+                const response = await axios.post('/api/apply', {
                     config: {
                         host: this.host,
                         port: this.port,

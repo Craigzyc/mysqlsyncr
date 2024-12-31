@@ -8,6 +8,8 @@ export const cli = () => {
         .command('compare', 'Compare the database structure with JSON dumps (dry run)')
         .command('update', 'Update the database structure based on JSON dumps')
         .command('ui', 'Open the UI')
+        .option('uiPort', { alias: 'U', describe: 'UI port', default: 3600 })
+        .option('openUI', { alias: 'O', describe: 'Open UI', default: true })
         .option('host', { alias: 'h', describe: 'Database host', default: 'localhost' })
         .option('port', { alias: 'P', describe: 'Database port', default: 3306 })
         .option('user', { alias: 'u', describe: 'Database user', default: 'root' })

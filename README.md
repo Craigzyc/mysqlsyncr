@@ -1,5 +1,7 @@
 # MySQLSyncr
 
+Warning: Please be careful when using this tool. It is still in development and may not be fully stable. Test on a development database before using on production.
+
 MySQLSyncr is a command-line tool for managing and comparing MySQL database structures with JSON dumps. It allows users to dump the database structure, compare it with existing JSON files, and update the database based on those JSON definitions.
 
 ## Table of Contents
@@ -22,6 +24,8 @@ MySQLSyncr is a command-line tool for managing and comparing MySQL database stru
 - **Update**: Update the database structure based on the provided JSON definitions.
 - **UI**: Open a web-based database browser interface.
 - **Verbose Logging**: Enable detailed logging for debugging purposes.
+
+![Database Browser Interface](view.png)
 
 ## Installation
 
@@ -66,6 +70,8 @@ You can configure the following options when running the commands:
 
 | Option      | Alias | Description                                                                 | Default Value                  |
 |-------------|-------|-----------------------------------------------------------------------------|--------------------------------|
+| `uiPort`    | `-U`  | UI port                                                                     | `3600`                         |
+| `openUI`    | `-O`  | Open UI in default browser (boolean)                                      | `true`                         |
 | `host`      | `-h`  | Database host                                                              | `localhost`                   |
 | `port`      | `-P`  | Database port                                                              | `3306`                         |
 | `user`      | `-u`  | Database user                                                              | `root`                         |

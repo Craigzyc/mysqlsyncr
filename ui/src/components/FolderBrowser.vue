@@ -144,7 +144,7 @@ export default {
 
         async loadFolderContents(path) {
             try {
-                const response = await axios.post('http://localhost:3000/api/browse-folders', {
+                const response = await axios.post('/api/browse-folders', {
                     currentPath: path
                 });
 
@@ -188,7 +188,7 @@ export default {
                 const newFolderPath = `${this.currentPath}/${this.newFolderName}`;
 
                 try {
-                    await axios.post('http://localhost:3000/api/create-folder', {
+                    await axios.post('/api/create-folder', {
                         folderPath: newFolderPath
                     });
 

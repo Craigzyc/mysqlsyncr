@@ -48,15 +48,17 @@ class DBStructureChecker {
 export { DBStructureChecker };
 
 // Start the server only if the 'ui' command is used
-const PORT = process.env.PORT || 3000;
 (async () => {
     const { command, config, argv } = cli();
 
     if (command === 'ui') {
+        const PORT = argv.uiPort
         startApiServer(PORT); // Start the Socket.IO server
         console.log('Server started on port', PORT);
         console.log('Open http://localhost:' + PORT + ' in your browser to use the UI');
-        await open(`http://localhost:${PORT}`);
+        if(argv.openUI){
+            await open(`http://localhost:${PORT}`);
+        }
     } else {
         // Handle other commands (dump, compare, update) as before
         const checker = new DBStructureChecker(config, argv.database);
