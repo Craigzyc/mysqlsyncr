@@ -45,18 +45,18 @@ class DBStructureChecker {
 }
 
 // Export the DBStructureChecker class
-export { DBStructureChecker };
+export { DBStructureChecker, dumpAllDatabases, compareAllDatabases, startApiServer };
 
 // Start the server only if the 'ui' command is used
 (async () => {
     const { command, config, argv } = cli();
-
+    console.log("MySQLsyncr started via command line")
     if (command === 'ui') {
         const PORT = argv.uiPort
-        startApiServer(PORT); // Start the Socket.IO server
+        startApiServer(PORT, argv); // Start the Socket.IO server
         console.log('Server started on port', PORT);
         console.log('Open http://localhost:' + PORT + ' in your browser to use the UI');
-        if(argv.openUI){
+        if(argv.openUI && argv.openUI === true || argv.openUI === 'true'){
             await open(`http://localhost:${PORT}`);
         }
     } else {

@@ -10,26 +10,47 @@ import { dirname, join } from 'path';
 import { readdir, mkdir } from 'fs/promises';
 import { resolve } from 'path';
 
-export const startApiServer = (port) => {
+const setConfig = (config, argv) => {
+    if(!config.host && argv.host){
+        config.host = argv.host;
+    }
+    if(!config.port && argv.port){
+        config.port = argv.port;
+    }
+    if(!config.user && argv.user){
+        config.user = argv.user;
+    }
+    if(!config.password && argv.password){
+        config.password = argv.password;
+    }
+    if(!config.output && argv.output !=='../db-dump'){
+        config.output = argv.output;
+    }
+    return config;
+}
+
+export const startApiServer = (port, argv) => {
     const app = express();
     app.use(cors({ origin: '*' }));
     const server = http.createServer(app);
-    app.use(express.json({ limit: '50mb' })); // Increased payload limit
-    app.use(express.urlencoded({ limit: '50mb', extended: true })); // Also handle URL-encoded data
+    app.use(express.json({ limit: '50mb' })); 
+    app.use(express.urlencoded({ limit: '50mb', extended: true })); 
 
     const __filename = fileURLToPath(import.meta.url);
     const __dirname = dirname(__filename);
     app.use(express.static(join(__dirname, '../ui/dist/spa')));
 
     app.post('/api/getDatabasesFromExistingDumps', async (req, res) => {
-        const { config } = req.body;
+        let { config } = req.body;
+        config = setConfig(config, argv);
         const databases = await getDatabasesFromExistingDumps(config);
         res.json(databases);
     });
 
     // API endpoint to dump the database
     app.post('/api/dump', async (req, res) => {
-        const { config, database } = req.body;
+        let { config, database } = req.body;
+        config = setConfig(config, argv);
         const checker = new DBStructureChecker(config, database);
 
         checker.connection.on('error', (err) => {
@@ -56,8 +77,9 @@ export const startApiServer = (port) => {
 
     // API endpoint to compare the database
     app.post('/api/compare', async (req, res) => {
-        const { config } = req.body;
-        const checker = new DBStructureChecker(config, config.database);
+        let { config, database } = req.body;
+        config = setConfig(config, argv);
+        const checker = new DBStructureChecker(config, database);
 
         checker.connection.on('error', (err) => {
             console.error('Database connection error in route compare:', err);
@@ -87,7 +109,8 @@ export const startApiServer = (port) => {
 
     // API endpoint to apply differences
     app.post('/api/apply', async (req, res) => {
-        const { config, database, diffs } = req.body;
+        let { config, database, diffs } = req.body;
+        config = setConfig(config, argv);
         console.log('Applying differences:', diffs);
         const checker = new DBStructureChecker(config, database);
 
