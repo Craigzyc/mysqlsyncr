@@ -124,6 +124,7 @@
                                     <q-input
                                         v-model="host"
                                         label="Database Host"
+
                                         default="127.0.0.1"
                                         filled
                                         class="q-mb-md"
@@ -200,7 +201,7 @@
                                     <q-input
                                         v-model="dbFolder"
                                         label="Database Folder"
-                                        default="db-dump"
+                                        default=""
                                         filled
                                         class="q-mb-md"
                                         required
