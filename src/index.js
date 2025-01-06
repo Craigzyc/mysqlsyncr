@@ -9,6 +9,7 @@ import { dumpAllDatabases } from './dump.js';
 import { compareAllDatabases } from './compare.js';
 import { startApiServer } from './socketServer.js'; // Import the new socket server
 import open from 'open';
+import { fileURLToPath } from 'node:url';
 
 class DBStructureChecker {
     constructor(config, targetDatabase = null) {
@@ -48,8 +49,12 @@ class DBStructureChecker {
 export { DBStructureChecker, dumpAllDatabases, compareAllDatabases, startApiServer };
 
 // Only run this if this is the main module
-if (import.meta.url === `file://${process.argv[1]}`) {
+const isMain = fileURLToPath(import.meta.url) === path.resolve(process.argv[1]);
+
+if (isMain) {
     (async () => {
+        console.log(`meta: ${import.meta.url}`)
+        console.log(`argv: ${process.argv[1]}`)
         const { command, config, argv } = cli();
         console.log("MySQLsyncr started via command line")
         if (command === 'ui') {

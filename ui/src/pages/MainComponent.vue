@@ -394,7 +394,6 @@
 </template>
 
 <script>
-import axios from 'axios'
 import FolderBrowser from '../components/FolderBrowser.vue'
 
 
@@ -456,7 +455,7 @@ export default {
         async refreshDifferences() {
             if (!this.isDbSetup) return
             try {
-                const response = await axios.post('/api/compare', {
+                const response = await this.$api.post('/api/compare', {
                     config: {
                         host: this.host,
                         port: this.port,
@@ -473,7 +472,7 @@ export default {
         },
         async getDatabasesFromExistingDumps() {
             try {
-                const response = await axios.post(
+                const response = await this.$api.post(
                     `/api/getDatabasesFromExistingDumps`,
                     {
                         config: {
@@ -764,32 +763,46 @@ export default {
             }))
         },
         async fetchAllDifferences() {
-            const response = await axios.post('/api/compare', {
-                config: {
-                    host: this.host,
-                    port: this.port,
-                    user: this.user,
-                    password: this.password,
-                    output: this.dbFolder,
-                },
-            })
-            this.differences = response.data
-            console.log('Differences in fetchAllDifferences:', this.differences)
-        },
-        async fetchDifferencesForSelectedDb() {
-            if (Object.keys(this.existingDatabases).length > 0) {
-                const selectedDbName = Object.keys(this.existingDatabases)[0]
-                const response = await axios.post('/api/compare', {
+            try {
+                const response = await this.$api.post('/api/compare', {
                     config: {
                         host: this.host,
                         port: this.port,
                         user: this.user,
                         password: this.password,
                         output: this.dbFolder,
-                        database: selectedDbName,
-                    },
+                },
                 })
                 this.differences = response.data
+                console.log('Differences in fetchAllDifferences:', this.differences)
+            } catch (error) {
+                console.error('Error fetching all differences:', error)
+                this.$q.notify({
+                    type: 'negative',
+                    message: error.response?.data?.message || 'Error fetching all differences',
+                    position: 'top'
+                })
+                throw error
+            }
+        },
+        async fetchDifferencesForSelectedDb() {
+            if (Object.keys(this.existingDatabases).length > 0) {
+                const selectedDbName = Object.keys(this.existingDatabases)[0]
+                try {
+                    const response = await this.$api.post('/api/compare', {
+                        config: {
+                            host: this.host,
+                            port: this.port,
+                            user: this.user,
+                            password: this.password,
+                        output: this.dbFolder,
+                        database: selectedDbName,
+                        },
+                    })
+                    this.differences = response.data
+                } catch (error) {
+                    console.error('Error fetching differences for selected db:', error)
+                }
             }
         },
         async createNewDump(overwrite = false) {
@@ -820,7 +833,7 @@ export default {
 
             try {
 
-                let response = await axios.post('/api/dump', {
+                let response = await this.$api.post('/api/dump', {
                     config: {
                         host: this.host,
                         port: this.port,
@@ -904,7 +917,7 @@ export default {
                 }
 
 
-                const response = await axios.post('/api/apply', {
+                const response = await this.$api.post('/api/apply', {
                     config: {
                         host: this.host,
                         port: this.port,

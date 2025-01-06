@@ -102,7 +102,6 @@
 </template>
 
 <script>
-import axios from 'axios';
 
 export default {
     name: 'FolderBrowser',
@@ -144,7 +143,7 @@ export default {
 
         async loadFolderContents(path) {
             try {
-                const response = await axios.post('/api/browse-folders', {
+                const response = await this.$api.post('/api/browse-folders', {
                     currentPath: path
                 });
 
@@ -188,7 +187,7 @@ export default {
                 const newFolderPath = `${this.currentPath}/${this.newFolderName}`;
 
                 try {
-                    await axios.post('/api/create-folder', {
+                    await this.$api.post('/api/create-folder', {
                         folderPath: newFolderPath
                     });
 
