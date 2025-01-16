@@ -15,11 +15,38 @@ export const findDifferences = (expected, current) => {
     if (!expected.tables) throw new Error('No tables found in expected');
     for (const [tableName, contents] of Object.entries(expected.tables)) {
         //check if craete table matches from json, if so, we dont need to compare indexes, triggers, or fields
-        
+        const { columns, indexes, triggers, createSQL, name, engine, charset, collate } = contents;
+
+
         if (!current.tables[tableName]) {
-            console.log('missing_table', contents);
+            logger('missing_table', contents);
             differences.push({ type: 'missing_table', tableName, createSQL: contents.createSQL });
             continue;
+        }
+        try {
+            //verify triggers
+            logger('Verifying triggers for table', tableName);
+            for (const trigger of triggers) {
+                const currentTrigger = current.tables[tableName].triggers.find(t => t.Name === trigger.Name);
+                if (!currentTrigger) {
+                    logger('Missing trigger', trigger);
+                    differences.push({ type: 'missing_trigger', tableName, trigger });
+                } else {
+                    // Compare additional properties if needed
+                    if (currentTrigger.Event !== trigger.Event || currentTrigger.Statement !== trigger.Statement) {
+                        logger('Mismatched trigger', { expected: trigger, current: currentTrigger });
+                        differences.push({ type: 'mismatched_trigger', tableName, trigger });
+                    }
+                }
+            }
+            for (const trigger of current.tables[tableName].triggers) {
+                if (!triggers.some(t => t.Name === trigger.Name)) {
+                    logger('Extra trigger', trigger);
+                    differences.push({ type: 'extra_trigger', tableName, trigger });
+                }
+            }
+        } catch (e) {
+            logger(`Error verifying triggers for table ${tableName}`, e);
         }
 
         const createTableSql = current.tables[tableName].createSQL;
@@ -31,7 +58,6 @@ export const findDifferences = (expected, current) => {
             logger(createTableSql);
             logger(contents.createSQL);
         }
-        const { columns, indexes, triggers, createSQL, name, engine, charset, collate } = contents;
 
 
         const currentFieldNames = current.tables[tableName].columns.map(f => f.Field);
@@ -59,18 +85,23 @@ export const findDifferences = (expected, current) => {
         for (const field of columns) {
             const currentField = current.tables[tableName].columns.find(f => f.Field === field.Field);
             if (!currentField) {
-                console.error('Current field not found for', field.Field, 'in table', tableName);
+                logger('Current field not found for', field.Field, 'in table', tableName);
                 differences.push({ type: 'missing_field', tableName, field });
                 continue;
-            }
-            if (field.Type !== currentField.Type) {
-                differences.push({ type: 'mismatched_field', info: "Type", tableName, field, currentField });
             }
             if (field.Null !== currentField.Null) {
                 differences.push({ type: 'mismatched_field', info: "Null", tableName, field, currentField });
             }
             if (field.Default !== currentField.Default) {
                 differences.push({ type: 'mismatched_field', info: "Default", tableName, field, currentField });
+            }
+            if (field.Type !== currentField.Type) {
+                if (field.Type == 'int' && currentField.Type.startsWith('int(')) continue; // int(11) is the default for int and used on older versions of mysql
+                if (field.Type == 'smallint' && currentField.Type.startsWith('smallint(')) continue; // smallint(6) is the default for smallint and used on older versions of mysql
+                if (field.Type == 'tinyint' && currentField.Type.startsWith('tinyint(')) continue; // tinyint(1) is the default for tinyint and used on older versions of mysql
+                if (field.Type == 'varchar' && currentField.Type.startsWith('varchar(')) continue; // varchar(255) is the default for varchar and used on older versions of mysql
+                if (field.Type == 'bigint' && currentField.Type.startsWith('bigint(')) continue; // bigint(20) is the default for bigint and used on older versions of mysql
+                differences.push({ type: 'mismatched_field', info: "Type", tableName, field, currentField });
             }
         }
 
@@ -107,55 +138,36 @@ export const findDifferences = (expected, current) => {
             }
         }
 
-        //verify triggers
-        logger('Verifying triggers for table', tableName);
-        for (const trigger of triggers) {
-            const currentTrigger = current.tables[tableName].triggers.find(t => t.Name === trigger.Name);
-            if (!currentTrigger) {
-                logger('Missing trigger', trigger);
-                differences.push({ type: 'missing_trigger', tableName, trigger });
-            } else {
-                // Compare additional properties if needed
-                if (currentTrigger.Event !== trigger.Event || currentTrigger.Statement !== trigger.Statement) {
-                    logger('Mismatched trigger', { expected: trigger, current: currentTrigger });
-                    differences.push({ type: 'mismatched_trigger', tableName, trigger });
-                }
-            }
-        }
-        for (const trigger of current.tables[tableName].triggers) {
-            if (!triggers.some(t => t.Name === trigger.Name)) {
-                logger('Extra trigger', trigger);
-                differences.push({ type: 'extra_trigger', tableName, trigger });
-            }
-        }
+
     }
 
 
 
 
     // Compare stored procedures
-    if (!expected.procedures) throw new Error('No procedures found in expected');
-    for (const [position, contents] of Object.entries(expected.procedures)) {
-        let procName = contents.Name;
-        let currentProc = current.procedures.find(p => p.Name === procName);
-        if (!currentProc) {
-            console.log('missing_procedure', contents);
-            differences.push({ type: 'missing_procedure', ...contents });
-            continue;
-        }
+    if (!expected.procedures) {
+        console.log('No procedures found in expected');
+    } else {
+        for (const [position, contents] of Object.entries(expected.procedures)) {
+            let procName = contents.Name;
+            let currentProc = current.procedures.find(p => p.Name === procName);
+            if (!currentProc) {
+                console.log('missing_procedure', contents);
+                differences.push({ type: 'missing_procedure', ...contents });
+                continue;
+            }
 
 
-        // Check if the procedure definition matches
-        if (currentProc.Definition !== contents.Definition) {
-            const normalizedCurrentDef = normalizeSQLDefinition(currentProc.Definition);
-            const normalizedNewDef = normalizeSQLDefinition(contents.Definition);
+            // Check if the procedure definition matches
+            if (currentProc.Definition !== contents.Definition) {
+                const normalizedCurrentDef = normalizeSQLDefinition(currentProc.Definition);
+                const normalizedNewDef = normalizeSQLDefinition(contents.Definition);
 
-            if (normalizedCurrentDef !== normalizedNewDef) {
-                differences.push({ type: 'mismatched_procedure', ...contents });
+                if (normalizedCurrentDef !== normalizedNewDef) {
+                    differences.push({ type: 'mismatched_procedure', ...contents });
+                }
             }
         }
-
-
     }
 
     // Compare views
@@ -179,15 +191,15 @@ export const findDifferences = (expected, current) => {
                 if (!current.views[viewName]) {
                     differences.push({ type: 'missing_view', viewName, definition: expectedDefinition });
                 } else if (current.views[viewName] !== expectedDefinition) {
-                    differences.push({ 
-                        type: 'mismatched_view', 
-                        viewName, 
-                        definition: expectedDefinition, 
-                        current: current.views[viewName] 
+                    differences.push({
+                        type: 'mismatched_view',
+                        viewName,
+                        definition: expectedDefinition,
+                        current: current.views[viewName]
                     });
                 }
             }
-            
+
             // Check for extra views
             for (const viewName of Object.keys(current.views)) {
                 if (!expected.views[viewName]) {

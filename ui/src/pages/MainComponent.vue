@@ -43,9 +43,35 @@
         <!-- Database Structure Card -->
         <q-card v-if="Object.keys(existingDatabases).length > 0" class="q-mb-lg">
             <q-card-section class="bg-primary text-white">
-                <div class="text-h6">
-                    <q-icon name="account_tree" class="q-mr-sm" />
-                    Database Structure
+                <div class="row items-center justify-between">
+                    <div class="row items-center">
+                        <q-icon name="account_tree" class="q-mr-sm" />
+                        <div class="text-h6">Database Structure</div>
+                        <q-badge
+                            v-if="totalIssueCount > 0"
+                            color="negative"
+                            class="q-ml-sm"
+                        >
+                            {{ totalIssueCount }}
+                        </q-badge>
+                    </div>
+                    <q-btn
+                        v-if="totalIssueCount > 0"
+                        flat
+                        dense
+                        color="white"
+                        :loading="isFixingAll"
+                        @click="fixAllIssues"
+                        icon="build"
+                        class="q-ml-md"
+                    >
+                        <q-tooltip>Fix All Issues ({{ totalIssueCount }})</q-tooltip>
+                        <template v-slot:loading>
+                            <span class="row items-center">
+                                Fixing... ({{ currentFixProgress }}/{{ totalIssueCount }})
+                            </span>
+                        </template>
+                    </q-btn>
                 </div>
             </q-card-section>
 
@@ -428,7 +454,15 @@ export default {
             selectedNode: null,
             isNodeFixing: {}, // Tracks loading state for each node
             showFolderBrowser: false,
+            isFixingAll: false,
+            currentFixProgress: 0,
         }
+    },
+    computed: {
+        totalIssueCount() {
+            return Object.values(this.differences)
+                .reduce((total, dbIssues) => total + dbIssues.length, 0);
+        },
     },
     methods: {
         openSettings() {
@@ -1014,21 +1048,21 @@ export default {
                         const selectedDbName = this.getDbNameFromNode(node)
                         console.log('Selected DB Name:', selectedDbName)
                         let type = node.id.split('-')[1]
-                        const dbDifferences = this.differences[selectedDbName]
-                        console.log('DB Differences:', dbDifferences)
-                        if(type === 'tables'){
-                            console.log('Collecting table issues')
-                            console.log('DB Differences:', dbDifferences)
-                            issues.push(...dbDifferences.filter(diff => diff.type.includes('table') || diff.tableName))
-                        }else if(type === 'views'){
-                            console.log('Collecting view issues')
-                            issues.push(...dbDifferences.filter(diff => diff.type.includes('view')))
-                        }else if(type === 'procedures'){
-                            console.log('Collecting procedure issues')
-                            issues.push(...dbDifferences.filter(diff => diff.type.includes('procedure')))
-                        }else{
-                            console.error('Unknown type:', type)
-                        }
+                      const dbDifferences = this.differences[selectedDbName]
+                      console.log('DB Differences:', dbDifferences)
+                      if(type === 'tables'){
+                          console.log('Collecting table issues')
+                          console.log('DB Differences:', dbDifferences)
+                          issues.push(...dbDifferences.filter(diff => diff.type.includes('table') || diff.tableName))
+                      }else if(type === 'views'){
+                          console.log('Collecting view issues')
+                          issues.push(...dbDifferences.filter(diff => diff.type.includes('view')))
+                      }else if(type === 'procedures'){
+                          console.log('Collecting procedure issues')
+                          issues.push(...dbDifferences.filter(diff => diff.type.includes('procedure')))
+                      }else{
+                          console.error('Unknown type:', type)
+                      }
 
                     }
                     break
@@ -1059,6 +1093,109 @@ export default {
                 output: this.dbFolder,
             }
             localStorage.setItem('dbConfig', JSON.stringify(dbConfig));
+        },
+        async fixAllIssues() {
+            if (this.isFixingAll) return;
+
+            try {
+                this.isFixingAll = true;
+                this.currentFixProgress = 0;
+
+                let iterationCount = 0;
+
+                // Create the initial dialog
+                const dialog = this.$q.dialog({
+                    title: 'Fixing Database Issues',
+                    message: `<div class="text-h6">Iteration: 1/6</div>
+                             <div class="text-subtitle2">Remaining issues: ${this.totalIssueCount}</div>
+                             <div class="text-caption">Preparing...</div>`,
+                    html: true,
+                    progress: {
+                        spinner: true,
+                        color: 'primary'
+                    },
+                    persistent: true,
+                    ok: false
+                });
+
+                while (iterationCount < 6 && this.totalIssueCount > 0) {
+                    iterationCount++;
+
+                    // Update dialog for new iteration
+                    dialog.update({
+                        message: `<div class="text-h6">Iteration: ${iterationCount}/6</div>
+                                 <div class="text-subtitle2">Remaining issues: ${this.totalIssueCount}</div>
+                                 <div class="text-caption">Starting fixes...</div>`,
+                        html: true
+                    });
+
+                    // Fix issues for each database
+                    for (const dbName of Object.keys(this.differences)) {
+                        if (this.differences[dbName].length > 0) {
+                            const node = {
+                                id: `db-${dbName}`,
+                                type: 'database'
+                            };
+
+                            // Update progress before fixing
+                            dialog.update({
+                                message: `<div class="text-h6">Iteration: ${iterationCount}/6</div>
+                                         <div class="text-subtitle2">Remaining issues: ${this.totalIssueCount}</div>
+                                         <div class="text-caption q-mt-sm">Currently fixing: <span class="text-weight-bold">${dbName}</span></div>`,
+                                html: true
+                            });
+
+                            await this.fixNodeIssues(node);
+                        }
+                    }
+
+                    // Refresh differences after all databases are processed
+                    await this.fetchAllDifferences();
+
+                    // If all issues are fixed, show success
+                    if (this.totalIssueCount === 0) {
+                        await dialog.hide();
+                        this.$q.dialog({
+                            title: 'Success!',
+                            message: `<div class="text-h6 text-positive">All issues have been fixed!</div>
+                                     <div class="text-subtitle2">Completed in ${iterationCount} iterations</div>`,
+                            html: true,
+                            ok: true,
+                            persistent: false
+                        });
+                        break;
+                    }
+
+                }
+
+                // If we hit the iteration limit
+                if (iterationCount >= 6 && this.totalIssueCount > 0) {
+                    await dialog.hide();
+                    this.$q.dialog({
+                        title: 'Process Complete',
+                        message: `<div class="text-h6 text-warning">Maximum iterations reached</div>
+                                 <div class="text-subtitle2">${this.totalIssueCount} issues remaining</div>
+                                 <div class="text-caption">Completed all 6 iterations</div>`,
+                        html: true,
+                        ok: true,
+                        persistent: false
+                    });
+                }
+
+            } catch (error) {
+                console.error('Error fixing all issues:', error);
+                this.$q.dialog({
+                    title: 'Error',
+                    message: `<div class="text-negative">An error occurred while fixing issues</div>
+                             <div class="text-caption">${error.message}</div>`,
+                    html: true,
+                    ok: true,
+                    persistent: false
+                });
+            } finally {
+                this.isFixingAll = false;
+                this.currentFixProgress = 0;
+            }
         },
     },
     mounted() {

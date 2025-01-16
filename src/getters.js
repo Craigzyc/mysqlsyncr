@@ -111,7 +111,7 @@ export const getDatabaseStructure = async (connection, database, command, option
             }
 
         } else {
-            console.warn(`Trigger ${triggerName} has no action statement.`);
+            logger(`Trigger ${triggerName} has no action statement.`);
         }
     }
 

@@ -5,8 +5,9 @@ import util from 'util';
 import fs from 'fs';
 import path from 'path';
 import { cli } from './cli.js';
-import { dumpAllDatabases } from './dump.js';
+import { dumpAllDatabases, getDatabasesFromExistingDumps } from './dump.js';
 import { compareAllDatabases } from './compare.js';
+import { applyDifferences } from './apply.js';
 import { startApiServer } from './socketServer.js'; // Import the new socket server
 import open from 'open';
 import { fileURLToPath } from 'node:url';
@@ -45,16 +46,72 @@ class DBStructureChecker {
 
 }
 
-// Export the DBStructureChecker class
-export { DBStructureChecker, dumpAllDatabases, compareAllDatabases, startApiServer };
+const compare = async (config, output) => {
+    return new Promise(async (resolve, reject) => {
+        let checker
+        try {
+            checker = new DBStructureChecker(config);
+            checker.connection.on('connect', async () => {
+                const diffs = await compareAllDatabases(checker.connection, output, false, 'compare', { output: output });
+                resolve({ type: 'success', diffs });
+                await checker.closeConnection();
+            });
+        } catch (e) {
+            reject({ type: 'error', error: e.message });
+            await checker.closeConnection();
+        } 
+    });
+}
+
+const apply = async (config, database, diffs) => {
+    return new Promise((resolve, reject) => {
+        let checker;
+        try {
+            checker = new DBStructureChecker(config, database);
+
+            checker.connection.on('error', async (err) => {
+                console.error('Database connection error in route apply:', err);
+                reject({ type: 'error', error: err.message });
+                await checker.closeConnection();
+            });
+
+            checker.connection.on('connect', async () => {
+                console.log('Connected to the database');
+                checker.targetDatabase = database;
+                checker.command = 'apply';
+                checker.options = { config, database, diffs };
+                try {
+                    console.log('Applying the database structure based on JSON dumps');
+                    await applyDifferences(checker.connection, database, diffs);
+                    resolve({ type: 'success', message: 'Apply completed successfully' });
+                    await checker.closeConnection();
+                } catch (err) {
+                    reject({ type: 'error', error: err.message });
+                    await checker.closeConnection();
+                }
+            });
+        } catch (e) {
+            reject({ type: 'error', error: e.message });
+        }
+    });
+}
+
+export { DBStructureChecker, dumpAllDatabases, compare, startApiServer, apply, getDatabasesFromExistingDumps };
 
 // Only run this if this is the main module
-const isMain = fileURLToPath(import.meta.url) === path.resolve(process.argv[1]);
+const isMain = (() => {
+    try {
+        // console.log('Checking if this is the main module');
+        // console.log(require.main === module)
+        // console.log(require.main);
+        return require.main === module;
+    } catch (e) {
+        return false;
+    }
+})();
 
 if (isMain) {
     (async () => {
-        console.log(`meta: ${import.meta.url}`)
-        console.log(`argv: ${process.argv[1]}`)
         const { command, config, argv } = cli();
         console.log("MySQLsyncr started via command line")
         if (command === 'ui') {
@@ -62,7 +119,7 @@ if (isMain) {
             startApiServer(PORT, argv); // Start the Socket.IO server
             console.log('Server started on port', PORT);
             console.log('Open http://localhost:' + PORT + ' in your browser to use the UI');
-            if(argv.openUI && argv.openUI === true || argv.openUI === 'true'){
+            if (argv.openUI && argv.openUI === true || argv.openUI === 'true') {
                 await open(`http://localhost:${PORT}`);
             }
         } else {
@@ -96,7 +153,7 @@ if (isMain) {
                             totalDiffs = Object.values(diffs).reduce((acc, arr) => acc + arr.length, 0);
                             console.log('Total differences count:', totalDiffs);
                             runCount++;
-                            if(totalDiffs > 0 && runCount < maxRuns){
+                            if (totalDiffs > 0 && runCount < maxRuns) {
                                 console.log('Total differences count is still greater than 0. Waiting 1 second before next run. Run count:', runCount);
                                 await new Promise(resolve => setTimeout(resolve, 1000));
                             }

@@ -5,10 +5,14 @@ import { compareAllDatabases } from './compare.js';
 import { DBStructureChecker } from './index.js'; // Import your DBStructureChecker class
 import { applyDifferences } from './apply.js';
 import cors from 'cors';
-import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
+import { join } from 'path';
 import { readdir, mkdir } from 'fs/promises';
 import { resolve } from 'path';
+import { fileURLToPath } from 'url';
+import { dirname } from 'path';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 const setConfig = (config, argv) => {
     if(!config.host && argv.host){
@@ -29,6 +33,22 @@ const setConfig = (config, argv) => {
     return config;
 }
 
+// Create a function to get the package root directory that works in both ESM and CJS
+const getPackageRoot = () => {
+    if (typeof __dirname !== 'undefined') {
+        // CommonJS
+        return join(__dirname, '..');
+    } else {
+        // ESM
+        const __filename = fileURLToPath(import.meta.url);
+        const __dirname = dirname(__filename);
+        return join(__dirname, '..');
+    }
+};
+
+// Use the function to get the root path
+const packageRoot = getPackageRoot();
+
 export const startApiServer = (port, argv) => {
     const app = express();
     app.use(cors({ origin: '*' }));
@@ -36,9 +56,8 @@ export const startApiServer = (port, argv) => {
     app.use(express.json({ limit: '50mb' })); 
     app.use(express.urlencoded({ limit: '50mb', extended: true })); 
 
-    const __filename = fileURLToPath(import.meta.url);
-    const __dirname = dirname(__filename);
-    app.use(express.static(join(__dirname, '../ui/dist/spa')));
+    console.log(`Serving UI from ${join(packageRoot, 'ui/dist/spa')}`);
+    app.use(express.static(join(packageRoot, 'ui/dist/spa')));
 
     app.post('/api/getDatabasesFromExistingDumps', async (req, res) => {
         let { config } = req.body;
@@ -138,12 +157,12 @@ export const startApiServer = (port, argv) => {
 
     app.post('/api/browse-folders', async (req, res) => {
         try {
-            const { currentPath = process.cwd() } = req.body;
+            const { currentPath = packageRoot } = req.body;
             console.log('Browsing folder:', currentPath);
 
             const resolvedPath = currentPath.startsWith('/') || currentPath.match(/^[A-Z]:\\/)
                 ? resolve(currentPath)
-                : resolve(process.cwd(), currentPath);
+                : resolve(currentPath);
 
             console.log('Resolved path:', resolvedPath);
 
@@ -191,7 +210,7 @@ export const startApiServer = (port, argv) => {
 
             const resolvedPath = folderPath.startsWith('/') || folderPath.match(/^[A-Z]:\\/)
                 ? resolve(folderPath)
-                : resolve(process.cwd(), folderPath);
+                : resolve(packageRoot, folderPath);
 
             await mkdir(resolvedPath, { recursive: true });
 

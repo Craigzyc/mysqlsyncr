@@ -1,10 +1,10 @@
-import { createRequire } from 'module';
 import fs from 'fs/promises';
 import path from 'path';
 import { getDatabases, getDatabaseStructure } from './getters.js';
+import { logger } from './loggers.js';
 
-const require = createRequire(import.meta.url);
-const { version } = require('../package.json');
+// const require = createRequire(import.meta.url);
+// const { version } = require('../package.json');
 
 export const dumpAllDatabases = async (connection, command, options) => {
     let response = {}
@@ -21,16 +21,16 @@ export const dumpAllDatabases = async (connection, command, options) => {
         response[database] = dbStructure;
     }
 
-    await fs.writeFile(path.join(options.output, 'dumpInfo.json'), JSON.stringify({timestamp: new Date().toISOString(), version: version}, null, 4), 'utf-8');
+    await fs.writeFile(path.join(options.output, 'dumpInfo.json'), JSON.stringify({timestamp: new Date().toISOString()}, null, 4), 'utf-8');
     return response;
 }
 
 export const getDatabasesFromExistingDumps = async (options) => {
-    console.log('Getting databases from existing dumps in ', options.output);
+    logger('Getting databases from existing dumps in ', options.output);
     //check if the folder exists
     let exists = await fs.stat(options.output).catch(() => false);
     if (!exists) {
-        console.log('Folder does not exist');
+        logger('Folder does not exist');
         return {};
     }   
     //read directory above to get the dbs. each db is in a named folder with a matching .json. 
@@ -40,7 +40,7 @@ export const getDatabasesFromExistingDumps = async (options) => {
     const databases = await fs.readdir(path.join(options.output));
     for (const database of databases) {
         if(database.includes('diffs') || database.includes('dumpInfo')){
-            console.log('Skipping diffs folder')
+            logger('Skipping diffs folder')
             continue
         }
         let dbStructure = await fs.readFile(path.join(options.output, database, `${database}.json`), 'utf8');

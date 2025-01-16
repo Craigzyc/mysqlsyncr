@@ -23,7 +23,6 @@ yarn.lock
 
 # Quasar / Vue
 .quasar
-/dist
 /.quasar
 /ui/.quasar
 .thumbs.db
