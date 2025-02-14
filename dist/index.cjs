@@ -3599,7 +3599,7 @@ var applyDifferences = /*#__PURE__*/function () {
           _iterator = _createForOfIteratorHelper(differences);
           _context2.prev = 2;
           _loop = /*#__PURE__*/_regeneratorRuntime().mark(function _loop() {
-            var diff, createDatabaseSQL, tableName, createSQL, _tableName, dropTableSQL, addFieldSQL, modifyFieldSQL, defaultClause, _modifyFieldSQL, dropFieldSQL, _tableName2, field, isTimestamp, _defaultClause, currentField, hasOnUpdate, _dropFieldSQL, existingColumns, columnNames, missingColumns, indexColumns, primaryKeySQL, uniqueSQL, addIndexSQL, dropPrimaryKeySQL, dropIndexSQL, _tableName3, index, _dropPrimaryKeySQL, _dropIndexSQL, _uniqueSQL, addPrimaryKeySQL, _addIndexSQL, dropCurrentProcSQL, createProcSQL, dropViewSQL, createViewSQL, _dropViewSQL, _createViewSQL, _dropViewSQL2, createTriggerSQL, dropTriggerSQL, _createTriggerSQL, _dropTriggerSQL, _createDatabaseSQL;
+            var diff, createDatabaseSQL, tableName, createSQL, _tableName, dropTableSQL, addFieldSQL, modifyFieldSQL, defaultClause, _modifyFieldSQL, dropFieldSQL, _tableName2, field, currentField, isTimestamp, _defaultClause, hasOnUpdate, _modifyFieldSQL2, existingColumns, columnNames, missingColumns, indexColumns, primaryKeySQL, uniqueSQL, addIndexSQL, dropPrimaryKeySQL, dropIndexSQL, _tableName3, index, _dropPrimaryKeySQL, _dropIndexSQL, _uniqueSQL, addPrimaryKeySQL, _addIndexSQL, dropCurrentProcSQL, createProcSQL, dropViewSQL, createViewSQL, _dropViewSQL, _createViewSQL, _dropViewSQL2, createTriggerSQL, dropTriggerSQL, _createTriggerSQL, _dropTriggerSQL, _createDatabaseSQL;
             return _regeneratorRuntime().wrap(function _loop$(_context) {
               while (1) switch (_context.prev = _context.next) {
                 case 0:
@@ -3629,7 +3629,7 @@ var applyDifferences = /*#__PURE__*/function () {
                   _context.next = 16;
                   return connection.query(createSQL);
                 case 16:
-                  _context.next = 213;
+                  _context.next = 212;
                   break;
                 case 18:
                   if (!(diff.type === 'extra_table')) {
@@ -3643,7 +3643,7 @@ var applyDifferences = /*#__PURE__*/function () {
                   _context.next = 25;
                   return connection.query(dropTableSQL);
                 case 25:
-                  _context.next = 213;
+                  _context.next = 212;
                   break;
                 case 27:
                   if (!(diff.type === 'missing_field')) {
@@ -3675,7 +3675,7 @@ var applyDifferences = /*#__PURE__*/function () {
                   _context.next = 43;
                   return connection.query(_modifyFieldSQL);
                 case 43:
-                  _context.next = 213;
+                  _context.next = 212;
                   break;
                 case 45:
                   if (!(diff.type === 'extra_field')) {
@@ -3687,33 +3687,112 @@ var applyDifferences = /*#__PURE__*/function () {
                   _context.next = 50;
                   return connection.query(dropFieldSQL);
                 case 50:
-                  _context.next = 213;
+                  _context.next = 212;
                   break;
                 case 52:
                   if (!(diff.type === 'mismatched_field')) {
-                    _context.next = 64;
+                    _context.next = 63;
                     break;
                   }
-                  _tableName2 = diff.tableName, field = diff.field;
+                  _tableName2 = diff.tableName, field = diff.field, currentField = diff.currentField; // use alter table rather than adding fields
+                  // // Helper function to determine if we need batch processing
+                  // const needsBatchProcessing = () => {
+                  //     const currentType = currentField.Type.toLowerCase();
+                  //     const newType = field.Type.toLowerCase();
+                  //     // Decimal changes
+                  //     if (currentType.includes('decimal') && newType.includes('decimal')) {
+                  //         return true;
+                  //     }
+                  //     // VARCHAR/CHAR length reductions
+                  //     if ((currentType.includes('varchar') || currentType.includes('char')) &&
+                  //         (newType.includes('varchar') || newType.includes('char'))) {
+                  //         const currentLength = parseInt(currentType.match(/\((\d+)\)/)?.[1] || '0');
+                  //         const newLength = parseInt(newType.match(/\((\d+)\)/)?.[1] || '0');
+                  //         return newLength < currentLength;
+                  //     }
+                  //     // TEXT to VARCHAR conversions
+                  //     if (currentType.includes('text') && newType.includes('varchar')) {
+                  //         return true;
+                  //     }
+                  //     // Numeric type downgrades
+                  //     const numericDowngrades = {
+                  //         'bigint': ['int', 'mediumint', 'smallint', 'tinyint'],
+                  //         'int': ['mediumint', 'smallint', 'tinyint'],
+                  //         'mediumint': ['smallint', 'tinyint'],
+                  //         'smallint': ['tinyint'],
+                  //         'double': ['float', 'decimal'],
+                  //         'float': ['decimal']
+                  //     };
+                  //     for (const [larger, smaller] of Object.entries(numericDowngrades)) {
+                  //         if (currentType.includes(larger) && smaller.some(t => newType.includes(t))) {
+                  //             return true;
+                  //         }
+                  //     }
+                  //     return false;
+                  // };
+                  // if (needsBatchProcessing()) {
+                  //     // Step 1: Add new column
+                  //     const addColumnSQL = `ALTER TABLE \`${tableName}\` ADD COLUMN \`${field.Field}_new\` ${field.Type} DEFAULT NULL;`;
+                  //     console.log(`Adding new column for type conversion: ${addColumnSQL}`);
+                  //     await connection.query(addColumnSQL);
+                  //     // Step 2: Copy data in batches
+                  //     let totalUpdated = 0;
+                  //     let batchSize = 10000;
+                  //     let batchCount = 0;
+                  //     while (true) {
+                  //         const updateSQL = `
+                  //             UPDATE \`${tableName}\` 
+                  //             SET \`${field.Field}_new\` = \`${field.Field}\`
+                  //             WHERE \`${field.Field}_new\` IS NULL 
+                  //             AND \`${field.Field}\` IS NOT NULL
+                  //             LIMIT ${batchSize};
+                  //         `;
+                  //         const result = await connection.query(updateSQL);
+                  //         const rowsAffected = result.affectedRows;
+                  //         if (rowsAffected === 0) break;
+                  //         totalUpdated += rowsAffected;
+                  //         batchCount++;
+                  //         console.log(`Batch ${batchCount}: Converted ${rowsAffected} rows. Total converted: ${totalUpdated}`);
+                  //     }
+                  //     // Step 3: Verify data (optional)
+                  //     const verifySQL = `
+                  //         SELECT COUNT(*) as mismatch FROM \`${tableName}\`
+                  //         WHERE \`${field.Field}\` IS NOT NULL 
+                  //         AND \`${field.Field}_new\` IS NULL;
+                  //     `;
+                  //     const [verifyResult] = await connection.query(verifySQL);
+                  //     if (verifyResult.mismatch > 0) {
+                  //         console.log(`Warning: ${verifyResult.mismatch} rows may have failed conversion`);
+                  //     }
+                  //     // Step 4: Swap columns
+                  //     const swapColumnsSQL = `
+                  //         ALTER TABLE \`${tableName}\`
+                  //         DROP COLUMN \`${field.Field}\`,
+                  //         RENAME COLUMN \`${field.Field}_new\` TO \`${field.Field}\`
+                  //     `;
+                  //     console.log(`Executing: ${swapColumnsSQL}`);
+                  //     await connection.query(swapColumnsSQL);
+                  //     console.log(`Completed type conversion for ${field.Field}. Total rows converted: ${totalUpdated}`);
+                  // } else {
+                  // Original mismatched field handling for simple changes
                   isTimestamp = field.Type.toLowerCase().includes('timestamp'); // Handle timestamp specific attributes
                   _defaultClause = field.Default === 'CURRENT_TIMESTAMP' ? 'DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP' : field.Default === 'NULL' ? isTimestamp ? 'NULL DEFAULT NULL' : 'DEFAULT NULL' : field.Default !== undefined && field.Default !== null ? "DEFAULT '".concat(field.Default, "'") : isTimestamp ? 'NULL DEFAULT NULL' : 'DEFAULT NULL'; // Remove ON UPDATE CURRENT_TIMESTAMP if we're changing away from CURRENT_TIMESTAMP
-                  currentField = diff.currentField;
                   hasOnUpdate = (currentField === null || currentField === undefined ? undefined : currentField.Default) === 'CURRENT_TIMESTAMP' && field.Default !== 'CURRENT_TIMESTAMP';
-                  _dropFieldSQL = "ALTER TABLE `".concat(_tableName2, "` CHANGE `").concat(field.Field, "` `").concat(field.Field, "` ").concat(field.Type, " ").concat(field.NotNull ? 'NOT NULL' : '', " ").concat(_defaultClause).concat(hasOnUpdate ? ' ON UPDATE CURRENT_TIMESTAMP' : '', ";");
-                  logger("Executing: ".concat(_dropFieldSQL));
-                  _context.next = 62;
-                  return connection.query(_dropFieldSQL);
-                case 62:
-                  _context.next = 213;
+                  _modifyFieldSQL2 = "ALTER TABLE `".concat(_tableName2, "` CHANGE `").concat(field.Field, "` `").concat(field.Field, "` ").concat(field.Type, " ").concat(field.NotNull ? 'NOT NULL' : '', " ").concat(_defaultClause).concat(hasOnUpdate ? ' ON UPDATE CURRENT_TIMESTAMP' : '', ";");
+                  console.log("Executing: ".concat(_modifyFieldSQL2));
+                  _context.next = 61;
+                  return connection.query(_modifyFieldSQL2);
+                case 61:
+                  _context.next = 212;
                   break;
-                case 64:
+                case 63:
                   if (!(diff.type === 'missing_index')) {
-                    _context.next = 96;
+                    _context.next = 95;
                     break;
                   }
-                  _context.next = 67;
+                  _context.next = 66;
                   return connection.query("SHOW COLUMNS FROM `".concat(diff.tableName, "`"));
-                case 67:
+                case 66:
                   existingColumns = _context.sent;
                   columnNames = existingColumns.map(function (col) {
                     return col.Field;
@@ -3722,260 +3801,260 @@ var applyDifferences = /*#__PURE__*/function () {
                     return !columnNames.includes(col);
                   }) : [];
                   if (!(missingColumns.length > 0)) {
-                    _context.next = 73;
+                    _context.next = 72;
                     break;
                   }
                   logger("Cannot create index ".concat(diff.index.Name, " on ").concat(diff.tableName, ". Missing columns: ").concat(missingColumns.join(', ')));
                   return _context.abrupt("return", 0);
-                case 73:
+                case 72:
                   // Prepare the index columns with proper formatting
                   indexColumns = diff.index.ColumnName.map(function (col) {
                     return "`".concat(col, "`");
                   }); // Format column names
                   // Handle PRIMARY index creation
                   if (!(diff.index.Name === 'PRIMARY')) {
-                    _context.next = 85;
+                    _context.next = 84;
                     break;
                   }
                   if (!(indexColumns.length > 0)) {
-                    _context.next = 82;
+                    _context.next = 81;
                     break;
                   }
                   primaryKeySQL = "ALTER TABLE `".concat(diff.tableName, "` ADD PRIMARY KEY (").concat(indexColumns.join(', '), ");");
                   console.log("Executing: ".concat(primaryKeySQL));
-                  _context.next = 80;
+                  _context.next = 79;
                   return connection.query(primaryKeySQL);
-                case 80:
-                  _context.next = 83;
+                case 79:
+                  _context.next = 82;
                   break;
-                case 82:
+                case 81:
                   logger("Cannot create PRIMARY index on ".concat(diff.tableName, ". ColumnName is undefined or empty."), diff.index);
-                case 83:
-                  _context.next = 94;
+                case 82:
+                  _context.next = 93;
                   break;
-                case 85:
+                case 84:
                   // Create the new index with UNIQUE if applicable
                   uniqueSQL = diff.index.Unique ? 'UNIQUE ' : ''; // Check if the index is unique
                   if (!(indexColumns.length > 0)) {
-                    _context.next = 93;
+                    _context.next = 92;
                     break;
                   }
                   addIndexSQL = "ALTER TABLE `".concat(diff.tableName, "` ADD ").concat(uniqueSQL, "INDEX `").concat(diff.index.Name, "` (").concat(indexColumns.join(', '), ");");
                   console.log("Executing: ".concat(addIndexSQL));
-                  _context.next = 91;
+                  _context.next = 90;
                   return connection.query(addIndexSQL);
-                case 91:
-                  _context.next = 94;
+                case 90:
+                  _context.next = 93;
                   break;
-                case 93:
+                case 92:
                   logger("Cannot create index ".concat(diff.index.Name, " on ").concat(diff.tableName, ". ColumnName is undefined or empty."), diff.index);
-                case 94:
-                  _context.next = 213;
+                case 93:
+                  _context.next = 212;
                   break;
-                case 96:
+                case 95:
                   if (!(diff.type === 'extra_index')) {
-                    _context.next = 110;
+                    _context.next = 109;
                     break;
                   }
                   if (!(diff.index.Name === 'PRIMARY')) {
-                    _context.next = 104;
+                    _context.next = 103;
                     break;
                   }
                   dropPrimaryKeySQL = "ALTER TABLE `".concat(diff.tableName, "` DROP PRIMARY KEY;");
                   console.log("Executing: ".concat(dropPrimaryKeySQL));
-                  _context.next = 102;
+                  _context.next = 101;
                   return connection.query(dropPrimaryKeySQL);
-                case 102:
-                  _context.next = 108;
+                case 101:
+                  _context.next = 107;
                   break;
-                case 104:
+                case 103:
                   dropIndexSQL = "DROP INDEX `".concat(diff.index.Name, "` ON `").concat(diff.tableName, "`;");
                   console.log("Executing: ".concat(dropIndexSQL));
-                  _context.next = 108;
+                  _context.next = 107;
                   return connection.query(dropIndexSQL);
-                case 108:
-                  _context.next = 213;
+                case 107:
+                  _context.next = 212;
                   break;
-                case 110:
+                case 109:
                   if (!(diff.type === 'mismatched_index')) {
-                    _context.next = 138;
+                    _context.next = 137;
                     break;
                   }
                   _tableName3 = diff.tableName, index = diff.index; // Drop the existing index
                   if (!(index.Name === 'PRIMARY')) {
-                    _context.next = 119;
+                    _context.next = 118;
                     break;
                   }
                   _dropPrimaryKeySQL = "ALTER TABLE `".concat(_tableName3, "` DROP PRIMARY KEY;");
                   console.log("Executing: ".concat(_dropPrimaryKeySQL));
-                  _context.next = 117;
+                  _context.next = 116;
                   return connection.query(_dropPrimaryKeySQL);
-                case 117:
-                  _context.next = 123;
+                case 116:
+                  _context.next = 122;
                   break;
-                case 119:
+                case 118:
                   _dropIndexSQL = "DROP INDEX `".concat(index.Name, "` ON `").concat(_tableName3, "`;");
                   console.log("Executing: ".concat(_dropIndexSQL));
-                  _context.next = 123;
+                  _context.next = 122;
                   return connection.query(_dropIndexSQL);
-                case 123:
+                case 122:
                   console.log('index', index);
 
                   // Create the new index
                   _uniqueSQL = index.Unique ? 'UNIQUE ' : ''; // Check if the index is unique
                   if (!(index.Name === 'PRIMARY')) {
-                    _context.next = 132;
+                    _context.next = 131;
                     break;
                   }
                   addPrimaryKeySQL = "ALTER TABLE `".concat(_tableName3, "` ADD PRIMARY KEY (").concat(index.ColumnName.join(', '), ");");
                   console.log("Executing: ".concat(addPrimaryKeySQL));
-                  _context.next = 130;
+                  _context.next = 129;
                   return connection.query(addPrimaryKeySQL);
-                case 130:
-                  _context.next = 136;
+                case 129:
+                  _context.next = 135;
                   break;
-                case 132:
+                case 131:
                   _addIndexSQL = "ALTER TABLE `".concat(_tableName3, "` ADD ").concat(_uniqueSQL, "INDEX `").concat(index.Name, "` (").concat(index.ColumnName.join(', '), ");"); // Include UNIQUE if applicable
                   console.log("Executing: ".concat(_addIndexSQL));
-                  _context.next = 136;
+                  _context.next = 135;
                   return connection.query(_addIndexSQL);
-                case 136:
-                  _context.next = 213;
+                case 135:
+                  _context.next = 212;
                   break;
-                case 138:
+                case 137:
                   if (!(diff.type === 'missing_procedure' || diff.type === 'mismatched_procedure')) {
-                    _context.next = 149;
+                    _context.next = 148;
                     break;
                   }
                   // Drop the procedure if it exists
                   dropCurrentProcSQL = "DROP PROCEDURE IF EXISTS `".concat(diff.Name, "`;");
                   console.log("Executing: ".concat(dropCurrentProcSQL));
-                  _context.next = 143;
+                  _context.next = 142;
                   return connection.query(dropCurrentProcSQL);
-                case 143:
+                case 142:
                   // Create the procedure
                   createProcSQL = diff.Definition;
                   console.log("Executing: ".concat(createProcSQL)); // Log the SQL statement
-                  _context.next = 147;
+                  _context.next = 146;
                   return connection.query(createProcSQL);
-                case 147:
-                  _context.next = 213;
+                case 146:
+                  _context.next = 212;
                   break;
-                case 149:
+                case 148:
                   if (!(diff.type === 'missing_view')) {
-                    _context.next = 160;
+                    _context.next = 159;
                     break;
                   }
                   dropViewSQL = "DROP VIEW IF EXISTS `".concat(diff.viewName, "`;");
                   console.log("Executing: ".concat(dropViewSQL));
-                  _context.next = 154;
+                  _context.next = 153;
                   return connection.query(dropViewSQL);
-                case 154:
+                case 153:
                   createViewSQL = diff.definition; // Use the expected definition to create the view
                   console.log("Executing: ".concat(createViewSQL));
-                  _context.next = 158;
+                  _context.next = 157;
                   return connection.query(createViewSQL);
-                case 158:
-                  _context.next = 213;
+                case 157:
+                  _context.next = 212;
                   break;
-                case 160:
+                case 159:
                   if (!(diff.type === 'mismatched_view')) {
-                    _context.next = 171;
+                    _context.next = 170;
                     break;
                   }
                   _dropViewSQL = "DROP VIEW IF EXISTS `".concat(diff.viewName, "`;");
                   console.log("Executing: ".concat(_dropViewSQL));
-                  _context.next = 165;
+                  _context.next = 164;
                   return connection.query(_dropViewSQL);
-                case 165:
+                case 164:
                   _createViewSQL = diff.definition; // Use the expected definition to create the view
                   console.log("Executing: ".concat(_createViewSQL));
-                  _context.next = 169;
+                  _context.next = 168;
                   return connection.query(_createViewSQL);
-                case 169:
-                  _context.next = 213;
+                case 168:
+                  _context.next = 212;
                   break;
-                case 171:
+                case 170:
                   if (!(diff.type === 'extra_view')) {
-                    _context.next = 178;
+                    _context.next = 177;
                     break;
                   }
                   _dropViewSQL2 = "DROP VIEW IF EXISTS `".concat(diff.viewName, "`;");
                   console.log("Executing: ".concat(_dropViewSQL2));
-                  _context.next = 176;
+                  _context.next = 175;
                   return connection.query(_dropViewSQL2);
-                case 176:
-                  _context.next = 213;
+                case 175:
+                  _context.next = 212;
                   break;
-                case 178:
+                case 177:
                   if (!(diff.type === 'missing_trigger')) {
-                    _context.next = 186;
+                    _context.next = 185;
                     break;
                   }
                   createTriggerSQL = diff.trigger.Definition;
                   logger('fixing trigger', diff.trigger.Name);
                   console.log("Executing: ".concat(createTriggerSQL));
-                  _context.next = 184;
+                  _context.next = 183;
                   return connection.query(createTriggerSQL);
-                case 184:
-                  _context.next = 213;
+                case 183:
+                  _context.next = 212;
                   break;
-                case 186:
+                case 185:
                   if (!(diff.type === 'mismatched_trigger')) {
-                    _context.next = 197;
+                    _context.next = 196;
                     break;
                   }
                   dropTriggerSQL = "DROP TRIGGER IF EXISTS `".concat(diff.trigger.Name, "`;");
                   console.log("Executing: ".concat(dropTriggerSQL));
-                  _context.next = 191;
+                  _context.next = 190;
                   return connection.query(dropTriggerSQL);
-                case 191:
+                case 190:
                   _createTriggerSQL = diff.trigger.Definition;
                   console.log("Executing: ".concat(_createTriggerSQL));
-                  _context.next = 195;
+                  _context.next = 194;
                   return connection.query(_createTriggerSQL);
-                case 195:
-                  _context.next = 213;
+                case 194:
+                  _context.next = 212;
                   break;
-                case 197:
+                case 196:
                   if (!(diff.type === 'extra_trigger')) {
-                    _context.next = 204;
+                    _context.next = 203;
                     break;
                   }
                   _dropTriggerSQL = "DROP TRIGGER IF EXISTS `".concat(diff.trigger.Name, "`;");
                   console.log("Executing: ".concat(_dropTriggerSQL));
-                  _context.next = 202;
+                  _context.next = 201;
                   return connection.query(_dropTriggerSQL);
-                case 202:
-                  _context.next = 213;
+                case 201:
+                  _context.next = 212;
                   break;
-                case 204:
+                case 203:
                   if (!(diff.type === 'missing_database')) {
-                    _context.next = 212;
+                    _context.next = 211;
                     break;
                   }
                   logger('fixing missing database', diff.database);
                   _createDatabaseSQL = "CREATE DATABASE `".concat(diff.database, "`;");
                   console.log("Executing: ".concat(_createDatabaseSQL));
-                  _context.next = 210;
+                  _context.next = 209;
                   return connection.query(_createDatabaseSQL);
-                case 210:
-                  _context.next = 213;
+                case 209:
+                  _context.next = 212;
                   break;
-                case 212:
+                case 211:
                   logger("Error applying difference of type:".concat(diff.type), diff);
-                case 213:
-                  _context.next = 218;
+                case 212:
+                  _context.next = 217;
                   break;
-                case 215:
-                  _context.prev = 215;
+                case 214:
+                  _context.prev = 214;
                   _context.t0 = _context["catch"](1);
                   logger("Error applying difference of type:".concat(diff.type, ". Error: ").concat(_context.t0.message), diff);
-                case 218:
+                case 217:
                 case "end":
                   return _context.stop();
               }
-            }, _loop, null, [[1, 215]]);
+            }, _loop, null, [[1, 214]]);
           });
           _iterator.s();
         case 5:

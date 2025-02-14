@@ -82,27 +82,123 @@ export const applyDifferences = async (connection, database, differences) => {
                 await connection.query(dropFieldSQL);
 
             } else if (diff.type === 'mismatched_field') {
-                const { tableName, field } = diff;
-                const isTimestamp = field.Type.toLowerCase().includes('timestamp');
+                const { tableName, field, currentField } = diff;
+
+                // use alter table rather than adding fields
                 
-                // Handle timestamp specific attributes
-                const defaultClause = field.Default === 'CURRENT_TIMESTAMP' 
-                    ? 'DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP'
-                    : field.Default === 'NULL'
-                        ? isTimestamp ? 'NULL DEFAULT NULL' : 'DEFAULT NULL'
-                        : field.Default !== undefined && field.Default !== null 
-                            ? `DEFAULT '${field.Default}'` 
-                            : isTimestamp ? 'NULL DEFAULT NULL' : 'DEFAULT NULL';
-                
-                // Remove ON UPDATE CURRENT_TIMESTAMP if we're changing away from CURRENT_TIMESTAMP
-                const currentField = diff.currentField;
-                const hasOnUpdate = currentField?.Default === 'CURRENT_TIMESTAMP' && 
-                    field.Default !== 'CURRENT_TIMESTAMP';
-                
-                const modifyFieldSQL = `ALTER TABLE \`${tableName}\` CHANGE \`${field.Field}\` \`${field.Field}\` ${field.Type} ${field.NotNull ? 'NOT NULL' : ''} ${defaultClause}${hasOnUpdate ? ' ON UPDATE CURRENT_TIMESTAMP' : ''};`;
-                console.log(`Executing: ${modifyFieldSQL}`);
-                await connection.query(modifyFieldSQL);
-                
+                // // Helper function to determine if we need batch processing
+                // const needsBatchProcessing = () => {
+                //     const currentType = currentField.Type.toLowerCase();
+                //     const newType = field.Type.toLowerCase();
+                    
+                //     // Decimal changes
+                //     if (currentType.includes('decimal') && newType.includes('decimal')) {
+                //         return true;
+                //     }
+                    
+                //     // VARCHAR/CHAR length reductions
+                //     if ((currentType.includes('varchar') || currentType.includes('char')) &&
+                //         (newType.includes('varchar') || newType.includes('char'))) {
+                //         const currentLength = parseInt(currentType.match(/\((\d+)\)/)?.[1] || '0');
+                //         const newLength = parseInt(newType.match(/\((\d+)\)/)?.[1] || '0');
+                //         return newLength < currentLength;
+                //     }
+                    
+                //     // TEXT to VARCHAR conversions
+                //     if (currentType.includes('text') && newType.includes('varchar')) {
+                //         return true;
+                //     }
+                    
+                //     // Numeric type downgrades
+                //     const numericDowngrades = {
+                //         'bigint': ['int', 'mediumint', 'smallint', 'tinyint'],
+                //         'int': ['mediumint', 'smallint', 'tinyint'],
+                //         'mediumint': ['smallint', 'tinyint'],
+                //         'smallint': ['tinyint'],
+                //         'double': ['float', 'decimal'],
+                //         'float': ['decimal']
+                //     };
+                    
+                //     for (const [larger, smaller] of Object.entries(numericDowngrades)) {
+                //         if (currentType.includes(larger) && smaller.some(t => newType.includes(t))) {
+                //             return true;
+                //         }
+                //     }
+                    
+                //     return false;
+                // };
+
+                // if (needsBatchProcessing()) {
+                //     // Step 1: Add new column
+                //     const addColumnSQL = `ALTER TABLE \`${tableName}\` ADD COLUMN \`${field.Field}_new\` ${field.Type} DEFAULT NULL;`;
+                //     console.log(`Adding new column for type conversion: ${addColumnSQL}`);
+                //     await connection.query(addColumnSQL);
+
+                //     // Step 2: Copy data in batches
+                //     let totalUpdated = 0;
+                //     let batchSize = 10000;
+                //     let batchCount = 0;
+                    
+                //     while (true) {
+                //         const updateSQL = `
+                //             UPDATE \`${tableName}\` 
+                //             SET \`${field.Field}_new\` = \`${field.Field}\`
+                //             WHERE \`${field.Field}_new\` IS NULL 
+                //             AND \`${field.Field}\` IS NOT NULL
+                //             LIMIT ${batchSize};
+                //         `;
+                //         const result = await connection.query(updateSQL);
+                //         const rowsAffected = result.affectedRows;
+                        
+                //         if (rowsAffected === 0) break;
+                        
+                //         totalUpdated += rowsAffected;
+                //         batchCount++;
+                //         console.log(`Batch ${batchCount}: Converted ${rowsAffected} rows. Total converted: ${totalUpdated}`);
+                //     }
+
+                //     // Step 3: Verify data (optional)
+                //     const verifySQL = `
+                //         SELECT COUNT(*) as mismatch FROM \`${tableName}\`
+                //         WHERE \`${field.Field}\` IS NOT NULL 
+                //         AND \`${field.Field}_new\` IS NULL;
+                //     `;
+                //     const [verifyResult] = await connection.query(verifySQL);
+                //     if (verifyResult.mismatch > 0) {
+                //         console.log(`Warning: ${verifyResult.mismatch} rows may have failed conversion`);
+                //     }
+
+                //     // Step 4: Swap columns
+                //     const swapColumnsSQL = `
+                //         ALTER TABLE \`${tableName}\`
+                //         DROP COLUMN \`${field.Field}\`,
+                //         RENAME COLUMN \`${field.Field}_new\` TO \`${field.Field}\`
+                //     `;
+                //     console.log(`Executing: ${swapColumnsSQL}`);
+                //     await connection.query(swapColumnsSQL);
+                    
+                //     console.log(`Completed type conversion for ${field.Field}. Total rows converted: ${totalUpdated}`);
+                // } else {
+                    // Original mismatched field handling for simple changes
+                    const isTimestamp = field.Type.toLowerCase().includes('timestamp');
+                    
+                    // Handle timestamp specific attributes
+                    const defaultClause = field.Default === 'CURRENT_TIMESTAMP' 
+                        ? 'DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP'
+                        : field.Default === 'NULL'
+                            ? isTimestamp ? 'NULL DEFAULT NULL' : 'DEFAULT NULL'
+                            : field.Default !== undefined && field.Default !== null 
+                                ? `DEFAULT '${field.Default}'` 
+                                : isTimestamp ? 'NULL DEFAULT NULL' : 'DEFAULT NULL';
+                    
+                    // Remove ON UPDATE CURRENT_TIMESTAMP if we're changing away from CURRENT_TIMESTAMP
+                    const hasOnUpdate = currentField?.Default === 'CURRENT_TIMESTAMP' && 
+                        field.Default !== 'CURRENT_TIMESTAMP';
+                    
+                    const modifyFieldSQL = `ALTER TABLE \`${tableName}\` CHANGE \`${field.Field}\` \`${field.Field}\` ${field.Type} ${field.NotNull ? 'NOT NULL' : ''} ${defaultClause}${hasOnUpdate ? ' ON UPDATE CURRENT_TIMESTAMP' : ''};`;
+                    console.log(`Executing: ${modifyFieldSQL}`);
+                    await connection.query(modifyFieldSQL);
+                // }
 
             } else if (diff.type === 'missing_index') {
                 const existingColumns = await connection.query(`SHOW COLUMNS FROM \`${diff.tableName}\``);
