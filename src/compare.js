@@ -3,7 +3,7 @@ import path from 'path';
 import { getDatabases, getDatabaseStructure } from './getters.js';
 import { findDifferences } from './differences.js';
 import { logDifferences, logger } from './loggers.js';
-import { applyDifferences } from './apply.js';
+import { applyDifferences, describeFailures } from './apply.js';
 import { loadSyncOptions, getTableOptions, applyDefinerOption } from './options.js';
 import { findMissingRows } from './rows.js';
 
@@ -90,7 +90,10 @@ export const compareAllDatabases = async (connection, inputDir, update = false, 
                 logDifferences(differences, database, false);
                 logger('Applying differences for', database);
                 try {
-                    await applyDifferences(connection, database, differences);
+                    const result = await applyDifferences(connection, database, differences);
+                    if (result.failures.length > 0) {
+                        console.error(`Error applying differences for ${database}: ${describeFailures(result)}`);
+                    }
                 } catch (err) {
                     console.error(`Error applying differences for ${database}: ${err.message}`);
                 }

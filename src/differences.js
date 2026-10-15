@@ -1,42 +1,11 @@
 import { logger } from './loggers.js'; // Import the logger
 import { normalizeSQLDefinition, normalizeColumnType } from './normalizers.js';
-import { parseCreateTableSQL, parseColumnDefinitionLegacy } from './parsers.js';
+import { parseCreateTableSQL } from './parsers.js';
 import { applyAutoIncrementOption, removeAutoIncrementCounter } from './options.js';
 
 // Column attributes that aren't compared but are needed to rebuild a column
-// exactly. Filled from the expected createSQL when the JSON doesn't record them;
-// null means the expected column doesn't have it.
+// exactly; null means the template's column doesn't have it.
 const COLUMN_DETAILS = ['OnUpdate', 'Charset', 'Collate', 'Comment', 'Generated'];
-
-// { columnName: its line } in a CREATE TABLE statement
-const columnLines = (createSQL) => {
-    const lines = {};
-    for (const line of (createSQL || '').split(/\r?\n/)) {
-        const match = line.trim().match(/^`([^`]+)`\s/);
-        if (match) lines[match[1]] = line;
-    }
-    return lines;
-}
-
-const sameColumnValues = (a, b) => a.Type === b.Type && !!a.NotNull === !!b.NotNull && a.Default === b.Default;
-
-/**
- * Template JSON written by older versions has some types and defaults cut
- * short ('System Generated' stored as System, enum(...) as enum). When the
- * JSON column is exactly what that parser read from the template's own
- * createSQL line, use the createSQL's real values; a column edited by hand
- * won't match and is left alone.
- */
-const upgradeLegacyColumn = (field, sqlField, line) => {
-    if (!line) return;
-    const legacy = parseColumnDefinitionLegacy(line);
-    if (!legacy || !sameColumnValues(field, legacy) || sameColumnValues(field, sqlField)) return;
-    field.Type = sqlField.Type;
-    if (sqlField.NotNull) field.NotNull = true;
-    else delete field.NotNull;
-    if (sqlField.Default !== undefined) field.Default = sqlField.Default;
-    else delete field.Default;
-}
 
 // A nullable column with no default defaults to NULL, and MySQL doesn't print
 // DEFAULT NULL for TEXT/BLOB columns, so treat both forms as the same
@@ -47,12 +16,29 @@ const isPrimaryIndex = (index) => !!index.Primary || index.Name === 'PRIMARY';
 // Compare index columns ignoring order and prefix lengths: `col` and `col`(255) index the same column
 const indexKey = (index) => index.ColumnName.map(col => col.replace(/\(\d+\)$/, '')).sort().join(', ');
 
-const parseExpectedCreateSQL = (tableName, createSQL) => {
+/**
+ * The template table as its createSQL describes it. The stored columns and
+ * indexes arrays were derived from createSQL by whichever parser version wrote
+ * the dump, and older versions cut some values short ('System Generated' as
+ * System, enum(...) as enum). Re-parsing compares both sides with the same
+ * parser. The stored arrays are used only when there's no createSQL.
+ */
+const parseExpectedTable = (tableName, contents) => {
+    if (!contents.createSQL) return contents;
     try {
-        return parseCreateTableSQL(createSQL);
+        const parsed = parseCreateTableSQL(contents.createSQL);
+        if (!parsed) return contents;
+        const columns = parsed.columns.map(column => {
+            const withDetails = { ...column };
+            for (const key of COLUMN_DETAILS) {
+                if (withDetails[key] === undefined) withDetails[key] = null;
+            }
+            return withDetails;
+        });
+        return { ...contents, columns, indexes: parsed.indexes };
     } catch (e) {
-        logger(`Could not parse expected createSQL for table ${tableName}`, e.message);
-        return null;
+        logger(`Could not re-parse createSQL for table ${tableName}, using stored structure`, e.message);
+        return contents;
     }
 }
 
@@ -72,8 +58,9 @@ export const findDifferences = (expected, current, getTableOptions = () => ({}))
 
     // Compare tables and fields
     if (!expected.tables) throw new Error('No tables found in expected');
-    for (const [tableName, contents] of Object.entries(expected.tables)) {
+    for (const [tableName, storedContents] of Object.entries(expected.tables)) {
         //check if craete table matches from json, if so, we dont need to compare indexes, triggers, or fields
+        const contents = parseExpectedTable(tableName, storedContents);
         const { columns, indexes, triggers, createSQL, name, engine, charset, collate } = contents;
 
 
@@ -121,8 +108,6 @@ export const findDifferences = (expected, current, getTableOptions = () => ({}))
         }
 
 
-        const parsedCreateSQL = parseExpectedCreateSQL(tableName, createSQL);
-
         const currentFieldNames = current.tables[tableName].columns.map(f => f.Field);
         const expectedFieldNames = columns.map(f => f.Field);
 
@@ -145,21 +130,7 @@ export const findDifferences = (expected, current, getTableOptions = () => ({}))
 
         // verify Type Null and Default
         logger('Verifying Type Null and Default for table', tableName);
-        const createSQLLines = columnLines(createSQL);
-        for (const expectedField of columns) {
-            // A FOREIGN KEY line that older versions read as a column
-            if (!createSQLLines[expectedField.Field] && createSQL?.includes(`CONSTRAINT \`${expectedField.Field}\``)) continue;
-
-            const field = { ...expectedField };
-            if (parsedCreateSQL) {
-                const sqlField = parsedCreateSQL.columns.find(f => f.Field === field.Field);
-                if (sqlField) {
-                    upgradeLegacyColumn(field, sqlField, createSQLLines[field.Field]);
-                    for (const key of COLUMN_DETAILS) {
-                        if (field[key] === undefined) field[key] = sqlField[key] ?? null;
-                    }
-                }
-            }
+        for (const field of columns) {
 
             const currentField = current.tables[tableName].columns.find(f => f.Field === field.Field);
             if (!currentField) {
@@ -183,12 +154,7 @@ export const findDifferences = (expected, current, getTableOptions = () => ({}))
 
         // verify indexes
         logger('Verifying indexes for table', tableName);
-        for (const expectedIndex of indexes) {
-            // Take column order and prefix lengths (`col`(255)) from the createSQL
-            // when the JSON lost them, so a created index matches the template
-            const sqlIndex = parsedCreateSQL?.indexes.find(i => i.Name === expectedIndex.Name && indexKey(i) === indexKey(expectedIndex));
-            const index = sqlIndex ? { ...expectedIndex, ColumnName: sqlIndex.ColumnName } : expectedIndex;
-
+        for (const index of indexes) {
             // Check if the current index matches the expected index structure, preferring the same name
             const sameColumns = current.tables[tableName].indexes.filter(i => indexKey(i) === indexKey(index));
             const currentIndex = sameColumns.find(i => i.Name === index.Name) ?? sameColumns[0];

@@ -95,7 +95,7 @@ describe('template and server versions', () => {
 
 describe('applying an 8.0 template to a 5.7 server', () => {
     test('8.0 collations are swapped for ones 5.7 has', () => {
-        expect(adaptSQLForServer('DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci', '5.7.44')).toBe('DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci');
+        expect(adaptSQLForServer('DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci', '5.7.44')).toBe('DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
         expect(adaptSQLForServer('COLLATE utf8mb4_0900_bin', '5.7.44')).toBe('COLLATE utf8mb4_bin');
         expect(adaptSQLForServer('COLLATE utf8mb4_0900_ai_ci', '8.0.36')).toBe('COLLATE utf8mb4_0900_ai_ci');
     });
@@ -105,13 +105,34 @@ describe('applying an 8.0 template to a 5.7 server', () => {
         const connection = {
             query: async (sql) => {
                 if (sql.startsWith('SELECT VERSION')) return [{ version: '5.7.44-log' }];
-                if (!sql.startsWith('USE')) statements.push(sql);
+                if (!sql.startsWith('USE') && !sql.startsWith('SET SESSION')) statements.push(sql);
                 return [];
             }
         };
         await applyDifferences(connection, 'Alerts', [
             { type: 'missing_table', tableName: 'T', createSQL: 'CREATE TABLE `T` (\n  `a` int\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci' }
         ]);
-        expect(statements).toEqual(['CREATE TABLE `T` (\n  `a` int\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci']);
+        expect(statements).toEqual(['CREATE TABLE `T` (\n  `a` int\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci']);
+    });
+});
+
+describe('when the server version is unknown', () => {
+    test('an unknown collation error is retried with the closest collation and reported as a warning', async () => {
+        const statements = [];
+        const connection = {
+            query: async (sql) => {
+                if (sql.startsWith('SELECT VERSION')) throw new Error('not allowed');
+                if (sql.startsWith('USE') || sql.startsWith('SET SESSION')) return [];
+                statements.push(sql);
+                if (sql.includes('utf8mb4_0900_ai_ci')) throw new Error("Unknown collation: 'utf8mb4_0900_ai_ci'");
+                return [];
+            }
+        };
+        const result = await applyDifferences(connection, 'Alerts', [
+            { type: 'missing_table', tableName: 'T', createSQL: 'CREATE TABLE `T` (\n  `a` int\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci' }
+        ]);
+        expect(statements[1]).toContain('COLLATE=utf8mb4_unicode_ci');
+        expect(result.failures).toEqual([]);
+        expect(result.warnings).toEqual([expect.objectContaining({ type: 'missing_table', tableName: 'T', message: expect.stringContaining('utf8mb4_unicode_ci') })]);
     });
 });

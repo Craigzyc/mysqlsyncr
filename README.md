@@ -135,7 +135,7 @@ MySQL 5.7 and 8.0 print some definitions differently. These are formatting, not 
 
 `dump` records the server's version in `dumpInfo.json`. For templates dumped before that, the version is inferred from the SQL. `compare`, `update` and the UI show the template's and the server's versions and note what differs between them.
 
-When applying a template from 8.0 to a 5.7 server, the `utf8mb4_0900_*` collations 5.7 doesn't have are replaced with `utf8mb4_general_ci` (`utf8mb4_bin` for `utf8mb4_0900_bin`). Expression defaults such as `DEFAULT (...)` need 8.0.13 or later and fail on 5.7.
+When applying a template from 8.0 to a 5.7 server, the `utf8mb4_0900_*` collations 5.7 doesn't have are replaced with `utf8mb4_unicode_ci` (`utf8mb4_bin` for accent- or case-sensitive ones), and each substitution is reported as a warning. Applying also sets `explicit_defaults_for_timestamp` for the session, as 8.0 does by default. Expression defaults such as `DEFAULT (...)` need 8.0.13 or later and fail on 5.7.
 
 ### Example Usage
 

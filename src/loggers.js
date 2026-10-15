@@ -35,6 +35,16 @@ export const logDifferences = (differences, database, dryRun) => {
                     Details: `Field ${diff.field.Field} is missing`,
                     Action: 'Field is missing',
                 };
+            case 'mismatched_field': {
+                // `info` names the check that failed; Null is stored as NotNull.
+                const property = diff.info === 'Null' ? 'NotNull' : diff.info;
+                return {
+                    Type: diff.type,
+                    Name: diff.tableName,
+                    Details: `Field ${diff.field.Field} ${diff.info} is ${JSON.stringify(diff.currentField?.[property])}, expected ${JSON.stringify(diff.field?.[property])}`,
+                    Action: 'Field is mismatched',
+                };
+            }
             case 'missing_table':
                 return {
                     Type: diff.type,

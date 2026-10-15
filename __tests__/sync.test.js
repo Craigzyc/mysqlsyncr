@@ -23,7 +23,7 @@ const mockConnection = (failOn = []) => {
     return {
         statements,
         query: async (sql) => {
-            if (sql.startsWith('USE') || sql.startsWith('SELECT VERSION')) return [];
+            if (sql.startsWith('USE') || sql.startsWith('SELECT VERSION') || sql.startsWith('SET SESSION')) return [];
             if (sql.startsWith('SHOW COLUMNS')) return [{ Field: 'alarmString' }];
             statements.push(sql);
             const failure = failOn.find(f => sql.includes(f));
@@ -263,14 +263,16 @@ describe('applyDifferences', () => {
         ]);
     });
 
-    test('tries every difference, then throws listing the failures', async () => {
+    test('tries every difference, then returns the failures', async () => {
         const connection = mockConnection(['`a`']);
         const diffs = [
             { type: 'missing_field', tableName: 't', field: { Field: 'a', Type: 'int' } },
             { type: 'missing_field', tableName: 't', field: { Field: 'b', Type: 'int' } }
         ];
-        await expect(applyDifferences(connection, 'db', diffs)).rejects.toMatchObject({
-            errors: [{ difference: 'missing_field t.a', error: 'failed on `a`' }]
+        expect(await applyDifferences(connection, 'db', diffs)).toEqual({
+            attempted: 2,
+            failures: [{ type: 'missing_field', tableName: 't', description: 'missing_field t.a', message: 'failed on `a`' }],
+            warnings: []
         });
         expect(connection.statements).toHaveLength(2);
     });
@@ -314,12 +316,10 @@ describe('templates written by older versions', () => {
         expect(findDifferences(template, liveStructure(createSQL))).toEqual([]);
     });
 
-    test('keep columns that were edited by hand', () => {
+    test('the createSQL is what counts, not edits made only to the JSON', () => {
         const edited = legacyColumns.map(c => c.Field === 'modifiedBy' ? { ...c, Default: 'Someone Else' } : c);
         const template = templateStructure(createSQL + ';', edited, [{ ColumnName: ['id'], Primary: true, Name: 'PRIMARY' }]);
-        const diffs = findDifferences(template, liveStructure(createSQL));
-        expect(diffs).toHaveLength(1);
-        expect(diffs[0]).toMatchObject({ type: 'mismatched_field', info: 'Default', field: { Field: 'modifiedBy', Default: 'Someone Else' } });
+        expect(findDifferences(template, liveStructure(createSQL))).toEqual([]);
     });
 });
 

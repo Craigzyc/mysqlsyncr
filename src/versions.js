@@ -76,7 +76,7 @@ export const versionNotes = (templateVersion, serverVersion) => {
         `The template is from MySQL ${template} and the server is MySQL ${server}. Integer display widths (int(11) vs int), YEAR(4) and utf8 vs utf8mb3 are printed differently by these versions and are ignored when comparing.`
     ];
     if (isBefore80(serverVersion) && !isBefore80(templateVersion)) {
-        notes.push(`MySQL ${server} has no utf8mb4_0900 collations, so tables and columns are created with utf8mb4_general_ci (utf8mb4_bin for utf8mb4_0900_bin) instead.`);
+        notes.push(`MySQL ${server} has no utf8mb4_0900 collations, so tables and columns are created with utf8mb4_unicode_ci (utf8mb4_bin for accent- or case-sensitive ones) instead.`);
         notes.push(`Expression defaults such as DEFAULT (...) need MySQL 8.0.13 or later and fail on MySQL ${server}.`);
     }
     return notes;
@@ -88,6 +88,17 @@ export const getVersionInfo = async (connection, templateDir) => {
     return { server, template, notes: versionNotes(template?.version, server) };
 }
 
+// MySQL 8 added the _0900_ collation family, which does not exist on 5.7. The _unicode_ci
+// collation of the same charset is accent- and case-insensitive like _0900_ai_ci and is
+// present on both versions, so a table created with it means the same thing either way.
+// Accent- or case-sensitive _0900_ collations map to the charset's _bin. Null if collation
+// isn't a _0900_ one.
+export const portableCollation = (collation) => {
+    const match = /^(\w+?)_0900_(\w+)$/i.exec(collation || '');
+    if (!match) return null;
+    return /^(?:ai_ci|as_ci)$/i.test(match[2]) ? `${match[1]}_unicode_ci` : `${match[1]}_bin`;
+}
+
 /**
  * Rewrite SQL from a template so the server can run it: MySQL 5.7 doesn't
  * know the utf8mb4_0900 collations that 8.0 uses by default, or the utf8mb3_
@@ -96,7 +107,6 @@ export const getVersionInfo = async (connection, templateDir) => {
 export const adaptSQLForServer = (sql, serverVersion) => {
     if (typeof sql !== 'string' || !isBefore80(serverVersion)) return sql;
     return sql
-        .replace(/\butf8mb4_0900_bin\b/gi, 'utf8mb4_bin')
-        .replace(/\butf8mb4_0900_\w+/gi, 'utf8mb4_general_ci')
+        .replace(/\b\w+?_0900_\w+/gi, (collation) => portableCollation(collation) ?? collation)
         .replace(/\butf8mb3_(\w+)/gi, 'utf8_$1');
 }

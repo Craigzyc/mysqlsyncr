@@ -195,19 +195,3 @@ export const parseColumnDefinition = (line) => {
 
     return column;
 };
-
-/**
- * What versions before this one read from a column line. It cut some values
- * short: enum(...) became enum, 'System Generated' became System, and a type
- * like float(10,2), or a COLLATE before DEFAULT, lost NOT NULL and DEFAULT.
- * Used to recognise template JSON written by those versions.
- */
-export const parseColumnDefinitionLegacy = (line) => {
-    const columnMatch = /`([^`]+)`\s+([^\s,]+)(\s+NOT NULL|\s+NULL)?(\s+DEFAULT\s+([^,\s]+))?(\s+AUTO_INCREMENT)?/.exec(line);
-    if (!columnMatch) return null;
-    const typeMatch = line.match(/`[^`]+`\s+([a-zA-Z]+(?:\([0-9]+(?:,[0-9]+)?\))?)/i);
-    const column = { Field: columnMatch[1], Type: typeMatch ? typeMatch[1] : null };
-    if (columnMatch[3] && columnMatch[3].includes('NOT NULL')) column.NotNull = true;
-    if (columnMatch[5]) column.Default = columnMatch[5].replace(/'/g, '');
-    return column;
-};

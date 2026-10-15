@@ -4,7 +4,7 @@ import { cli } from './cli.js';
 import { DBStructureChecker } from './DBStructureChecker.js';
 import { dumpAllDatabases, getDatabasesFromExistingDumps } from './dump.js';
 import { compareAllDatabases } from './compare.js';
-import { applyDifferences } from './apply.js';
+import { applyDifferences, describeFailures } from './apply.js';
 import { startApiServer } from './socketServer.js'; // Import the new socket server
 import { rebuildTemplate } from './rebuild.js';
 import { assertOutsidePackage, templateFolderProblem } from './paths.js';
@@ -62,11 +62,16 @@ const apply = async (config, database, diffs) => {
                 checker.options = { config, database, diffs };
                 try {
                     console.log('Applying the database structure based on JSON dumps');
-                    await applyDifferences(checker.connection, database, diffs);
-                    resolve({ type: 'success', message: 'Apply completed successfully' });
+                    const result = await applyDifferences(checker.connection, database, diffs);
+                    if (result.failures.length > 0) {
+                        // Callers treat a resolved apply as done, so anything that failed rejects
+                        reject({ type: 'error', error: describeFailures(result), failures: result.failures, warnings: result.warnings });
+                    } else {
+                        resolve({ type: 'success', message: `Applied ${result.attempted} of ${result.attempted}`, warnings: result.warnings });
+                    }
                     await checker.closeConnection();
                 } catch (err) {
-                    reject({ type: 'error', error: err.message, errors: err.errors });
+                    reject({ type: 'error', error: err.message });
                     await checker.closeConnection();
                 }
             });
