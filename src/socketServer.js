@@ -2,17 +2,16 @@ import express from 'express';
 import http from 'http';
 import { dumpAllDatabases, getDatabasesFromExistingDumps } from './dump.js'; // Import necessary functions
 import { compareAllDatabases } from './compare.js';
-import { DBStructureChecker } from './index.js'; // Import your DBStructureChecker class
+import { DBStructureChecker } from './DBStructureChecker.js';
 import { applyDifferences } from './apply.js';
+import { packageRoot, assertOutsidePackage } from './paths.js';
+import { acceptCurrentIntoTemplate } from './acceptCurrent.js';
+import { getVersionInfo } from './versions.js';
 import cors from 'cors';
 import { join } from 'path';
 import { readdir, mkdir } from 'fs/promises';
 import { resolve } from 'path';
-import { fileURLToPath } from 'url';
-import { dirname } from 'path';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
 
 const setConfig = (config, argv) => {
     if(!config.host && argv.host){
@@ -33,21 +32,6 @@ const setConfig = (config, argv) => {
     return config;
 }
 
-// Create a function to get the package root directory that works in both ESM and CJS
-const getPackageRoot = () => {
-    if (typeof __dirname !== 'undefined') {
-        // CommonJS
-        return join(__dirname, '..');
-    } else {
-        // ESM
-        const __filename = fileURLToPath(import.meta.url);
-        const __dirname = dirname(__filename);
-        return join(__dirname, '..');
-    }
-};
-
-// Use the function to get the root path
-const packageRoot = getPackageRoot();
 
 export const startApiServer = (port, argv) => {
     const app = express();
@@ -172,9 +156,63 @@ export const startApiServer = (port, argv) => {
         });
     });
 
+    // API endpoint for the server's and the template's MySQL versions
+    app.post('/api/versions', async (req, res) => {
+        let { config } = req.body;
+        config = setConfig(config || {}, argv);
+        const checker = new DBStructureChecker(config);
+
+        checker.connection.on('error', (err) => {
+            if (!res.headersSent) res.status(500).json({ message: 'Database connection failed', error: err.message });
+        });
+
+        checker.connection.on('connect', async () => {
+            try {
+                res.json(await getVersionInfo(checker.connection, config.output));
+            } catch (err) {
+                res.status(500).json({ message: err.message });
+            } finally {
+                await checker.closeConnection();
+            }
+        });
+    });
+
+    // API endpoint to overwrite the template with the database's current values
+    app.post('/api/acceptCurrent', async (req, res) => {
+        let { config, database, diffs } = req.body;
+        config = setConfig(config, argv);
+        if (!config.output) {
+            return res.status(400).json({ message: 'No template folder selected' });
+        }
+        try {
+            assertOutsidePackage(config.output);
+        } catch (err) {
+            return res.status(400).json({ message: err.message });
+        }
+        const checker = new DBStructureChecker(config, database);
+
+        checker.connection.on('error', (err) => {
+            console.error('Database connection error in route acceptCurrent:', err);
+            if (!res.headersSent) res.status(500).json({ message: 'Database connection failed', error: err.message });
+        });
+
+        checker.connection.on('connect', async () => {
+            try {
+                console.log(`Keeping current values in the template for ${diffs?.length ?? 0} difference(s) in ${database}`);
+                await acceptCurrentIntoTemplate(checker.connection, config.output, database, diffs || []);
+                res.json({ message: 'Template updated with the current values' });
+            } catch (err) {
+                res.status(500).json({ message: err.message });
+            } finally {
+                await checker.closeConnection();
+            }
+        });
+    });
+
     app.post('/api/browse-folders', async (req, res) => {
         try {
-            const { currentPath = packageRoot } = req.body;
+            // Start where mysqlsyncr was run from, not in the package folder
+            const { currentPath = process.cwd() } = req.body;
             console.log('Browsing folder:', currentPath);
 
             const resolvedPath = currentPath.startsWith('/') || currentPath.match(/^[A-Z]:\\/)
@@ -227,7 +265,8 @@ export const startApiServer = (port, argv) => {
 
             const resolvedPath = folderPath.startsWith('/') || folderPath.match(/^[A-Z]:\\/)
                 ? resolve(folderPath)
-                : resolve(packageRoot, folderPath);
+                : resolve(process.cwd(), folderPath);
+            assertOutsidePackage(resolvedPath);
 
             await mkdir(resolvedPath, { recursive: true });
 

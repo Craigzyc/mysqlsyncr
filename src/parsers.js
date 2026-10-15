@@ -1,12 +1,3 @@
-// A single-quoted SQL string literal, '' being an escaped quote inside one.
-const QUOTED_STRING = "'(?:[^']|'')*'";
-
-// A column type with its optional argument list. The list is not always numeric:
-// enum('INSERT','UPDATE','DELETE') and set('a','b') carry quoted values, and those
-// values can themselves contain commas or parentheses, so quoted strings are matched
-// as opaque units and cannot terminate the list early.
-const TYPE_PATTERN = "[a-zA-Z]+(?:\\((?:" + QUOTED_STRING + "|[^')])*\\))?";
-
 export const parseCreateTableSQL = (createTableSQL) => {
     if(!createTableSQL) return null;
     const name = createTableSQL.match(/CREATE TABLE\s+`([^`]+)`/)[1];
@@ -19,27 +10,6 @@ export const parseCreateTableSQL = (createTableSQL) => {
 
     // Split the SQL statement into lines and filter out empty lines
     const lines = createTableSQL.split('\n').map(line => line.trim()).filter(line => line.length > 0);
-
-    // Regular expression to match column definitions.
-    // The non-capturing group after the type skips the attributes MySQL renders between
-    // the type and the NULL/DEFAULT clauses, e.g.
-    //   `IID` varchar(25) COLLATE utf8mb4_unicode_ci DEFAULT NULL
-    //   `qty` int(11) unsigned NOT NULL DEFAULT '0'
-    // Without it those optional groups sit at the wrong offset and fail to match, so the
-    // column silently parses with no Default/NotNull. Casing follows SHOW CREATE TABLE
-    // output, which is what this parser is always fed.
-    // The type uses TYPE_PATTERN rather than a comma-free run: `float(10,2)` and
-    // `enum('a','b')` end at the first comma otherwise, which pushes every later group
-    // out of position and silently drops NotNull/Default/AutoIncrement. The DEFAULT
-    // value likewise accepts a quoted string, so a default containing a space
-    // (DEFAULT 'System Generated') is not truncated at the space.
-    const columnRegex = new RegExp(
-        '`([^`]+)`\\s+(' + TYPE_PATTERN + ')' +
-        '(?:\\s+unsigned|\\s+zerofill|\\s+CHARACTER SET \\w+|\\s+COLLATE \\w+)*' +
-        '(\\s+NOT NULL|\\s+NULL)?' +
-        '(\\s+DEFAULT\\s+(' + QUOTED_STRING + '|[^,\\s]+))?' +
-        '(\\s+AUTO_INCREMENT)?'
-    );
 
     // Regular expression to match index definitions
     const indexRegex_Old = /(PRIMARY|UNIQUE)?\s*KEY\s*`([^`]+)`\s*\(([^)]+)\)|PRIMARY KEY\s*\(([^)]+)\)/;
@@ -57,35 +27,12 @@ export const parseCreateTableSQL = (createTableSQL) => {
         if (line.includes('CREATE TABLE')) {
             continue;
         }
-        // Check if the line contains a column definition
-        const columnMatch = columnRegex.exec(line);
+        // Column definitions are the only lines that start with a backticked name
+        const column = parseColumnDefinition(line);
         const indexMatch = indexRegex.exec(line);
-        const indexMatch_Old = indexRegex_Old.exec(line);
 
         const constraintMatch = parseConstraint(line);
-        if (columnMatch && !indexMatch && !constraintMatch) {
-            const columnType = parseColumnType(line);
-            const column = {
-                Field: columnMatch[1],
-                Type: columnType
-            };
-
-            // Set Null property based on NOT NULL presence
-            if (columnMatch[3] && columnMatch[3].includes('NOT NULL')) {
-                column.NotNull = true; // Set to false if NOT NULL is present
-            }
-
-            // Set Default property if it exists
-            if (columnMatch[5]) {
-                // console.log('columnMatch[5]', columnMatch[5], columnMatch[5].replace(/'/g, ''))
-                column.Default = columnMatch[5].replace(/'/g, '');
-            }
-
-            // Set AutoIncrement property if it exists
-            if (columnMatch[6]) {
-                column.AutoIncrement = true; // Set to true if AUTO_INCREMENT is present
-            }
-
+        if (column) {
             columns.push(column);
         } else if (indexMatch && !constraintMatch) {
 
@@ -168,13 +115,83 @@ export const parseConstraint = (sql) => {
     };
 };
 
-const parseColumnType = (line) => {
-    // Match type pattern including parameters. A numeric-only argument list silently
-    // truncated enum('INSERT','UPDATE','DELETE') and set('a','b') to a bare `enum`/`set`,
-    // losing the values entirely - see TYPE_PATTERN.
-    const typeRegex = new RegExp('`[^`]+`\\s+(' + TYPE_PATTERN + ')', 'i');
-    const match = line.match(typeRegex);
-    
-    if (!match) return null;
-    return match[1]; // Returns the full type including parameters
+// A quoted SQL string, allowing '' and backslash escapes inside it
+const quotedStringRegex = /'(?:[^'\\]|\\.|'')*'/g;
+
+const unquote = (quoted) => quoted.slice(1, -1).replace(/''/g, "'").replace(/\\(.)/g, '$1');
+
+// Type with its parameters: int, float(10,2), enum('a','b'), varchar(45); then unsigned/zerofill
+const columnTypeRegex = /^([a-zA-Z]+(?:\((?:'(?:[^'\\]|\\.|'')*'|[^)'])*\))?)((?:\s+(?:unsigned|zerofill)\b)*)/i;
+
+/**
+ * Parse one column line of a SHOW CREATE TABLE statement, e.g.
+ *   `IID` varchar(25) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'x',
+ * Returns null if the line isn't a column definition.
+ */
+export const parseColumnDefinition = (line) => {
+    const lineMatch = line.trim().match(/^`([^`]+)`\s+(.*?),?$/);
+    if (!lineMatch) return null;
+    const typeMatch = lineMatch[2].match(columnTypeRegex);
+    if (!typeMatch) return null;
+
+    const column = {
+        Field: lineMatch[1],
+        // unsigned/zerofill are part of the type: a column restated without them changes
+        Type: typeMatch[1] + typeMatch[2].toLowerCase()
+    };
+
+    // Swap quoted strings for numbered placeholders so keywords inside a
+    // COMMENT or DEFAULT value aren't matched as attributes
+    const strings = [];
+    const quoted = [];
+    const rest = lineMatch[2].slice(typeMatch[0].length).replace(quotedStringRegex, (text) => {
+        strings.push(unquote(text));
+        quoted.push(text);
+        return `'${strings.length - 1}'`;
+    });
+    // Put the original quoted text back, e.g. b'0' or (_utf8mb4'[]')
+    const restoreQuoted = (text) => text.replace(/'(\d+)'/g, (_, i) => quoted[i]);
+
+    if (/\bNOT NULL\b/i.test(rest)) {
+        column.NotNull = true;
+    }
+
+    const defaultMatch = rest.match(/\bDEFAULT\s+('\d+'|\((?:[^()]|\([^()]*\))*\)|[^\s,]+)/i);
+    if (defaultMatch) {
+        // A plain string default is stored unquoted; anything else (NULL,
+        // CURRENT_TIMESTAMP, b'0', an expression) is kept as written
+        const whole = defaultMatch[1].match(/^'(\d+)'$/);
+        column.Default = whole ? strings[whole[1]] : restoreQuoted(defaultMatch[1]);
+    }
+
+    const generatedMatch = rest.match(/\bGENERATED ALWAYS AS\s*(\((?:[^()]|\((?:[^()]|\([^()]*\))*\))*\))\s*(STORED|VIRTUAL)?/i);
+    if (generatedMatch) {
+        column.Generated = `${restoreQuoted(generatedMatch[1])}${generatedMatch[2] ? ` ${generatedMatch[2].toUpperCase()}` : ''}`;
+    }
+
+    if (/\bAUTO_INCREMENT\b/i.test(rest)) {
+        column.AutoIncrement = true;
+    }
+
+    const onUpdateMatch = rest.match(/\bON UPDATE\s+(CURRENT_TIMESTAMP(?:\(\d*\))?)/i);
+    if (onUpdateMatch) {
+        column.OnUpdate = onUpdateMatch[1];
+    }
+
+    const charsetMatch = rest.match(/\bCHARACTER SET\s+(\w+)/i);
+    if (charsetMatch) {
+        column.Charset = charsetMatch[1];
+    }
+
+    const collateMatch = rest.match(/\bCOLLATE\s+(\w+)/i);
+    if (collateMatch) {
+        column.Collate = collateMatch[1];
+    }
+
+    const commentMatch = rest.match(/\bCOMMENT\s+'(\d+)'/i);
+    if (commentMatch) {
+        column.Comment = strings[commentMatch[1]];
+    }
+
+    return column;
 };

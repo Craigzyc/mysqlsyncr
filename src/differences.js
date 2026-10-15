@@ -1,34 +1,51 @@
 import { logger } from './loggers.js'; // Import the logger
-import { normalizeSQLDefinition } from './normalizers.js';
+import { normalizeSQLDefinition, normalizeColumnType } from './normalizers.js';
 import { parseCreateTableSQL } from './parsers.js';
+import { applyAutoIncrementOption, removeAutoIncrementCounter } from './options.js';
 
-// The `columns` and `indexes` arrays stored in a dump are derived data, produced by
-// whichever parser version wrote that dump. `createSQL` is the source of truth, so
-// re-parse it and compare both sides with the same parser. Without this an older dump
-// reports differences that no DDL can ever resolve - index prefix lengths, Unique
-// flags, truncated enum types - because only the live side gets the current parser.
-// A column with no DEFAULT clause defaults to NULL, so an explicit `DEFAULT NULL` and no
-// clause at all describe the same column. They have to compare equal: SHOW CREATE TABLE
-// omits the clause entirely for TEXT and BLOB columns, so a dump that states it produces
-// a difference that applying can never resolve - the ALTER succeeds, the server still
-// reports the column without it, and the same difference returns on the next compare.
-const defaultOf = (column) => (column.Default === undefined || column.Default === null ? 'NULL' : column.Default);
+// Column attributes that aren't compared but are needed to rebuild a column
+// exactly; null means the template's column doesn't have it.
+const COLUMN_DETAILS = ['OnUpdate', 'Charset', 'Collate', 'Comment', 'Generated'];
 
-// Index columns compared as a set, without disturbing the declared column order.
-const sortedColumns = (index) => [...(index.ColumnName || [])].sort().join(', ');
+// A nullable column with no default defaults to NULL, and MySQL doesn't print
+// DEFAULT NULL for TEXT/BLOB columns, so treat both forms as the same
+export const normalizedDefault = (field) => field.Default === undefined && !field.NotNull ? 'NULL' : field.Default;
 
+const isPrimaryIndex = (index) => !!index.Primary || index.Name === 'PRIMARY';
+
+// Compare index columns ignoring order and prefix lengths: `col` and `col`(255) index the same column
+const indexKey = (index) => index.ColumnName.map(col => col.replace(/\(\d+\)$/, '')).sort().join(', ');
+
+/**
+ * The template table as its createSQL describes it. The stored columns and
+ * indexes arrays were derived from createSQL by whichever parser version wrote
+ * the dump, and older versions cut some values short ('System Generated' as
+ * System, enum(...) as enum). Re-parsing compares both sides with the same
+ * parser. The stored arrays are used only when there's no createSQL.
+ */
 const parseExpectedTable = (tableName, contents) => {
     if (!contents.createSQL) return contents;
     try {
-        const reparsed = parseCreateTableSQL(contents.createSQL);
-        if (!reparsed) return contents;
-        return { ...contents, columns: reparsed.columns, indexes: reparsed.indexes };
+        const parsed = parseCreateTableSQL(contents.createSQL);
+        if (!parsed) return contents;
+        const columns = parsed.columns.map(column => {
+            const withDetails = { ...column };
+            for (const key of COLUMN_DETAILS) {
+                if (withDetails[key] === undefined) withDetails[key] = null;
+            }
+            return withDetails;
+        });
+        return { ...contents, columns, indexes: parsed.indexes };
     } catch (e) {
-        logger(`Could not re-parse createSQL for table ${tableName}, using stored structure`, e);
+        logger(`Could not re-parse createSQL for table ${tableName}, using stored structure`, e.message);
         return contents;
     }
-};
-export const findDifferences = (expected, current) => {
+}
+
+/**
+ * @param getTableOptions  tableName => that table's sync options ({ autoIncrement, rows, ... })
+ */
+export const findDifferences = (expected, current, getTableOptions = () => ({})) => {
     const differences = [];
 
     // Detect extra tables
@@ -49,7 +66,7 @@ export const findDifferences = (expected, current) => {
 
         if (!current.tables[tableName]) {
             logger('missing_table', contents);
-            differences.push({ type: 'missing_table', tableName, createSQL: contents.createSQL });
+            differences.push({ type: 'missing_table', tableName, createSQL: applyAutoIncrementOption(contents.createSQL, getTableOptions(tableName).autoIncrement) });
             continue;
         }
         try {
@@ -62,9 +79,10 @@ export const findDifferences = (expected, current) => {
                     differences.push({ type: 'missing_trigger', tableName, trigger });
                 } else {
                     // Compare additional properties if needed
-                    if (currentTrigger.Event !== trigger.Event || currentTrigger.Statement !== trigger.Statement) {
+                    // Compared like procedures: runs of whitespace count as one space
+                    if (trigger.Definition !== undefined && normalizeSQLDefinition(currentTrigger.Definition ?? '') !== normalizeSQLDefinition(trigger.Definition)) {
                         logger('Mismatched trigger', { expected: trigger, current: currentTrigger });
-                        differences.push({ type: 'mismatched_trigger', tableName, trigger });
+                        differences.push({ type: 'mismatched_trigger', tableName, trigger, currentTrigger });
                     }
                 }
             }
@@ -79,7 +97,8 @@ export const findDifferences = (expected, current) => {
         }
 
         const createTableSql = current.tables[tableName].createSQL;
-        if (createTableSql === contents.createSQL) {
+        // The AUTO_INCREMENT=N counter changes with every insert, so it isn't part of the structure
+        if (createTableSql && contents.createSQL && removeAutoIncrementCounter(createTableSql) === removeAutoIncrementCounter(contents.createSQL)) {
             logger(`Table ${tableName} createSQL matches from json, skipping indexes, triggers, and fields`);
             continue;
         } else {
@@ -112,24 +131,23 @@ export const findDifferences = (expected, current) => {
         // verify Type Null and Default
         logger('Verifying Type Null and Default for table', tableName);
         for (const field of columns) {
+
             const currentField = current.tables[tableName].columns.find(f => f.Field === field.Field);
             if (!currentField) {
                 logger('Current field not found for', field.Field, 'in table', tableName);
                 differences.push({ type: 'missing_field', tableName, field });
                 continue;
             }
-            if (field.Null !== currentField.Null) {
+            if (!!field.NotNull !== !!currentField.NotNull) {
                 differences.push({ type: 'mismatched_field', info: "Null", tableName, field, currentField });
             }
-            if (defaultOf(field) !== defaultOf(currentField)) {
+            if (normalizedDefault(field) !== normalizedDefault(currentField)) {
                 differences.push({ type: 'mismatched_field', info: "Default", tableName, field, currentField });
             }
             if (field.Type !== currentField.Type) {
-                if (field.Type == 'int' && currentField.Type.startsWith('int(')) continue; // int(11) is the default for int and used on older versions of mysql
-                if (field.Type == 'smallint' && currentField.Type.startsWith('smallint(')) continue; // smallint(6) is the default for smallint and used on older versions of mysql
-                if (field.Type == 'tinyint' && currentField.Type.startsWith('tinyint(')) continue; // tinyint(1) is the default for tinyint and used on older versions of mysql
+                // int(11) in 5.7 is int in 8.0, year(4) is year, utf8 is utf8mb3: formatting, not structure
+                if (normalizeColumnType(field.Type) === normalizeColumnType(currentField.Type)) continue;
                 if (field.Type == 'varchar' && currentField.Type.startsWith('varchar(')) continue; // varchar(255) is the default for varchar and used on older versions of mysql
-                if (field.Type == 'bigint' && currentField.Type.startsWith('bigint(')) continue; // bigint(20) is the default for bigint and used on older versions of mysql
                 differences.push({ type: 'mismatched_field', info: "Type", tableName, field, currentField });
             }
         }
@@ -137,23 +155,18 @@ export const findDifferences = (expected, current) => {
         // verify indexes
         logger('Verifying indexes for table', tableName);
         for (const index of indexes) {
-            // Check if the current index matches the expected index structure.
-            // Sort a copy: Array#sort is in place, and sorting index.ColumnName itself
-            // reorders the columns of the index object that gets attached to the
-            // difference below, so applying a missing composite index would create it
-            // in alphabetical order rather than the order the table declares.
-            const currentIndex = current.tables[tableName].indexes.find(i =>
-                sortedColumns(i) === sortedColumns(index)
-            );
+            // Check if the current index matches the expected index structure, preferring the same name
+            const sameColumns = current.tables[tableName].indexes.filter(i => indexKey(i) === indexKey(index));
+            const currentIndex = sameColumns.find(i => i.Name === index.Name) ?? sameColumns[0];
             if (!currentIndex) {
                 logger('Missing index', index);
                 differences.push({ type: 'missing_index', tableName, indexName: index.Name, index });
             } else {
                 // If needed, you can add further checks for uniqueness or other properties here
                 if (currentIndex.Name == index.Name) {
-                    if (currentIndex.Unique !== index.Unique) {
+                    if (!!currentIndex.Unique !== !!index.Unique) {
                         differences.push({ type: 'mismatched_index', from: 'unique', tableName, indexName: index.Name, index });
-                    } else if (currentIndex.Primary !== index.Primary) {
+                    } else if (isPrimaryIndex(currentIndex) !== isPrimaryIndex(index)) {
                         differences.push({ type: 'mismatched_index', from: 'primary', tableName, indexName: index.Name, index });
                     }
                 }
@@ -164,9 +177,8 @@ export const findDifferences = (expected, current) => {
             logger('Checking index', index);
             let indexFound = false
 
-            // Sort the ColumnName array for proper comparison
-            const sortedCurrentIndexColumns = sortedColumns(index);
-            if (!indexes.some(i => sortedColumns(i) === sortedCurrentIndexColumns)) {
+            // Compare sorted copies; sorting ColumnName in place would reorder composite index columns
+            if (!indexes.some(i => indexKey(i) === indexKey(index))) {
                 differences.push({ type: 'extra_index', tableName, indexName: index.Name, index });
             }
         }
@@ -197,7 +209,8 @@ export const findDifferences = (expected, current) => {
                 const normalizedNewDef = normalizeSQLDefinition(contents.Definition);
 
                 if (normalizedCurrentDef !== normalizedNewDef) {
-                    differences.push({ type: 'mismatched_procedure', ...contents });
+                    // currentDefinition lets the difference be shown side by side with the template's
+                    differences.push({ type: 'mismatched_procedure', ...contents, currentDefinition: currentProc.Definition });
                 }
             }
         }
@@ -223,7 +236,7 @@ export const findDifferences = (expected, current) => {
             for (const [viewName, expectedDefinition] of Object.entries(expected.views)) {
                 if (!current.views[viewName]) {
                     differences.push({ type: 'missing_view', viewName, definition: expectedDefinition });
-                } else if (current.views[viewName] !== expectedDefinition) {
+                } else if (normalizeSQLDefinition(current.views[viewName]) !== normalizeSQLDefinition(expectedDefinition)) {
                     differences.push({
                         type: 'mismatched_view',
                         viewName,

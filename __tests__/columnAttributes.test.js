@@ -3,7 +3,9 @@ import { parseCreateTableSQL } from '../src/parsers';
 // Regression tests for column attributes rendered between the type and the
 // NULL/DEFAULT clauses. Before the fix these columns parsed with no Default and
 // no NotNull, which produced phantom `mismatched_field` differences whenever the
-// two sides of a compare rendered COLLATE differently.
+// two sides of a compare rendered COLLATE differently. The parser also records
+// the collation, charset, unsigned and generated expression, so a column can be
+// restated without losing them.
 
 const columnOf = (sql, name) =>
     parseCreateTableSQL(sql).columns.find(c => c.Field === name);
@@ -19,11 +21,12 @@ describe('Column attributes between type and DEFAULT', () => {
         expect(columnOf(input, 'IID')).toEqual({
             Field: 'IID',
             Type: 'varchar(25)',
+            Collate: 'utf8mb4_unicode_ci',
             Default: 'NULL'
         });
     });
 
-    test('a collated column parses the same with or without the COLLATE clause', () => {
+    test('a collated column parses the same with or without the COLLATE clause, apart from the collation', () => {
         const withCollate = `CREATE TABLE \`T\` (
   \`point\` varchar(45) COLLATE utf8mb4_unicode_ci DEFAULT NULL
 )`;
@@ -31,7 +34,9 @@ describe('Column attributes between type and DEFAULT', () => {
   \`point\` varchar(45) DEFAULT NULL
 )`;
 
-        expect(columnOf(withCollate, 'point')).toEqual(columnOf(withoutCollate, 'point'));
+        const { Collate, ...rest } = columnOf(withCollate, 'point');
+        expect(Collate).toBe('utf8mb4_unicode_ci');
+        expect(rest).toEqual(columnOf(withoutCollate, 'point'));
     });
 
     test('CHARACTER SET and COLLATE together do not swallow NOT NULL or DEFAULT', () => {
@@ -42,12 +47,14 @@ describe('Column attributes between type and DEFAULT', () => {
         expect(columnOf(input, 'name')).toEqual({
             Field: 'name',
             Type: 'varchar(45)',
+            Charset: 'utf8mb4',
+            Collate: 'utf8mb4_unicode_ci',
             NotNull: true,
             Default: 'x'
         });
     });
 
-    test('unsigned does not swallow NOT NULL, DEFAULT or AUTO_INCREMENT', () => {
+    test('unsigned does not swallow NOT NULL, DEFAULT or AUTO_INCREMENT, and stays part of the type', () => {
         const input = `CREATE TABLE \`T\` (
   \`qty\` int(11) unsigned NOT NULL DEFAULT '0',
   \`id\` bigint(20) unsigned NOT NULL AUTO_INCREMENT
@@ -55,13 +62,13 @@ describe('Column attributes between type and DEFAULT', () => {
 
         expect(columnOf(input, 'qty')).toEqual({
             Field: 'qty',
-            Type: 'int(11)',
+            Type: 'int(11) unsigned',
             NotNull: true,
             Default: '0'
         });
         expect(columnOf(input, 'id')).toEqual({
             Field: 'id',
-            Type: 'bigint(20)',
+            Type: 'bigint(20) unsigned',
             NotNull: true,
             AutoIncrement: true
         });
@@ -74,7 +81,8 @@ describe('Column attributes between type and DEFAULT', () => {
 
         expect(columnOf(input, 'alarmString')).toEqual({
             Field: 'alarmString',
-            Type: 'text'
+            Type: 'text',
+            Collate: 'utf8mb4_unicode_ci'
         });
     });
 
@@ -85,7 +93,9 @@ describe('Column attributes between type and DEFAULT', () => {
 
         expect(columnOf(input, 'computed_tablename')).toEqual({
             Field: 'computed_tablename',
-            Type: 'varchar(255)'
+            Type: 'varchar(255)',
+            Collate: 'utf8mb4_unicode_ci',
+            Generated: "(concat(_utf8mb4'E2Data||',`IID`,_utf8mb4'||',`point`)) STORED"
         });
     });
 });
