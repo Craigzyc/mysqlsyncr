@@ -5,7 +5,7 @@ var yargs = require('yargs');
 var util = require('util');
 var path = require('path');
 var fs = require('fs');
-var assert = require('assert');
+require('assert');
 var url = require('url');
 var readline = require('readline');
 var mysql = require('mysql2');
@@ -24,6 +24,9 @@ var fs$2 = require('node:fs');
 var node_util = require('node:util');
 
 var _documentCurrentScript = typeof document !== 'undefined' ? document.currentScript : null;
+function _OverloadYield(e, d) {
+  this.v = e, this.k = d;
+}
 function _arrayLikeToArray(r, a) {
   (null == a || a > r.length) && (a = r.length);
   for (var e = 0, n = Array(a); e < a; e++) n[e] = r[e];
@@ -56,7 +59,7 @@ function _asyncToGenerator(n) {
       function _throw(n) {
         asyncGeneratorStep(a, r, o, _next, _throw, "throw", n);
       }
-      _next(undefined);
+      _next(void 0);
     });
   };
 }
@@ -70,7 +73,7 @@ function _defineProperties(e, r) {
   }
 }
 function _createClass(e, r, t) {
-  return _defineProperties(e.prototype, r), Object.defineProperty(e, "prototype", {
+  return r && _defineProperties(e.prototype, r), Object.defineProperty(e, "prototype", {
     writable: false
   }), e;
 }
@@ -184,306 +187,178 @@ function _objectSpread2(e) {
   }
   return e;
 }
-function _regeneratorRuntime() {
-  _regeneratorRuntime = function () {
-    return e;
-  };
-  var t,
-    e = {},
-    r = Object.prototype,
-    n = r.hasOwnProperty,
-    o = Object.defineProperty || function (t, e, r) {
-      t[e] = r.value;
-    },
-    i = "function" == typeof Symbol ? Symbol : {},
-    a = i.iterator || "@@iterator",
-    c = i.asyncIterator || "@@asyncIterator",
-    u = i.toStringTag || "@@toStringTag";
-  function define(t, e, r) {
-    return Object.defineProperty(t, e, {
-      value: r,
-      enumerable: true,
-      configurable: true,
-      writable: true
-    }), t[e];
-  }
-  try {
-    define({}, "");
-  } catch (t) {
-    define = function (t, e, r) {
-      return t[e] = r;
-    };
-  }
-  function wrap(t, e, r, n) {
-    var i = e && e.prototype instanceof Generator ? e : Generator,
-      a = Object.create(i.prototype),
-      c = new Context(n || []);
-    return o(a, "_invoke", {
-      value: makeInvokeMethod(t, r, c)
-    }), a;
-  }
-  function tryCatch(t, e, r) {
-    try {
-      return {
-        type: "normal",
-        arg: t.call(e, r)
+function _regenerator() {
+  /*! regenerator-runtime -- Copyright (c) 2014-present, Facebook, Inc. -- license (MIT): https://github.com/babel/babel/blob/main/packages/babel-helpers/LICENSE */
+  var e,
+    t,
+    r = "function" == typeof Symbol ? Symbol : {},
+    n = r.iterator || "@@iterator",
+    o = r.toStringTag || "@@toStringTag";
+  function i(r, n, o, i) {
+    var c = n && n.prototype instanceof Generator ? n : Generator,
+      u = Object.create(c.prototype);
+    return _regeneratorDefine(u, "_invoke", function (r, n, o) {
+      var i,
+        c,
+        u,
+        f = 0,
+        p = o || [],
+        y = false,
+        G = {
+          p: 0,
+          n: 0,
+          v: e,
+          a: d,
+          f: d.bind(e, 4),
+          d: function (t, r) {
+            return i = t, c = 0, u = e, G.n = r, a;
+          }
+        };
+      function d(r, n) {
+        for (c = r, u = n, t = 0; !y && f && !o && t < p.length; t++) {
+          var o,
+            i = p[t],
+            d = G.p,
+            l = i[2];
+          r > 3 ? (o = l === n) && (u = i[(c = i[4]) ? 5 : (c = 3, 3)], i[4] = i[5] = e) : i[0] <= d && ((o = r < 2 && d < i[1]) ? (c = 0, G.v = n, G.n = i[1]) : d < l && (o = r < 3 || i[0] > n || n > l) && (i[4] = r, i[5] = n, G.n = l, c = 0));
+        }
+        if (o || r > 1) return a;
+        throw y = true, n;
+      }
+      return function (o, p, l) {
+        if (f > 1) throw TypeError("Generator is already running");
+        for (y && 1 === p && d(p, l), c = p, u = l; (t = c < 2 ? e : u) || !y;) {
+          i || (c ? c < 3 ? (c > 1 && (G.n = -1), d(c, u)) : G.n = u : G.v = u);
+          try {
+            if (f = 2, i) {
+              if (c || (o = "next"), t = i[o]) {
+                if (!(t = t.call(i, u))) throw TypeError("iterator result is not an object");
+                if (!t.done) return t;
+                u = t.value, c < 2 && (c = 0);
+              } else 1 === c && (t = i.return) && t.call(i), c < 2 && (u = TypeError("The iterator does not provide a '" + o + "' method"), c = 1);
+              i = e;
+            } else if ((t = (y = G.n < 0) ? u : r.call(n, G)) !== a) break;
+          } catch (t) {
+            i = e, c = 1, u = t;
+          } finally {
+            f = 1;
+          }
+        }
+        return {
+          value: t,
+          done: y
+        };
       };
-    } catch (t) {
-      return {
-        type: "throw",
-        arg: t
-      };
-    }
+    }(r, o, i), true), u;
   }
-  e.wrap = wrap;
-  var h = "suspendedStart",
-    l = "suspendedYield",
-    f = "executing",
-    s = "completed",
-    y = {};
+  var a = {};
   function Generator() {}
   function GeneratorFunction() {}
   function GeneratorFunctionPrototype() {}
-  var p = {};
-  define(p, a, function () {
+  t = Object.getPrototypeOf;
+  var c = [][n] ? t(t([][n]())) : (_regeneratorDefine(t = {}, n, function () {
+      return this;
+    }), t),
+    u = GeneratorFunctionPrototype.prototype = Generator.prototype = Object.create(c);
+  function f(e) {
+    return Object.setPrototypeOf ? Object.setPrototypeOf(e, GeneratorFunctionPrototype) : (e.__proto__ = GeneratorFunctionPrototype, _regeneratorDefine(e, o, "GeneratorFunction")), e.prototype = Object.create(u), e;
+  }
+  return GeneratorFunction.prototype = GeneratorFunctionPrototype, _regeneratorDefine(u, "constructor", GeneratorFunctionPrototype), _regeneratorDefine(GeneratorFunctionPrototype, "constructor", GeneratorFunction), GeneratorFunction.displayName = "GeneratorFunction", _regeneratorDefine(GeneratorFunctionPrototype, o, "GeneratorFunction"), _regeneratorDefine(u), _regeneratorDefine(u, o, "Generator"), _regeneratorDefine(u, n, function () {
     return this;
+  }), _regeneratorDefine(u, "toString", function () {
+    return "[object Generator]";
+  }), (_regenerator = function () {
+    return {
+      w: i,
+      m: f
+    };
+  })();
+}
+function _regeneratorAsync(n, e, r, t, o) {
+  var a = _regeneratorAsyncGen(n, e, r, t, o);
+  return a.next().then(function (n) {
+    return n.done ? n.value : a.next();
   });
-  var d = Object.getPrototypeOf,
-    v = d && d(d(values([])));
-  v && v !== r && n.call(v, a) && (p = v);
-  var g = GeneratorFunctionPrototype.prototype = Generator.prototype = Object.create(p);
-  function defineIteratorMethods(t) {
-    ["next", "throw", "return"].forEach(function (e) {
-      define(t, e, function (t) {
-        return this._invoke(e, t);
+}
+function _regeneratorAsyncGen(r, e, t, o, n) {
+  return new _regeneratorAsyncIterator(_regenerator().w(r, e, t, o), n || Promise);
+}
+function _regeneratorAsyncIterator(t, e) {
+  function n(r, o, i, f) {
+    try {
+      var c = t[r](o),
+        u = c.value;
+      return u instanceof _OverloadYield ? e.resolve(u.v).then(function (t) {
+        n("next", t, i, f);
+      }, function (t) {
+        n("throw", t, i, f);
+      }) : e.resolve(u).then(function (t) {
+        c.value = t, i(c);
+      }, function (t) {
+        return n("throw", t, i, f);
       });
-    });
-  }
-  function AsyncIterator(t, e) {
-    function invoke(r, o, i, a) {
-      var c = tryCatch(t[r], t, o);
-      if ("throw" !== c.type) {
-        var u = c.arg,
-          h = u.value;
-        return h && "object" == typeof h && n.call(h, "__await") ? e.resolve(h.__await).then(function (t) {
-          invoke("next", t, i, a);
-        }, function (t) {
-          invoke("throw", t, i, a);
-        }) : e.resolve(h).then(function (t) {
-          u.value = t, i(u);
-        }, function (t) {
-          return invoke("throw", t, i, a);
-        });
-      }
-      a(c.arg);
+    } catch (t) {
+      f(t);
     }
-    var r;
-    o(this, "_invoke", {
-      value: function (t, n) {
-        function callInvokeWithMethodAndArg() {
-          return new e(function (e, r) {
-            invoke(t, n, e, r);
-          });
-        }
-        return r = r ? r.then(callInvokeWithMethodAndArg, callInvokeWithMethodAndArg) : callInvokeWithMethodAndArg();
-      }
-    });
   }
-  function makeInvokeMethod(e, r, n) {
-    var o = h;
-    return function (i, a) {
-      if (o === f) throw Error("Generator is already running");
-      if (o === s) {
-        if ("throw" === i) throw a;
-        return {
-          value: t,
-          done: true
+  var r;
+  this.next || (_regeneratorDefine(_regeneratorAsyncIterator.prototype), _regeneratorDefine(_regeneratorAsyncIterator.prototype, "function" == typeof Symbol && Symbol.asyncIterator || "@asyncIterator", function () {
+    return this;
+  })), _regeneratorDefine(this, "_invoke", function (t, o, i) {
+    function f() {
+      return new e(function (e, r) {
+        n(t, i, e, r);
+      });
+    }
+    return r = r ? r.then(f, f) : f();
+  }, true);
+}
+function _regeneratorDefine(e, r, n, t) {
+  var i = Object.defineProperty;
+  try {
+    i({}, "", {});
+  } catch (e) {
+    i = 0;
+  }
+  _regeneratorDefine = function (e, r, n, t) {
+    function o(r, n) {
+      _regeneratorDefine(e, r, function (e) {
+        return this._invoke(r, n, e);
+      });
+    }
+    r ? i ? i(e, r, {
+      value: n,
+      enumerable: !t,
+      configurable: !t,
+      writable: !t
+    }) : e[r] = n : (o("next", 0), o("throw", 1), o("return", 2));
+  }, _regeneratorDefine(e, r, n, t);
+}
+function _regeneratorKeys(e) {
+  var n = Object(e),
+    r = [];
+  for (var t in n) r.unshift(t);
+  return function e() {
+    for (; r.length;) if ((t = r.pop()) in n) return e.value = t, e.done = false, e;
+    return e.done = true, e;
+  };
+}
+function _regeneratorValues(e) {
+  if (null != e) {
+    var t = e["function" == typeof Symbol && Symbol.iterator || "@@iterator"],
+      r = 0;
+    if (t) return t.call(e);
+    if ("function" == typeof e.next) return e;
+    if (!isNaN(e.length)) return {
+      next: function () {
+        return e && r >= e.length && (e = void 0), {
+          value: e && e[r++],
+          done: !e
         };
       }
-      for (n.method = i, n.arg = a;;) {
-        var c = n.delegate;
-        if (c) {
-          var u = maybeInvokeDelegate(c, n);
-          if (u) {
-            if (u === y) continue;
-            return u;
-          }
-        }
-        if ("next" === n.method) n.sent = n._sent = n.arg;else if ("throw" === n.method) {
-          if (o === h) throw o = s, n.arg;
-          n.dispatchException(n.arg);
-        } else "return" === n.method && n.abrupt("return", n.arg);
-        o = f;
-        var p = tryCatch(e, r, n);
-        if ("normal" === p.type) {
-          if (o = n.done ? s : l, p.arg === y) continue;
-          return {
-            value: p.arg,
-            done: n.done
-          };
-        }
-        "throw" === p.type && (o = s, n.method = "throw", n.arg = p.arg);
-      }
     };
   }
-  function maybeInvokeDelegate(e, r) {
-    var n = r.method,
-      o = e.iterator[n];
-    if (o === t) return r.delegate = null, "throw" === n && e.iterator.return && (r.method = "return", r.arg = t, maybeInvokeDelegate(e, r), "throw" === r.method) || "return" !== n && (r.method = "throw", r.arg = new TypeError("The iterator does not provide a '" + n + "' method")), y;
-    var i = tryCatch(o, e.iterator, r.arg);
-    if ("throw" === i.type) return r.method = "throw", r.arg = i.arg, r.delegate = null, y;
-    var a = i.arg;
-    return a ? a.done ? (r[e.resultName] = a.value, r.next = e.nextLoc, "return" !== r.method && (r.method = "next", r.arg = t), r.delegate = null, y) : a : (r.method = "throw", r.arg = new TypeError("iterator result is not an object"), r.delegate = null, y);
-  }
-  function pushTryEntry(t) {
-    var e = {
-      tryLoc: t[0]
-    };
-    1 in t && (e.catchLoc = t[1]), 2 in t && (e.finallyLoc = t[2], e.afterLoc = t[3]), this.tryEntries.push(e);
-  }
-  function resetTryEntry(t) {
-    var e = t.completion || {};
-    e.type = "normal", delete e.arg, t.completion = e;
-  }
-  function Context(t) {
-    this.tryEntries = [{
-      tryLoc: "root"
-    }], t.forEach(pushTryEntry, this), this.reset(true);
-  }
-  function values(e) {
-    if (e || "" === e) {
-      var r = e[a];
-      if (r) return r.call(e);
-      if ("function" == typeof e.next) return e;
-      if (!isNaN(e.length)) {
-        var o = -1,
-          i = function next() {
-            for (; ++o < e.length;) if (n.call(e, o)) return next.value = e[o], next.done = false, next;
-            return next.value = t, next.done = true, next;
-          };
-        return i.next = i;
-      }
-    }
-    throw new TypeError(typeof e + " is not iterable");
-  }
-  return GeneratorFunction.prototype = GeneratorFunctionPrototype, o(g, "constructor", {
-    value: GeneratorFunctionPrototype,
-    configurable: true
-  }), o(GeneratorFunctionPrototype, "constructor", {
-    value: GeneratorFunction,
-    configurable: true
-  }), GeneratorFunction.displayName = define(GeneratorFunctionPrototype, u, "GeneratorFunction"), e.isGeneratorFunction = function (t) {
-    var e = "function" == typeof t && t.constructor;
-    return !!e && (e === GeneratorFunction || "GeneratorFunction" === (e.displayName || e.name));
-  }, e.mark = function (t) {
-    return Object.setPrototypeOf ? Object.setPrototypeOf(t, GeneratorFunctionPrototype) : (t.__proto__ = GeneratorFunctionPrototype, define(t, u, "GeneratorFunction")), t.prototype = Object.create(g), t;
-  }, e.awrap = function (t) {
-    return {
-      __await: t
-    };
-  }, defineIteratorMethods(AsyncIterator.prototype), define(AsyncIterator.prototype, c, function () {
-    return this;
-  }), e.AsyncIterator = AsyncIterator, e.async = function (t, r, n, o, i) {
-    undefined === i && (i = Promise);
-    var a = new AsyncIterator(wrap(t, r, n, o), i);
-    return e.isGeneratorFunction(r) ? a : a.next().then(function (t) {
-      return t.done ? t.value : a.next();
-    });
-  }, defineIteratorMethods(g), define(g, u, "Generator"), define(g, a, function () {
-    return this;
-  }), define(g, "toString", function () {
-    return "[object Generator]";
-  }), e.keys = function (t) {
-    var e = Object(t),
-      r = [];
-    for (var n in e) r.push(n);
-    return r.reverse(), function next() {
-      for (; r.length;) {
-        var t = r.pop();
-        if (t in e) return next.value = t, next.done = false, next;
-      }
-      return next.done = true, next;
-    };
-  }, e.values = values, Context.prototype = {
-    constructor: Context,
-    reset: function (e) {
-      if (this.prev = 0, this.next = 0, this.sent = this._sent = t, this.done = false, this.delegate = null, this.method = "next", this.arg = t, this.tryEntries.forEach(resetTryEntry), !e) for (var r in this) "t" === r.charAt(0) && n.call(this, r) && !isNaN(+r.slice(1)) && (this[r] = t);
-    },
-    stop: function () {
-      this.done = true;
-      var t = this.tryEntries[0].completion;
-      if ("throw" === t.type) throw t.arg;
-      return this.rval;
-    },
-    dispatchException: function (e) {
-      if (this.done) throw e;
-      var r = this;
-      function handle(n, o) {
-        return a.type = "throw", a.arg = e, r.next = n, o && (r.method = "next", r.arg = t), !!o;
-      }
-      for (var o = this.tryEntries.length - 1; o >= 0; --o) {
-        var i = this.tryEntries[o],
-          a = i.completion;
-        if ("root" === i.tryLoc) return handle("end");
-        if (i.tryLoc <= this.prev) {
-          var c = n.call(i, "catchLoc"),
-            u = n.call(i, "finallyLoc");
-          if (c && u) {
-            if (this.prev < i.catchLoc) return handle(i.catchLoc, true);
-            if (this.prev < i.finallyLoc) return handle(i.finallyLoc);
-          } else if (c) {
-            if (this.prev < i.catchLoc) return handle(i.catchLoc, true);
-          } else {
-            if (!u) throw Error("try statement without catch or finally");
-            if (this.prev < i.finallyLoc) return handle(i.finallyLoc);
-          }
-        }
-      }
-    },
-    abrupt: function (t, e) {
-      for (var r = this.tryEntries.length - 1; r >= 0; --r) {
-        var o = this.tryEntries[r];
-        if (o.tryLoc <= this.prev && n.call(o, "finallyLoc") && this.prev < o.finallyLoc) {
-          var i = o;
-          break;
-        }
-      }
-      i && ("break" === t || "continue" === t) && i.tryLoc <= e && e <= i.finallyLoc && (i = null);
-      var a = i ? i.completion : {};
-      return a.type = t, a.arg = e, i ? (this.method = "next", this.next = i.finallyLoc, y) : this.complete(a);
-    },
-    complete: function (t, e) {
-      if ("throw" === t.type) throw t.arg;
-      return "break" === t.type || "continue" === t.type ? this.next = t.arg : "return" === t.type ? (this.rval = this.arg = t.arg, this.method = "return", this.next = "end") : "normal" === t.type && e && (this.next = e), y;
-    },
-    finish: function (t) {
-      for (var e = this.tryEntries.length - 1; e >= 0; --e) {
-        var r = this.tryEntries[e];
-        if (r.finallyLoc === t) return this.complete(r.completion, r.afterLoc), resetTryEntry(r), y;
-      }
-    },
-    catch: function (t) {
-      for (var e = this.tryEntries.length - 1; e >= 0; --e) {
-        var r = this.tryEntries[e];
-        if (r.tryLoc === t) {
-          var n = r.completion;
-          if ("throw" === n.type) {
-            var o = n.arg;
-            resetTryEntry(r);
-          }
-          return o;
-        }
-      }
-      throw Error("illegal catch attempt");
-    },
-    delegateYield: function (e, r, n) {
-      return this.delegate = {
-        iterator: values(e),
-        resultName: r,
-        nextLoc: n
-      }, "next" === this.method && (this.arg = t), y;
-    }
-  }, e;
+  throw new TypeError(typeof e + " is not iterable");
 }
 function _slicedToArray(r, e) {
   return _arrayWithHoles(r) || _iterableToArrayLimit(r, e) || _unsupportedIterableToArray(r, e) || _nonIterableRest();
@@ -491,11 +366,11 @@ function _slicedToArray(r, e) {
 function _toConsumableArray(r) {
   return _arrayWithoutHoles(r) || _iterableToArray(r) || _unsupportedIterableToArray(r) || _nonIterableSpread();
 }
-function _toPrimitive(t, r) {
+function _toPrimitive(t, e) {
   if ("object" != typeof t || !t) return t;
-  var e = t[Symbol.toPrimitive];
-  if (undefined !== e) {
-    var i = e.call(t, r);
+  var r;
+  if ("undefined" != typeof Symbol && void 0 !== (r = t[Symbol.toPrimitive])) {
+    var i = r.call(t, e);
     if ("object" != typeof i) return i;
     throw new TypeError("@@toPrimitive must return a primitive value.");
   }
@@ -518,18 +393,76 @@ function _unsupportedIterableToArray(r, a) {
   if (r) {
     if ("string" == typeof r) return _arrayLikeToArray(r, a);
     var t = {}.toString.call(r).slice(8, -1);
-    return "Object" === t && r.constructor && (t = r.constructor.name), "Map" === t || "Set" === t ? Array.from(r) : "Arguments" === t || /^(?:Ui|I)nt(?:8|16|32)(?:Clamped)?Array$/.test(t) ? _arrayLikeToArray(r, a) : undefined;
+    return "Object" === t && r.constructor && (t = r.constructor.name), "Map" === t || "Set" === t ? Array.from(r) : "Arguments" === t || /^(?:Ui|I)nt(?:8|16|32)(?:Clamped)?Array$/.test(t) ? _arrayLikeToArray(r, a) : void 0;
   }
 }
+function _regeneratorRuntime() {
 
-class YError extends Error {
-    constructor(msg) {
-        super(msg || 'yargs error');
-        this.name = 'YError';
-        if (Error.captureStackTrace) {
-            Error.captureStackTrace(this, YError);
+  var r = _regenerator(),
+    e = r.m(_regeneratorRuntime),
+    t = (Object.getPrototypeOf ? Object.getPrototypeOf(e) : e.__proto__).constructor;
+  function n(r) {
+    var e = "function" == typeof r && r.constructor;
+    return !!e && (e === t || "GeneratorFunction" === (e.displayName || e.name));
+  }
+  var o = {
+    throw: 1,
+    return: 2,
+    break: 3,
+    continue: 3
+  };
+  function a(r) {
+    var e, t;
+    return function (n) {
+      e || (e = {
+        stop: function () {
+          return t(n.a, 2);
+        },
+        catch: function () {
+          return n.v;
+        },
+        abrupt: function (r, e) {
+          return t(n.a, o[r], e);
+        },
+        delegateYield: function (r, o, a) {
+          return e.resultName = o, t(n.d, _regeneratorValues(r), a);
+        },
+        finish: function (r) {
+          return t(n.f, r);
         }
-    }
+      }, t = function (r, t, o) {
+        n.p = e.prev, n.n = e.next;
+        try {
+          return r(t, o);
+        } finally {
+          e.next = n.n;
+        }
+      }), e.resultName && (e[e.resultName] = n.v, e.resultName = void 0), e.sent = n.v, e.next = n.n;
+      try {
+        return r.call(this, e);
+      } finally {
+        n.p = e.prev, n.n = e.next;
+      }
+    };
+  }
+  return (_regeneratorRuntime = function () {
+    return {
+      wrap: function (e, t, n, o) {
+        return r.w(a(e), t, n, o && o.reverse());
+      },
+      isGeneratorFunction: n,
+      mark: r.m,
+      awrap: function (r, e) {
+        return new _OverloadYield(r, e);
+      },
+      AsyncIterator: _regeneratorAsyncIterator,
+      async: function (r, e, t, o, u) {
+        return (n(e) ? _regeneratorAsyncGen : _regeneratorAsync)(a(r), e, t, o, u);
+      },
+      keys: _regeneratorKeys,
+      values: _regeneratorValues
+    };
+  })();
 }
 
 function getProcessArgvBinIndex() {
@@ -545,9 +478,6 @@ function isElectronApp() {
 }
 function hideBin(argv) {
     return argv.slice(getProcessArgvBinIndex() + 1);
-}
-function getProcessArgvBin() {
-    return process.argv[getProcessArgvBinIndex()];
 }
 
 /**
@@ -675,10 +605,10 @@ var DefaultValuesForTypeKey;
  * Copyright (c) 2016, Contributors
  * SPDX-License-Identifier: ISC
  */
-let mixin$1;
+let mixin;
 class YargsParser {
     constructor(_mixin) {
-        mixin$1 = _mixin;
+        mixin = _mixin;
     }
     parse(argsInput, options) {
         const opts = Object.assign({
@@ -735,7 +665,7 @@ class YargsParser {
         const newAliases = Object.create(null);
         const defaulted = Object.create(null);
         // allow a i18n handler to be passed in, default to a fake one (util.format).
-        const __ = opts.__ || mixin$1.format;
+        const __ = opts.__ || mixin.format;
         const flags = {
             aliases: Object.create(null),
             arrays: Object.create(null),
@@ -1209,7 +1139,7 @@ class YargsParser {
                             return val;
                         },
                         set(value) {
-                            val = typeof value === 'string' ? mixin$1.normalize(value) : value;
+                            val = typeof value === 'string' ? mixin.normalize(value) : value;
                         }
                     });
                 });
@@ -1244,9 +1174,9 @@ class YargsParser {
             // Set normalized value when key is in 'normalize' and in 'arrays'
             if (checkAllAliases(key, flags.normalize) && checkAllAliases(key, flags.arrays)) {
                 if (Array.isArray(val))
-                    value = val.map((val) => { return mixin$1.normalize(val); });
+                    value = val.map((val) => { return mixin.normalize(val); });
                 else
-                    value = mixin$1.normalize(val);
+                    value = mixin.normalize(val);
             }
             return value;
         }
@@ -1273,7 +1203,7 @@ class YargsParser {
                 if (configPath) {
                     try {
                         let config = null;
-                        const resolvedConfigPath = mixin$1.resolve(mixin$1.cwd(), configPath);
+                        const resolvedConfigPath = mixin.resolve(mixin.cwd(), configPath);
                         const resolveConfig = flags.configs[configKey];
                         if (typeof resolveConfig === 'function') {
                             try {
@@ -1288,7 +1218,7 @@ class YargsParser {
                             }
                         }
                         else {
-                            config = mixin$1.require(resolvedConfigPath);
+                            config = mixin.require(resolvedConfigPath);
                         }
                         setConfigObject(config);
                     }
@@ -1337,7 +1267,7 @@ class YargsParser {
             if (typeof envPrefix === 'undefined')
                 return;
             const prefix = typeof envPrefix === 'string' ? envPrefix : '';
-            const env = mixin$1.env();
+            const env = mixin.env();
             Object.keys(env).forEach(function (envVar) {
                 if (prefix === '' || envVar.lastIndexOf(prefix, 0) === 0) {
                     // get array of nested keys and convert them to camel case
@@ -1724,7 +1654,7 @@ var _a, _b, _c;
 const minNodeVersion = (process && process.env && process.env.YARGS_MIN_NODE_VERSION)
     ? Number(process.env.YARGS_MIN_NODE_VERSION)
     : 12;
-const nodeVersion = (_b = (_a = process === null || process === undefined ? undefined : process.versions) === null || _a === undefined ? undefined : _a.node) !== null && _b !== undefined ? _b : (_c = process === null || process === undefined ? undefined : process.version) === null || _c === undefined ? undefined : _c.slice(1);
+const nodeVersion = (_b = (_a = process === null || process === void 0 ? void 0 : process.versions) === null || _a === void 0 ? void 0 : _a.node) !== null && _b !== void 0 ? _b : (_c = process === null || process === void 0 ? void 0 : process.version) === null || _c === void 0 ? void 0 : _c.slice(1);
 if (nodeVersion) {
     const major = Number(nodeVersion.match(/^([^.]+)/)[1]);
     if (major < minNodeVersion) {
@@ -1733,7 +1663,7 @@ if (nodeVersion) {
 }
 // Creates a yargs-parser instance using Node.js standard libraries:
 const env = process ? process.env : {};
-const parser = new YargsParser({
+new YargsParser({
     cwd: process.cwd,
     env: () => {
         return env;
@@ -1756,359 +1686,6 @@ const parser = new YargsParser({
         }
     }
 });
-const yargsParser = function Parser(args, opts) {
-    const result = parser.parse(args.slice(), opts);
-    return result.argv;
-};
-yargsParser.detailed = function (args, opts) {
-    return parser.parse(args.slice(), opts);
-};
-yargsParser.camelCase = camelCase;
-yargsParser.decamelize = decamelize;
-yargsParser.looksLikeNumber = looksLikeNumber;
-
-const align = {
-    right: alignRight,
-    center: alignCenter
-};
-const top = 0;
-const right = 1;
-const bottom = 2;
-const left = 3;
-class UI {
-    constructor(opts) {
-        var _a;
-        this.width = opts.width;
-        this.wrap = (_a = opts.wrap) !== null && _a !== undefined ? _a : true;
-        this.rows = [];
-    }
-    span(...args) {
-        const cols = this.div(...args);
-        cols.span = true;
-    }
-    resetOutput() {
-        this.rows = [];
-    }
-    div(...args) {
-        if (args.length === 0) {
-            this.div('');
-        }
-        if (this.wrap && this.shouldApplyLayoutDSL(...args) && typeof args[0] === 'string') {
-            return this.applyLayoutDSL(args[0]);
-        }
-        const cols = args.map(arg => {
-            if (typeof arg === 'string') {
-                return this.colFromString(arg);
-            }
-            return arg;
-        });
-        this.rows.push(cols);
-        return cols;
-    }
-    shouldApplyLayoutDSL(...args) {
-        return args.length === 1 && typeof args[0] === 'string' &&
-            /[\t\n]/.test(args[0]);
-    }
-    applyLayoutDSL(str) {
-        const rows = str.split('\n').map(row => row.split('\t'));
-        let leftColumnWidth = 0;
-        // simple heuristic for layout, make sure the
-        // second column lines up along the left-hand.
-        // don't allow the first column to take up more
-        // than 50% of the screen.
-        rows.forEach(columns => {
-            if (columns.length > 1 && mixin.stringWidth(columns[0]) > leftColumnWidth) {
-                leftColumnWidth = Math.min(Math.floor(this.width * 0.5), mixin.stringWidth(columns[0]));
-            }
-        });
-        // generate a table:
-        //  replacing ' ' with padding calculations.
-        //  using the algorithmically generated width.
-        rows.forEach(columns => {
-            this.div(...columns.map((r, i) => {
-                return {
-                    text: r.trim(),
-                    padding: this.measurePadding(r),
-                    width: (i === 0 && columns.length > 1) ? leftColumnWidth : undefined
-                };
-            }));
-        });
-        return this.rows[this.rows.length - 1];
-    }
-    colFromString(text) {
-        return {
-            text,
-            padding: this.measurePadding(text)
-        };
-    }
-    measurePadding(str) {
-        // measure padding without ansi escape codes
-        const noAnsi = mixin.stripAnsi(str);
-        return [0, noAnsi.match(/\s*$/)[0].length, 0, noAnsi.match(/^\s*/)[0].length];
-    }
-    toString() {
-        const lines = [];
-        this.rows.forEach(row => {
-            this.rowToString(row, lines);
-        });
-        // don't display any lines with the
-        // hidden flag set.
-        return lines
-            .filter(line => !line.hidden)
-            .map(line => line.text)
-            .join('\n');
-    }
-    rowToString(row, lines) {
-        this.rasterize(row).forEach((rrow, r) => {
-            let str = '';
-            rrow.forEach((col, c) => {
-                const { width } = row[c]; // the width with padding.
-                const wrapWidth = this.negatePadding(row[c]); // the width without padding.
-                let ts = col; // temporary string used during alignment/padding.
-                if (wrapWidth > mixin.stringWidth(col)) {
-                    ts += ' '.repeat(wrapWidth - mixin.stringWidth(col));
-                }
-                // align the string within its column.
-                if (row[c].align && row[c].align !== 'left' && this.wrap) {
-                    const fn = align[row[c].align];
-                    ts = fn(ts, wrapWidth);
-                    if (mixin.stringWidth(ts) < wrapWidth) {
-                        ts += ' '.repeat((width || 0) - mixin.stringWidth(ts) - 1);
-                    }
-                }
-                // apply border and padding to string.
-                const padding = row[c].padding || [0, 0, 0, 0];
-                if (padding[left]) {
-                    str += ' '.repeat(padding[left]);
-                }
-                str += addBorder(row[c], ts, '| ');
-                str += ts;
-                str += addBorder(row[c], ts, ' |');
-                if (padding[right]) {
-                    str += ' '.repeat(padding[right]);
-                }
-                // if prior row is span, try to render the
-                // current row on the prior line.
-                if (r === 0 && lines.length > 0) {
-                    str = this.renderInline(str, lines[lines.length - 1]);
-                }
-            });
-            // remove trailing whitespace.
-            lines.push({
-                text: str.replace(/ +$/, ''),
-                span: row.span
-            });
-        });
-        return lines;
-    }
-    // if the full 'source' can render in
-    // the target line, do so.
-    renderInline(source, previousLine) {
-        const match = source.match(/^ */);
-        const leadingWhitespace = match ? match[0].length : 0;
-        const target = previousLine.text;
-        const targetTextWidth = mixin.stringWidth(target.trimRight());
-        if (!previousLine.span) {
-            return source;
-        }
-        // if we're not applying wrapping logic,
-        // just always append to the span.
-        if (!this.wrap) {
-            previousLine.hidden = true;
-            return target + source;
-        }
-        if (leadingWhitespace < targetTextWidth) {
-            return source;
-        }
-        previousLine.hidden = true;
-        return target.trimRight() + ' '.repeat(leadingWhitespace - targetTextWidth) + source.trimLeft();
-    }
-    rasterize(row) {
-        const rrows = [];
-        const widths = this.columnWidths(row);
-        let wrapped;
-        // word wrap all columns, and create
-        // a data-structure that is easy to rasterize.
-        row.forEach((col, c) => {
-            // leave room for left and right padding.
-            col.width = widths[c];
-            if (this.wrap) {
-                wrapped = mixin.wrap(col.text, this.negatePadding(col), { hard: true }).split('\n');
-            }
-            else {
-                wrapped = col.text.split('\n');
-            }
-            if (col.border) {
-                wrapped.unshift('.' + '-'.repeat(this.negatePadding(col) + 2) + '.');
-                wrapped.push("'" + '-'.repeat(this.negatePadding(col) + 2) + "'");
-            }
-            // add top and bottom padding.
-            if (col.padding) {
-                wrapped.unshift(...new Array(col.padding[top] || 0).fill(''));
-                wrapped.push(...new Array(col.padding[bottom] || 0).fill(''));
-            }
-            wrapped.forEach((str, r) => {
-                if (!rrows[r]) {
-                    rrows.push([]);
-                }
-                const rrow = rrows[r];
-                for (let i = 0; i < c; i++) {
-                    if (rrow[i] === undefined) {
-                        rrow.push('');
-                    }
-                }
-                rrow.push(str);
-            });
-        });
-        return rrows;
-    }
-    negatePadding(col) {
-        let wrapWidth = col.width || 0;
-        if (col.padding) {
-            wrapWidth -= (col.padding[left] || 0) + (col.padding[right] || 0);
-        }
-        if (col.border) {
-            wrapWidth -= 4;
-        }
-        return wrapWidth;
-    }
-    columnWidths(row) {
-        if (!this.wrap) {
-            return row.map(col => {
-                return col.width || mixin.stringWidth(col.text);
-            });
-        }
-        let unset = row.length;
-        let remainingWidth = this.width;
-        // column widths can be set in config.
-        const widths = row.map(col => {
-            if (col.width) {
-                unset--;
-                remainingWidth -= col.width;
-                return col.width;
-            }
-            return undefined;
-        });
-        // any unset widths should be calculated.
-        const unsetWidth = unset ? Math.floor(remainingWidth / unset) : 0;
-        return widths.map((w, i) => {
-            if (w === undefined) {
-                return Math.max(unsetWidth, _minWidth(row[i]));
-            }
-            return w;
-        });
-    }
-}
-function addBorder(col, ts, style) {
-    if (col.border) {
-        if (/[.']-+[.']/.test(ts)) {
-            return '';
-        }
-        if (ts.trim().length !== 0) {
-            return style;
-        }
-        return '  ';
-    }
-    return '';
-}
-// calculates the minimum width of
-// a column, based on padding preferences.
-function _minWidth(col) {
-    const padding = col.padding || [];
-    const minWidth = 1 + (padding[left] || 0) + (padding[right] || 0);
-    if (col.border) {
-        return minWidth + 4;
-    }
-    return minWidth;
-}
-function getWindowWidth() {
-    /* istanbul ignore next: depends on terminal */
-    if (typeof process === 'object' && process.stdout && process.stdout.columns) {
-        return process.stdout.columns;
-    }
-    return 80;
-}
-function alignRight(str, width) {
-    str = str.trim();
-    const strWidth = mixin.stringWidth(str);
-    if (strWidth < width) {
-        return ' '.repeat(width - strWidth) + str;
-    }
-    return str;
-}
-function alignCenter(str, width) {
-    str = str.trim();
-    const strWidth = mixin.stringWidth(str);
-    /* istanbul ignore next */
-    if (strWidth >= width) {
-        return str;
-    }
-    return ' '.repeat((width - strWidth) >> 1) + str;
-}
-let mixin;
-function cliui(opts, _mixin) {
-    mixin = _mixin;
-    return new UI({
-        width: (opts === null || opts === undefined ? undefined : opts.width) || getWindowWidth(),
-        wrap: opts === null || opts === undefined ? undefined : opts.wrap
-    });
-}
-
-// Minimal replacement for ansi string helpers "wrap-ansi" and "strip-ansi".
-// to facilitate ESM and Deno modules.
-// TODO: look at porting https://www.npmjs.com/package/wrap-ansi to ESM.
-// The npm application
-// Copyright (c) npm, Inc. and Contributors
-// Licensed on the terms of The Artistic License 2.0
-// See: https://github.com/npm/cli/blob/4c65cd952bc8627811735bea76b9b110cc4fc80e/lib/utils/ansi-trim.js
-const ansi = new RegExp('\x1b(?:\\[(?:\\d+[ABCDEFGJKSTm]|\\d+;\\d+[Hfm]|' +
-    '\\d+;\\d+;\\d+m|6n|s|u|\\?25[lh])|\\w)', 'g');
-function stripAnsi(str) {
-    return str.replace(ansi, '');
-}
-function wrap(str, width) {
-    const [start, end] = str.match(ansi) || ['', ''];
-    str = stripAnsi(str);
-    let wrapped = '';
-    for (let i = 0; i < str.length; i++) {
-        if (i !== 0 && (i % width) === 0) {
-            wrapped += '\n';
-        }
-        wrapped += str.charAt(i);
-    }
-    if (start && end) {
-        wrapped = `${start}${wrapped}${end}`;
-    }
-    return wrapped;
-}
-
-// Bootstrap cliui with CommonJS dependencies:
-
-function ui (opts) {
-  return cliui(opts, {
-    stringWidth: (str) => {
-      return [...str].length
-    },
-    stripAnsi,
-    wrap
-  })
-}
-
-function escalade (start, callback) {
-	let dir = path.resolve('.', start);
-	let tmp, stats = fs.statSync(dir);
-
-	if (!stats.isDirectory()) {
-		dir = path.dirname(dir);
-	}
-
-	while (true) {
-		tmp = callback(dir, fs.readdirSync(dir));
-		if (tmp) return path.resolve(dir, tmp);
-		dir = path.dirname(tmp = dir);
-		if (tmp === dir) break;
-	}
-}
 
 var shim$1 = {
     fs: {
@@ -2306,9 +1883,6 @@ const y18n = (opts) => {
   return y18n$1(opts, shim$1)
 };
 
-const REQUIRE_ERROR = 'require is not supported by ESM';
-const REQUIRE_DIRECTORY_ERROR = 'loading a directory of commands is not supported yet for ESM';
-
 let __dirname$2;
 try {
   __dirname$2 = url.fileURLToPath((typeof document === 'undefined' ? require('u' + 'rl').pathToFileURL(__filename).href : (_documentCurrentScript && _documentCurrentScript.tagName.toUpperCase() === 'SCRIPT' && _documentCurrentScript.src || new URL('index.cjs', document.baseURI).href)));
@@ -2318,47 +1892,12 @@ try {
 const mainFilename = __dirname$2.substring(0, __dirname$2.lastIndexOf('node_modules'));
 
 ({
-  assert: {
-    notStrictEqual: assert.notStrictEqual,
-    strictEqual: assert.strictEqual
-  },
-  cliui: ui,
-  findUp: escalade,
-  getEnv: (key) => {
-    return process.env[key]
-  },
-  inspect: util.inspect,
-  getCallerFile: () => {
-    throw new YError(REQUIRE_DIRECTORY_ERROR)
-  },
-  getProcessArgvBin,
   mainFilename: mainFilename || process.cwd(),
-  Parser: yargsParser,
-  path: {
-    basename: path.basename,
-    dirname: path.dirname,
-    extname: path.extname,
-    relative: path.relative,
-    resolve: path.resolve
-  },
   process: {
-    argv: () => process.argv,
     cwd: process.cwd,
-    emitWarning: (warning, type) => process.emitWarning(warning, type),
-    execPath: () => process.execPath,
     exit: process.exit,
     nextTick: process.nextTick,
     stdColumns: typeof process.stdout.columns !== 'undefined' ? process.stdout.columns : null
-  },
-  readFileSync: fs.readFileSync,
-  require: () => {
-    throw new YError(REQUIRE_ERROR)
-  },
-  requireDirectory: () => {
-    throw new YError(REQUIRE_DIRECTORY_ERROR)
-  },
-  stringWidth: (str) => {
-    return [...str].length
   },
   y18n: y18n({
     directory: path.resolve(__dirname$2, '../../../locales'),
@@ -2409,7 +1948,7 @@ var logDifferences = function logDifferences(differences, database, dryRun) {
           return {
             Type: diff.type,
             Name: diff.tableName,
-            Details: "Field ".concat(diff.field.Field, " ").concat(diff.info, " is ").concat(JSON.stringify((_diff$currentField = diff.currentField) === null || _diff$currentField === undefined ? undefined : _diff$currentField[property]), ", expected ").concat(JSON.stringify((_diff$field = diff.field) === null || _diff$field === undefined ? undefined : _diff$field[property])),
+            Details: "Field ".concat(diff.field.Field, " ").concat(diff.info, " is ").concat(JSON.stringify((_diff$currentField = diff.currentField) === null || _diff$currentField === void 0 ? void 0 : _diff$currentField[property]), ", expected ").concat(JSON.stringify((_diff$field = diff.field) === null || _diff$field === void 0 ? void 0 : _diff$field[property])),
             Action: 'Field is mismatched'
           };
         }
@@ -2590,9 +2129,9 @@ var PASSWORD_LABEL = 'MySQL password (typing is hidden, Enter for none)';
 var createPrompter = function createPrompter() {
   var _ref = arguments.length > 0 && arguments[0] !== undefined ? arguments[0] : {},
     _ref$input = _ref.input,
-    input = _ref$input === undefined ? process.stdin : _ref$input,
+    input = _ref$input === void 0 ? process.stdin : _ref$input,
     _ref$output = _ref.output,
-    output = _ref$output === undefined ? process.stdout : _ref$output;
+    output = _ref$output === void 0 ? process.stdout : _ref$output;
   var rl = readline.createInterface({
     input: input,
     output: output,
@@ -2743,9 +2282,9 @@ var promptForOptions = /*#__PURE__*/function () {
         case 7:
           _context5.t1 = _context5.sent;
           choice = (0, _context5.t0)(_context5.t1);
-          command = (_COMMANDS$name = (_COMMANDS = COMMANDS$1[Number(choice) - 1]) === null || _COMMANDS === undefined ? undefined : _COMMANDS.name) !== null && _COMMANDS$name !== undefined ? _COMMANDS$name : (_COMMANDS$find = COMMANDS$1.find(function (c) {
+          command = (_COMMANDS$name = (_COMMANDS = COMMANDS$1[Number(choice) - 1]) === null || _COMMANDS === void 0 ? void 0 : _COMMANDS.name) !== null && _COMMANDS$name !== void 0 ? _COMMANDS$name : (_COMMANDS$find = COMMANDS$1.find(function (c) {
             return c.name === choice.toLowerCase();
-          })) === null || _COMMANDS$find === undefined ? undefined : _COMMANDS$find.name;
+          })) === null || _COMMANDS$find === void 0 ? void 0 : _COMMANDS$find.name;
           if (command) {
             _context5.next = 13;
             break;
@@ -2776,7 +2315,7 @@ var promptForOptions = /*#__PURE__*/function () {
         case 27:
           argv.password = _context5.sent;
           _context5.next = 30;
-          return ask('Database (blank for all)', (_argv$database = argv.database) !== null && _argv$database !== undefined ? _argv$database : '');
+          return ask('Database (blank for all)', (_argv$database = argv.database) !== null && _argv$database !== void 0 ? _argv$database : '');
         case 30:
           _context5.t4 = _context5.sent;
           if (_context5.t4) {
@@ -2830,7 +2369,7 @@ var promptForOptions = /*#__PURE__*/function () {
             break;
           }
           _context5.next = 57;
-          return confirm("This will change the structure of ".concat((_argv$database2 = argv.database) !== null && _argv$database2 !== undefined ? _argv$database2 : 'every database', " on ").concat(argv.host, ". Continue?"));
+          return confirm("This will change the structure of ".concat((_argv$database2 = argv.database) !== null && _argv$database2 !== void 0 ? _argv$database2 : 'every database', " on ").concat(argv.host, ". Continue?"));
         case 57:
           _context5.t5 = !_context5.sent;
         case 58:
@@ -3307,8 +2846,8 @@ var validateSyncOptions = function validateSyncOptions(options, filePath) {
 var getTableOptions = function getTableOptions(syncOptions, database, table) {
   var _syncOptions$autoIncr, _syncOptions$database;
   return _objectSpread2({
-    autoIncrement: (_syncOptions$autoIncr = syncOptions === null || syncOptions === undefined ? undefined : syncOptions.autoIncrement) !== null && _syncOptions$autoIncr !== undefined ? _syncOptions$autoIncr : true
-  }, syncOptions === null || syncOptions === undefined || (_syncOptions$database = syncOptions.databases) === null || _syncOptions$database === undefined || (_syncOptions$database = _syncOptions$database[database]) === null || _syncOptions$database === undefined ? undefined : _syncOptions$database[table]);
+    autoIncrement: (_syncOptions$autoIncr = syncOptions === null || syncOptions === void 0 ? void 0 : syncOptions.autoIncrement) !== null && _syncOptions$autoIncr !== void 0 ? _syncOptions$autoIncr : true
+  }, syncOptions === null || syncOptions === void 0 || (_syncOptions$database = syncOptions.databases) === null || _syncOptions$database === void 0 || (_syncOptions$database = _syncOptions$database[database]) === null || _syncOptions$database === void 0 ? void 0 : _syncOptions$database[table]);
 };
 var removeAutoIncrementCounter = function removeAutoIncrementCounter(createSQL) {
   return createSQL.replace(/\s+AUTO_INCREMENT=\d+/i, '');
@@ -3332,8 +2871,8 @@ var formatDefiner = function formatDefiner(definer) {
   if (typeof definer !== 'string') return null;
   var match = definer.trim().replace(/^DEFINER\s*=\s*/i, '').match(/^(?:`([^`]+)`|'([^']+)'|([^@`'\s]+))@(?:`([^`]+)`|'([^']+)'|([^@`'\s]+))$/);
   if (!match) return null;
-  var user = (_ref2 = (_match$ = match[1]) !== null && _match$ !== undefined ? _match$ : match[2]) !== null && _ref2 !== undefined ? _ref2 : match[3];
-  var host = (_ref3 = (_match$2 = match[4]) !== null && _match$2 !== undefined ? _match$2 : match[5]) !== null && _ref3 !== undefined ? _ref3 : match[6];
+  var user = (_ref2 = (_match$ = match[1]) !== null && _match$ !== void 0 ? _match$ : match[2]) !== null && _ref2 !== void 0 ? _ref2 : match[3];
+  var host = (_ref3 = (_match$2 = match[4]) !== null && _match$2 !== void 0 ? _match$2 : match[5]) !== null && _ref3 !== void 0 ? _ref3 : match[6];
   return "`".concat(user, "`@`").concat(host, "`");
 };
 
@@ -3780,7 +3319,7 @@ var getServerVersion = /*#__PURE__*/function () {
           return connection.query('SELECT VERSION() AS version');
         case 3:
           rows = _context.sent;
-          return _context.abrupt("return", (_rows$0$version = rows === null || rows === undefined || (_rows$ = rows[0]) === null || _rows$ === undefined ? undefined : _rows$.version) !== null && _rows$0$version !== undefined ? _rows$0$version : null);
+          return _context.abrupt("return", (_rows$0$version = rows === null || rows === void 0 || (_rows$ = rows[0]) === null || _rows$ === void 0 ? void 0 : _rows$.version) !== null && _rows$0$version !== void 0 ? _rows$0$version : null);
         case 7:
           _context.prev = 7;
           _context.t0 = _context["catch"](0);
@@ -3963,7 +3502,7 @@ var getVersionInfo = /*#__PURE__*/function () {
           return _context3.abrupt("return", {
             server: server,
             template: template,
-            notes: versionNotes(template === null || template === undefined ? undefined : template.version, server)
+            notes: versionNotes(template === null || template === void 0 ? void 0 : template.version, server)
           });
         case 7:
         case "end":
@@ -3996,7 +3535,7 @@ var adaptSQLForServer = function adaptSQLForServer(sql, serverVersion) {
   if (typeof sql !== 'string' || !isBefore80(serverVersion)) return sql;
   return sql.replace(/\b\w+?_0900_\w+/gi, function (collation) {
     var _portableCollation;
-    return (_portableCollation = portableCollation(collation)) !== null && _portableCollation !== undefined ? _portableCollation : collation;
+    return (_portableCollation = portableCollation(collation)) !== null && _portableCollation !== void 0 ? _portableCollation : collation;
   }).replace(/\butf8mb3_(\w+)/gi, 'utf8_$1');
 };
 
@@ -4672,7 +4211,7 @@ var defaultClause = function defaultClause(field) {
 
 // Template value for a column detail, or the live column's when the template doesn't record it
 var columnDetail = function columnDetail(field, currentField, key) {
-  return key in field ? field[key] : currentField === null || currentField === undefined ? undefined : currentField[key];
+  return key in field ? field[key] : currentField === null || currentField === void 0 ? void 0 : currentField[key];
 };
 
 /**
@@ -4717,7 +4256,7 @@ var dropIndexClause = function dropIndexClause(index) {
 var describeDifference$1 = function describeDifference(diff) {
   var _diff$field, _diff$trigger;
   var name = diff.tableName || diff.viewName || diff.Name || diff.database || '';
-  var detail = ((_diff$field = diff.field) === null || _diff$field === undefined ? undefined : _diff$field.Field) || diff.indexName || ((_diff$trigger = diff.trigger) === null || _diff$trigger === undefined ? undefined : _diff$trigger.Name) || (diff.key ? JSON.stringify(diff.key) : '');
+  var detail = ((_diff$field = diff.field) === null || _diff$field === void 0 ? void 0 : _diff$field.Field) || diff.indexName || ((_diff$trigger = diff.trigger) === null || _diff$trigger === void 0 ? void 0 : _diff$trigger.Name) || (diff.key ? JSON.stringify(diff.key) : '');
   return "".concat(diff.type, " ").concat(name).concat(detail ? '.' + detail : '');
 };
 
@@ -5103,7 +4642,7 @@ var applyDifferences = /*#__PURE__*/function () {
                   }); // Check if all columns for the index exist
                   missingColumns = Array.isArray(diff.index.ColumnName) ? diff.index.ColumnName.filter(function (col) {
                     var _col$split;
-                    return !columnNames.includes(col) && !columnNames.includes((_col$split = col.split("(")) === null || _col$split === undefined ? undefined : _col$split[0]);
+                    return !columnNames.includes(col) && !columnNames.includes((_col$split = col.split("(")) === null || _col$split === void 0 ? void 0 : _col$split[0]);
                   }) : [];
                   if (!(missingColumns.length > 0)) {
                     _context3.next = 76;
@@ -5366,9 +4905,9 @@ var describeFailures = function describeFailures(_ref3) {
 
 var primaryKeyColumns = function primaryKeyColumns(table) {
   var _table$indexes;
-  return table === null || table === undefined || (_table$indexes = table.indexes) === null || _table$indexes === undefined || (_table$indexes = _table$indexes.find(function (i) {
+  return table === null || table === void 0 || (_table$indexes = table.indexes) === null || _table$indexes === void 0 || (_table$indexes = _table$indexes.find(function (i) {
     return i.Primary || i.Name === 'PRIMARY';
-  })) === null || _table$indexes === undefined ? undefined : _table$indexes.ColumnName.map(function (col) {
+  })) === null || _table$indexes === void 0 ? void 0 : _table$indexes.ColumnName.map(function (col) {
     return col.replace(/\(\d+\)$/, '');
   });
 };
@@ -5386,27 +4925,27 @@ var findMissingRows = /*#__PURE__*/function () {
       while (1) switch (_context2.prev = _context2.next) {
         case 0:
           differences = [];
-          _i = 0, _Object$entries = Object.entries((syncOptions === null || syncOptions === undefined || (_syncOptions$database = syncOptions.databases) === null || _syncOptions$database === undefined ? undefined : _syncOptions$database[database]) || {});
+          _i = 0, _Object$entries = Object.entries((syncOptions === null || syncOptions === void 0 || (_syncOptions$database = syncOptions.databases) === null || _syncOptions$database === void 0 ? void 0 : _syncOptions$database[database]) || {});
         case 2:
           if (!(_i < _Object$entries.length)) {
             _context2.next = 34;
             break;
           }
           _Object$entries$_i = _slicedToArray(_Object$entries[_i], 2), tableName = _Object$entries$_i[0], tableOptions = _Object$entries$_i[1];
-          if (tableOptions !== null && tableOptions !== undefined && (_tableOptions$rows = tableOptions.rows) !== null && _tableOptions$rows !== undefined && _tableOptions$rows.length) {
+          if (tableOptions !== null && tableOptions !== void 0 && (_tableOptions$rows = tableOptions.rows) !== null && _tableOptions$rows !== void 0 && _tableOptions$rows.length) {
             _context2.next = 6;
             break;
           }
           return _context2.abrupt("continue", 31);
         case 6:
-          key = (_ref2 = (_tableOptions$rowKey = tableOptions.rowKey) !== null && _tableOptions$rowKey !== undefined ? _tableOptions$rowKey : primaryKeyColumns((_expected$tables = expected.tables) === null || _expected$tables === undefined ? undefined : _expected$tables[tableName])) !== null && _ref2 !== undefined ? _ref2 : primaryKeyColumns((_current$tables = current.tables) === null || _current$tables === undefined ? undefined : _current$tables[tableName]);
+          key = (_ref2 = (_tableOptions$rowKey = tableOptions.rowKey) !== null && _tableOptions$rowKey !== void 0 ? _tableOptions$rowKey : primaryKeyColumns((_expected$tables = expected.tables) === null || _expected$tables === void 0 ? void 0 : _expected$tables[tableName])) !== null && _ref2 !== void 0 ? _ref2 : primaryKeyColumns((_current$tables = current.tables) === null || _current$tables === void 0 ? void 0 : _current$tables[tableName]);
           if (key) {
             _context2.next = 9;
             break;
           }
           throw new Error("".concat(database, ".").concat(tableName, ": rows need a rowKey because the table has no primary key"));
         case 9:
-          tableExists = !!((_current$tables2 = current.tables) !== null && _current$tables2 !== undefined && _current$tables2[tableName]);
+          tableExists = !!((_current$tables2 = current.tables) !== null && _current$tables2 !== void 0 && _current$tables2[tableName]);
           _iterator = _createForOfIteratorHelper(tableOptions.rows);
           _context2.prev = 11;
           _loop = /*#__PURE__*/_regeneratorRuntime().mark(function _loop() {
@@ -5930,7 +5469,7 @@ var replaceCreateSQLElement = function replaceCreateSQLElement(templateSQL, live
     var insertAt = -1;
     var _loop = function _loop() {
       var previousKey = elementKey(live.body[i]);
-      if (previousKey !== null && previousKey !== undefined && previousKey.startsWith(kind)) {
+      if (previousKey !== null && previousKey !== void 0 && previousKey.startsWith(kind)) {
         var position = template.body.findIndex(function (line) {
           return elementKey(line) === previousKey;
         });
@@ -5944,7 +5483,7 @@ var replaceCreateSQLElement = function replaceCreateSQLElement(templateSQL, live
       // First of its kind: columns go first, indexes go after the last column
       var lastColumn = template.body.reduce(function (last, line, i) {
         var _elementKey;
-        return (_elementKey = elementKey(line)) !== null && _elementKey !== undefined && _elementKey.startsWith('col:') ? i : last;
+        return (_elementKey = elementKey(line)) !== null && _elementKey !== void 0 && _elementKey.startsWith('col:') ? i : last;
       }, -1);
       insertAt = kind === 'col:' ? 0 : lastColumn + 1;
     }
@@ -5960,7 +5499,7 @@ var tableFile = function tableFile(tableName) {
 };
 var requireTable = function requireTable(structure, tableName, which) {
   var _structure$tables;
-  var table = (_structure$tables = structure.tables) === null || _structure$tables === undefined ? undefined : _structure$tables[tableName];
+  var table = (_structure$tables = structure.tables) === null || _structure$tables === void 0 ? void 0 : _structure$tables[tableName];
   if (!table) throw new Error("Table ".concat(tableName, " is not in the ").concat(which));
   return table;
 };
@@ -5978,10 +5517,10 @@ var syncEntries = function syncEntries() {
     var name = entry[nameKey];
     if (name === changedName) return (_liveEntries$find = liveEntries.find(function (e) {
       return e[nameKey] === name;
-    })) !== null && _liveEntries$find !== undefined ? _liveEntries$find : entry;
+    })) !== null && _liveEntries$find !== void 0 ? _liveEntries$find : entry;
     return (_templateEntries$find = templateEntries.find(function (e) {
       return e[nameKey] === name;
-    })) !== null && _templateEntries$find !== undefined ? _templateEntries$find : entry;
+    })) !== null && _templateEntries$find !== void 0 ? _templateEntries$find : entry;
   });
 };
 var acceptTableElement = function acceptTableElement(template, current, diff, files) {
@@ -5990,7 +5529,7 @@ var acceptTableElement = function acceptTableElement(template, current, diff, fi
   var currentTable = requireTable(current, diff.tableName, 'database');
   if (!templateTable.createSQL) throw new Error("Table ".concat(diff.tableName, " has no createSQL in the template"));
   var isField = diff.type.endsWith('_field');
-  var name = isField ? diff.field.Field : (_diff$indexName = diff.indexName) !== null && _diff$indexName !== undefined ? _diff$indexName : (_diff$index = diff.index) === null || _diff$index === undefined ? undefined : _diff$index.Name;
+  var name = isField ? diff.field.Field : (_diff$indexName = diff.indexName) !== null && _diff$indexName !== void 0 ? _diff$indexName : (_diff$index = diff.index) === null || _diff$index === void 0 ? void 0 : _diff$index.Name;
   var createSQL = replaceCreateSQLElement(templateTable.createSQL, currentTable.createSQL, "".concat(isField ? 'col' : 'idx', ":").concat(name));
   var parsed = parseCreateTableSQL(createSQL);
   templateTable.createSQL = createSQL;
@@ -6046,21 +5585,21 @@ var acceptDifference = function acceptDifference(template, current, diff, _ref2)
       {
         var _current$tables, _liveTrigger$Definiti;
         var templateTable = requireTable(template, diff.tableName, 'template');
-        var liveTrigger = (_current$tables = current.tables) === null || _current$tables === undefined || (_current$tables = _current$tables[diff.tableName]) === null || _current$tables === undefined || (_current$tables = _current$tables.triggers) === null || _current$tables === undefined ? undefined : _current$tables.find(function (t) {
+        var liveTrigger = (_current$tables = current.tables) === null || _current$tables === void 0 || (_current$tables = _current$tables[diff.tableName]) === null || _current$tables === void 0 || (_current$tables = _current$tables.triggers) === null || _current$tables === void 0 ? void 0 : _current$tables.find(function (t) {
           return t.Name === diff.trigger.Name;
         });
         templateTable.triggers = (templateTable.triggers || []).filter(function (t) {
           return t.Name !== diff.trigger.Name;
         });
         if (liveTrigger) templateTable.triggers.push(liveTrigger);
-        files.set(path.join('tables', 'triggers', "".concat(diff.trigger.Name, ".sql")), (_liveTrigger$Definiti = liveTrigger === null || liveTrigger === undefined ? undefined : liveTrigger.Definition) !== null && _liveTrigger$Definiti !== undefined ? _liveTrigger$Definiti : null);
+        files.set(path.join('tables', 'triggers', "".concat(diff.trigger.Name, ".sql")), (_liveTrigger$Definiti = liveTrigger === null || liveTrigger === void 0 ? void 0 : liveTrigger.Definition) !== null && _liveTrigger$Definiti !== void 0 ? _liveTrigger$Definiti : null);
         break;
       }
     case 'missing_procedure':
     case 'mismatched_procedure':
       {
         var _current$procedures, _liveProcedure$Defini;
-        var liveProcedure = (_current$procedures = current.procedures) === null || _current$procedures === undefined ? undefined : _current$procedures.find(function (p) {
+        var liveProcedure = (_current$procedures = current.procedures) === null || _current$procedures === void 0 ? void 0 : _current$procedures.find(function (p) {
           return p.Name === diff.Name;
         });
         var procedures = (template.procedures || []).filter(function (p) {
@@ -6068,7 +5607,7 @@ var acceptDifference = function acceptDifference(template, current, diff, _ref2)
         });
         if (liveProcedure) procedures.push(liveProcedure);
         template.procedures = procedures;
-        files.set(path.join('procedures', "".concat(diff.Name, ".sql")), (_liveProcedure$Defini = liveProcedure === null || liveProcedure === undefined ? undefined : liveProcedure.Definition) !== null && _liveProcedure$Defini !== undefined ? _liveProcedure$Defini : null);
+        files.set(path.join('procedures', "".concat(diff.Name, ".sql")), (_liveProcedure$Defini = liveProcedure === null || liveProcedure === void 0 ? void 0 : liveProcedure.Definition) !== null && _liveProcedure$Defini !== void 0 ? _liveProcedure$Defini : null);
         break;
       }
     case 'missing_view':
@@ -6076,10 +5615,10 @@ var acceptDifference = function acceptDifference(template, current, diff, _ref2)
     case 'mismatched_view':
       {
         var _current$views;
-        var liveView = (_current$views = current.views) === null || _current$views === undefined ? undefined : _current$views[diff.viewName];
+        var liveView = (_current$views = current.views) === null || _current$views === void 0 ? void 0 : _current$views[diff.viewName];
         template.views = _objectSpread2({}, template.views);
         if (liveView) template.views[diff.viewName] = liveView;else delete template.views[diff.viewName];
-        files.set(path.join('views', "".concat(diff.viewName, ".sql")), liveView !== null && liveView !== undefined ? liveView : null);
+        files.set(path.join('views', "".concat(diff.viewName, ".sql")), liveView !== null && liveView !== void 0 ? liveView : null);
         break;
       }
     default:
@@ -6089,7 +5628,7 @@ var acceptDifference = function acceptDifference(template, current, diff, _ref2)
 var describeDifference = function describeDifference(diff) {
   var _diff$field, _diff$trigger;
   var name = diff.tableName || diff.viewName || diff.Name || diff.database || '';
-  var detail = ((_diff$field = diff.field) === null || _diff$field === undefined ? undefined : _diff$field.Field) || diff.indexName || ((_diff$trigger = diff.trigger) === null || _diff$trigger === undefined ? undefined : _diff$trigger.Name) || '';
+  var detail = ((_diff$field = diff.field) === null || _diff$field === void 0 ? void 0 : _diff$field.Field) || diff.indexName || ((_diff$trigger = diff.trigger) === null || _diff$trigger === void 0 ? void 0 : _diff$trigger.Name) || '';
   return "".concat(diff.type, " ").concat(name).concat(detail ? '.' + detail : '');
 };
 
@@ -6554,37 +6093,37 @@ var startApiServer = function startApiServer(port, argv) {
         }
       }, _callee9);
     }));
-    return function (_x9, _x10) {
+    return function (_x9, _x0) {
       return _ref8.apply(this, arguments);
     };
   }());
 
   // API endpoint to overwrite the template with the database's current values
   app.post('/api/acceptCurrent', /*#__PURE__*/function () {
-    var _ref10 = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee11(req, res) {
+    var _ref0 = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee1(req, res) {
       var _req$body4, config, database, diffs, checker;
-      return _regeneratorRuntime().wrap(function _callee11$(_context11) {
-        while (1) switch (_context11.prev = _context11.next) {
+      return _regeneratorRuntime().wrap(function _callee1$(_context1) {
+        while (1) switch (_context1.prev = _context1.next) {
           case 0:
             _req$body4 = req.body, config = _req$body4.config, database = _req$body4.database, diffs = _req$body4.diffs;
             config = setConfig(config, argv);
             if (config.output) {
-              _context11.next = 4;
+              _context1.next = 4;
               break;
             }
-            return _context11.abrupt("return", res.status(400).json({
+            return _context1.abrupt("return", res.status(400).json({
               message: 'No template folder selected'
             }));
           case 4:
-            _context11.prev = 4;
+            _context1.prev = 4;
             assertOutsidePackage(config.output);
-            _context11.next = 11;
+            _context1.next = 11;
             break;
           case 8:
-            _context11.prev = 8;
-            _context11.t0 = _context11["catch"](4);
-            return _context11.abrupt("return", res.status(400).json({
-              message: _context11.t0.message
+            _context1.prev = 8;
+            _context1.t0 = _context1["catch"](4);
+            return _context1.abrupt("return", res.status(400).json({
+              message: _context1.t0.message
             }));
           case 11:
             checker = new DBStructureChecker(config, database);
@@ -6595,67 +6134,67 @@ var startApiServer = function startApiServer(port, argv) {
                 error: err.message
               });
             });
-            checker.connection.on('connect', /*#__PURE__*/_asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee10() {
+            checker.connection.on('connect', /*#__PURE__*/_asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee0() {
               var _diffs$length;
-              return _regeneratorRuntime().wrap(function _callee10$(_context10) {
-                while (1) switch (_context10.prev = _context10.next) {
+              return _regeneratorRuntime().wrap(function _callee0$(_context0) {
+                while (1) switch (_context0.prev = _context0.next) {
                   case 0:
-                    _context10.prev = 0;
-                    console.log("Keeping current values in the template for ".concat((_diffs$length = diffs === null || diffs === undefined ? undefined : diffs.length) !== null && _diffs$length !== undefined ? _diffs$length : 0, " difference(s) in ").concat(database));
-                    _context10.next = 4;
+                    _context0.prev = 0;
+                    console.log("Keeping current values in the template for ".concat((_diffs$length = diffs === null || diffs === void 0 ? void 0 : diffs.length) !== null && _diffs$length !== void 0 ? _diffs$length : 0, " difference(s) in ").concat(database));
+                    _context0.next = 4;
                     return acceptCurrentIntoTemplate(checker.connection, config.output, database, diffs || []);
                   case 4:
                     res.json({
                       message: 'Template updated with the current values'
                     });
-                    _context10.next = 10;
+                    _context0.next = 10;
                     break;
                   case 7:
-                    _context10.prev = 7;
-                    _context10.t0 = _context10["catch"](0);
+                    _context0.prev = 7;
+                    _context0.t0 = _context0["catch"](0);
                     res.status(500).json({
-                      message: _context10.t0.message
+                      message: _context0.t0.message
                     });
                   case 10:
-                    _context10.prev = 10;
-                    _context10.next = 13;
+                    _context0.prev = 10;
+                    _context0.next = 13;
                     return checker.closeConnection();
                   case 13:
-                    return _context10.finish(10);
+                    return _context0.finish(10);
                   case 14:
                   case "end":
-                    return _context10.stop();
+                    return _context0.stop();
                 }
-              }, _callee10, null, [[0, 7, 10, 14]]);
+              }, _callee0, null, [[0, 7, 10, 14]]);
             })));
           case 14:
           case "end":
-            return _context11.stop();
+            return _context1.stop();
         }
-      }, _callee11, null, [[4, 8]]);
+      }, _callee1, null, [[4, 8]]);
     }));
-    return function (_x11, _x12) {
-      return _ref10.apply(this, arguments);
+    return function (_x1, _x10) {
+      return _ref0.apply(this, arguments);
     };
   }());
   app.post('/api/browse-folders', /*#__PURE__*/function () {
-    var _ref12 = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee12(req, res) {
+    var _ref10 = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee10(req, res) {
       var _req$body$currentPath, currentPath, resolvedPath, contents, items, sortedItems;
-      return _regeneratorRuntime().wrap(function _callee12$(_context12) {
-        while (1) switch (_context12.prev = _context12.next) {
+      return _regeneratorRuntime().wrap(function _callee10$(_context10) {
+        while (1) switch (_context10.prev = _context10.next) {
           case 0:
-            _context12.prev = 0;
+            _context10.prev = 0;
             // Start where mysqlsyncr was run from, not in the package folder
-            _req$body$currentPath = req.body.currentPath, currentPath = _req$body$currentPath === undefined ? process.cwd() : _req$body$currentPath;
+            _req$body$currentPath = req.body.currentPath, currentPath = _req$body$currentPath === void 0 ? process.cwd() : _req$body$currentPath;
             console.log('Browsing folder:', currentPath);
             resolvedPath = currentPath.startsWith('/') || currentPath.match(/^[A-Z]:\\/) ? path.resolve(currentPath) : path.resolve(currentPath);
             console.log('Resolved path:', resolvedPath);
-            _context12.next = 7;
+            _context10.next = 7;
             return fs$1.readdir(resolvedPath, {
               withFileTypes: true
             });
           case 7:
-            contents = _context12.sent;
+            contents = _context10.sent;
             // Separate directories and files
             items = contents.map(function (dirent) {
               return {
@@ -6683,36 +6222,36 @@ var startApiServer = function startApiServer(port, argv) {
               currentPath: resolvedPath,
               items: sortedItems
             });
-            _context12.next = 17;
+            _context10.next = 17;
             break;
           case 14:
-            _context12.prev = 14;
-            _context12.t0 = _context12["catch"](0);
+            _context10.prev = 14;
+            _context10.t0 = _context10["catch"](0);
             res.status(500).json({
-              error: _context12.t0.message
+              error: _context10.t0.message
             });
           case 17:
           case "end":
-            return _context12.stop();
+            return _context10.stop();
         }
-      }, _callee12, null, [[0, 14]]);
+      }, _callee10, null, [[0, 14]]);
     }));
-    return function (_x13, _x14) {
-      return _ref12.apply(this, arguments);
+    return function (_x11, _x12) {
+      return _ref10.apply(this, arguments);
     };
   }());
   app.post('/api/create-folder', /*#__PURE__*/function () {
-    var _ref13 = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee13(req, res) {
+    var _ref11 = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee11(req, res) {
       var folderPath, resolvedPath;
-      return _regeneratorRuntime().wrap(function _callee13$(_context13) {
-        while (1) switch (_context13.prev = _context13.next) {
+      return _regeneratorRuntime().wrap(function _callee11$(_context11) {
+        while (1) switch (_context11.prev = _context11.next) {
           case 0:
-            _context13.prev = 0;
+            _context11.prev = 0;
             folderPath = req.body.folderPath;
             console.log('Creating folder:', folderPath);
             resolvedPath = folderPath.startsWith('/') || folderPath.match(/^[A-Z]:\\/) ? path.resolve(folderPath) : path.resolve(process.cwd(), folderPath);
             assertOutsidePackage(resolvedPath);
-            _context13.next = 7;
+            _context11.next = 7;
             return fs$1.mkdir(resolvedPath, {
               recursive: true
             });
@@ -6721,22 +6260,22 @@ var startApiServer = function startApiServer(port, argv) {
               success: true,
               path: resolvedPath
             });
-            _context13.next = 13;
+            _context11.next = 13;
             break;
           case 10:
-            _context13.prev = 10;
-            _context13.t0 = _context13["catch"](0);
+            _context11.prev = 10;
+            _context11.t0 = _context11["catch"](0);
             res.status(500).json({
-              error: _context13.t0.message
+              error: _context11.t0.message
             });
           case 13:
           case "end":
-            return _context13.stop();
+            return _context11.stop();
         }
-      }, _callee13, null, [[0, 10]]);
+      }, _callee11, null, [[0, 10]]);
     }));
-    return function (_x15, _x16) {
-      return _ref13.apply(this, arguments);
+    return function (_x13, _x14) {
+      return _ref11.apply(this, arguments);
     };
   }());
 
@@ -6873,7 +6412,7 @@ var rebuildTemplate = /*#__PURE__*/function () {
     return _regeneratorRuntime().wrap(function _callee$(_context) {
       while (1) switch (_context.prev = _context.next) {
         case 0:
-          _ref2 = _args.length > 1 && _args[1] !== undefined ? _args[1] : {}, _ref2$write = _ref2.write, write = _ref2$write === undefined ? false : _ref2$write;
+          _ref2 = _args.length > 1 && _args[1] !== undefined ? _args[1] : {}, _ref2$write = _ref2.write, write = _ref2$write === void 0 ? false : _ref2$write;
           if (write) assertOutsidePackage(dir);
           _context.next = 4;
           return loadSyncOptions(dir);
@@ -6899,7 +6438,7 @@ var rebuildTemplate = /*#__PURE__*/function () {
           entry = _step5.value;
           database = entry.name;
           jsonPath = path.join(dir, database, "".concat(database, ".json"));
-          structure = undefined;
+          structure = void 0;
           _context.prev = 17;
           _context.t0 = JSON;
           _context.next = 21;
@@ -7741,7 +7280,7 @@ var printVersions = /*#__PURE__*/function () {
           template = _yield$getVersionInfo.template;
           notes = _yield$getVersionInfo.notes;
           templateText = template ? "".concat(template.version).concat(template.inferred ? " (inferred: ".concat(template.reason, ")") : '') : 'unknown';
-          console.log("MySQL server: ".concat(server !== null && server !== undefined ? server : 'unknown', "; template: ").concat(templateText));
+          console.log("MySQL server: ".concat(server !== null && server !== void 0 ? server : 'unknown', "; template: ").concat(templateText));
           _iterator = _createForOfIteratorHelper(notes);
           try {
             for (_iterator.s(); !(_step = _iterator.n()).done;) {
@@ -7759,7 +7298,7 @@ var printVersions = /*#__PURE__*/function () {
       }
     }, _callee7);
   }));
-  return function printVersions(_x9, _x10) {
+  return function printVersions(_x9, _x0) {
     return _ref7.apply(this, arguments);
   };
 }();
