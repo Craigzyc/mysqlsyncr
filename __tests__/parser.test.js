@@ -81,7 +81,7 @@ describe('Create Table Parser', () => {
                 "Field": "lastModifiedBy",
                 "Type": "varchar(32)",
                 "NotNull": true,
-                "Default": "System"
+                "Default": "System Generated"
               }
             ],
             "indexes": [

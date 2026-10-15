@@ -95,11 +95,13 @@ describe('Create Table Parser', () => {
               },
               {
                 "Field": "oorValue",
-                "Type": "float(10,2)"
+                "Type": "float(10,2)",
+                "Default": "NULL"
               },
               {
                 "Field": "thresholdValue",
-                "Type": "float(10,2)"
+                "Type": "float(10,2)",
+                "Default": "NULL"
               },
               {
                 "Field": "dateCreated",

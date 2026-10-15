@@ -1,5 +1,33 @@
 import { logger } from './loggers.js'; // Import the logger
 import { normalizeSQLDefinition } from './normalizers.js';
+import { parseCreateTableSQL } from './parsers.js';
+
+// The `columns` and `indexes` arrays stored in a dump are derived data, produced by
+// whichever parser version wrote that dump. `createSQL` is the source of truth, so
+// re-parse it and compare both sides with the same parser. Without this an older dump
+// reports differences that no DDL can ever resolve - index prefix lengths, Unique
+// flags, truncated enum types - because only the live side gets the current parser.
+// A column with no DEFAULT clause defaults to NULL, so an explicit `DEFAULT NULL` and no
+// clause at all describe the same column. They have to compare equal: SHOW CREATE TABLE
+// omits the clause entirely for TEXT and BLOB columns, so a dump that states it produces
+// a difference that applying can never resolve - the ALTER succeeds, the server still
+// reports the column without it, and the same difference returns on the next compare.
+const defaultOf = (column) => (column.Default === undefined || column.Default === null ? 'NULL' : column.Default);
+
+// Index columns compared as a set, without disturbing the declared column order.
+const sortedColumns = (index) => [...(index.ColumnName || [])].sort().join(', ');
+
+const parseExpectedTable = (tableName, contents) => {
+    if (!contents.createSQL) return contents;
+    try {
+        const reparsed = parseCreateTableSQL(contents.createSQL);
+        if (!reparsed) return contents;
+        return { ...contents, columns: reparsed.columns, indexes: reparsed.indexes };
+    } catch (e) {
+        logger(`Could not re-parse createSQL for table ${tableName}, using stored structure`, e);
+        return contents;
+    }
+};
 export const findDifferences = (expected, current) => {
     const differences = [];
 
@@ -13,8 +41,9 @@ export const findDifferences = (expected, current) => {
 
     // Compare tables and fields
     if (!expected.tables) throw new Error('No tables found in expected');
-    for (const [tableName, contents] of Object.entries(expected.tables)) {
+    for (const [tableName, storedContents] of Object.entries(expected.tables)) {
         //check if craete table matches from json, if so, we dont need to compare indexes, triggers, or fields
+        const contents = parseExpectedTable(tableName, storedContents);
         const { columns, indexes, triggers, createSQL, name, engine, charset, collate } = contents;
 
 
@@ -92,7 +121,7 @@ export const findDifferences = (expected, current) => {
             if (field.Null !== currentField.Null) {
                 differences.push({ type: 'mismatched_field', info: "Null", tableName, field, currentField });
             }
-            if (field.Default !== currentField.Default) {
+            if (defaultOf(field) !== defaultOf(currentField)) {
                 differences.push({ type: 'mismatched_field', info: "Default", tableName, field, currentField });
             }
             if (field.Type !== currentField.Type) {
@@ -108,9 +137,13 @@ export const findDifferences = (expected, current) => {
         // verify indexes
         logger('Verifying indexes for table', tableName);
         for (const index of indexes) {
-            // Check if the current index matches the expected index structure
+            // Check if the current index matches the expected index structure.
+            // Sort a copy: Array#sort is in place, and sorting index.ColumnName itself
+            // reorders the columns of the index object that gets attached to the
+            // difference below, so applying a missing composite index would create it
+            // in alphabetical order rather than the order the table declares.
             const currentIndex = current.tables[tableName].indexes.find(i =>
-                i.ColumnName.sort().join(', ') === index.ColumnName.sort().join(', ')
+                sortedColumns(i) === sortedColumns(index)
             );
             if (!currentIndex) {
                 logger('Missing index', index);
@@ -132,8 +165,8 @@ export const findDifferences = (expected, current) => {
             let indexFound = false
 
             // Sort the ColumnName array for proper comparison
-            const sortedCurrentIndexColumns = index.ColumnName.sort().join(', ');
-            if (!indexes.some(i => i.ColumnName.sort().join(', ') === sortedCurrentIndexColumns)) {
+            const sortedCurrentIndexColumns = sortedColumns(index);
+            if (!indexes.some(i => sortedColumns(i) === sortedCurrentIndexColumns)) {
                 differences.push({ type: 'extra_index', tableName, indexName: index.Name, index });
             }
         }

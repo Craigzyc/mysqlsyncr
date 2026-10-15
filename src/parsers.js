@@ -1,3 +1,12 @@
+// A single-quoted SQL string literal, '' being an escaped quote inside one.
+const QUOTED_STRING = "'(?:[^']|'')*'";
+
+// A column type with its optional argument list. The list is not always numeric:
+// enum('INSERT','UPDATE','DELETE') and set('a','b') carry quoted values, and those
+// values can themselves contain commas or parentheses, so quoted strings are matched
+// as opaque units and cannot terminate the list early.
+const TYPE_PATTERN = "[a-zA-Z]+(?:\\((?:" + QUOTED_STRING + "|[^')])*\\))?";
+
 export const parseCreateTableSQL = (createTableSQL) => {
     if(!createTableSQL) return null;
     const name = createTableSQL.match(/CREATE TABLE\s+`([^`]+)`/)[1];
@@ -11,8 +20,26 @@ export const parseCreateTableSQL = (createTableSQL) => {
     // Split the SQL statement into lines and filter out empty lines
     const lines = createTableSQL.split('\n').map(line => line.trim()).filter(line => line.length > 0);
 
-    // Regular expression to match column definitions
-    const columnRegex = /`([^`]+)`\s+([^\s,]+)(\s+NOT NULL|\s+NULL)?(\s+DEFAULT\s+([^,\s]+))?(\s+AUTO_INCREMENT)?/;
+    // Regular expression to match column definitions.
+    // The non-capturing group after the type skips the attributes MySQL renders between
+    // the type and the NULL/DEFAULT clauses, e.g.
+    //   `IID` varchar(25) COLLATE utf8mb4_unicode_ci DEFAULT NULL
+    //   `qty` int(11) unsigned NOT NULL DEFAULT '0'
+    // Without it those optional groups sit at the wrong offset and fail to match, so the
+    // column silently parses with no Default/NotNull. Casing follows SHOW CREATE TABLE
+    // output, which is what this parser is always fed.
+    // The type uses TYPE_PATTERN rather than a comma-free run: `float(10,2)` and
+    // `enum('a','b')` end at the first comma otherwise, which pushes every later group
+    // out of position and silently drops NotNull/Default/AutoIncrement. The DEFAULT
+    // value likewise accepts a quoted string, so a default containing a space
+    // (DEFAULT 'System Generated') is not truncated at the space.
+    const columnRegex = new RegExp(
+        '`([^`]+)`\\s+(' + TYPE_PATTERN + ')' +
+        '(?:\\s+unsigned|\\s+zerofill|\\s+CHARACTER SET \\w+|\\s+COLLATE \\w+)*' +
+        '(\\s+NOT NULL|\\s+NULL)?' +
+        '(\\s+DEFAULT\\s+(' + QUOTED_STRING + '|[^,\\s]+))?' +
+        '(\\s+AUTO_INCREMENT)?'
+    );
 
     // Regular expression to match index definitions
     const indexRegex_Old = /(PRIMARY|UNIQUE)?\s*KEY\s*`([^`]+)`\s*\(([^)]+)\)|PRIMARY KEY\s*\(([^)]+)\)/;
@@ -142,8 +169,10 @@ export const parseConstraint = (sql) => {
 };
 
 const parseColumnType = (line) => {
-    // Match type pattern including parameters, handling both single and double parameter types
-    const typeRegex = /`[^`]+`\s+([a-zA-Z]+(?:\([0-9]+(?:,[0-9]+)?\))?)/i;
+    // Match type pattern including parameters. A numeric-only argument list silently
+    // truncated enum('INSERT','UPDATE','DELETE') and set('a','b') to a bare `enum`/`set`,
+    // losing the values entirely - see TYPE_PATTERN.
+    const typeRegex = new RegExp('`[^`]+`\\s+(' + TYPE_PATTERN + ')', 'i');
     const match = line.match(typeRegex);
     
     if (!match) return null;

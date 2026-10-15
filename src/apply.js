@@ -1,7 +1,83 @@
 import { logger } from './loggers.js';
 
+// Names a difference the way the caller would recognise it in the UI.
+const describeDiff = (diff) => {
+    const name = diff.indexName || diff.index?.Name || diff.viewName || diff.trigger?.Name
+        || diff.field?.Field || diff.Name || diff.tableName || '';
+    const where = diff.tableName && name !== diff.tableName ? ` on ${diff.tableName}` : '';
+    return `${diff.type} ${name}${where}`.trim();
+};
+
+// MySQL 8 added the _0900_ collation family, which does not exist on 5.7. The _unicode_ci
+// collation of the same charset is accent- and case-insensitive like _0900_ai_ci and is
+// present on both versions, so a table created with it means the same thing either way -
+// unlike dropping the clause, which would resolve to a different default per server.
+const portableCollation = (collation) => {
+    const match = /^(\w+?)_0900_(?:ai_ci|as_ci)$/i.exec(collation);
+    return match ? `${match[1]}_unicode_ci` : null;
+};
+
+// Rewrites one collation in a CREATE TABLE, both as a table option (COLLATE=x) and as a
+// column attribute (COLLATE x). Passing null for `to` removes the clause entirely.
+const replaceCollation = (sql, from, to) => {
+    const escaped = from.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return sql
+        .replace(new RegExp('COLLATE(\\s*)=(\\s*)' + escaped, 'gi'), to ? `COLLATE$1=$2${to}` : '')
+        .replace(new RegExp('COLLATE(\\s+)' + escaped, 'gi'), to ? `COLLATE$1${to}` : '');
+};
+
+// Rewrites that let DDL dumped from a newer server run on an older one. Each inspects the
+// error the server actually returned and returns the amended SQL plus what changed, or
+// null when it has nothing to offer - so a rewrite only ever fires for the failure it
+// was written for, and anything else still surfaces as a failure.
+const compatRewrites = [
+    (sql, errorMessage) => {
+        const unknown = /Unknown collation: '([^']+)'/i.exec(errorMessage);
+        if (!unknown) return null;
+        const substitute = portableCollation(unknown[1]);
+        const rewritten = replaceCollation(sql, unknown[1], substitute);
+        if (rewritten === sql) return null;
+        return {
+            sql: rewritten,
+            message: `server does not support collation ${unknown[1]}, created with ${substitute || 'the charset default'} instead`,
+        };
+    },
+    (sql, errorMessage) => {
+        // Index visibility is MySQL 8.0.23+. Only strip the keyword where it is legal -
+        // directly after an index definition's closing parenthesis - so the word cannot
+        // be removed from a column comment or a column named `visible`.
+        if (!/error in your SQL syntax/i.test(errorMessage) || !/\b(?:IN)?VISIBLE\b/i.test(errorMessage)) return null;
+        const rewritten = sql.replace(/\)(\s+)(?:IN)?VISIBLE(?=\s*[,)\r\n])/g, ')');
+        if (rewritten === sql) return null;
+        return {
+            sql: rewritten,
+            message: 'server does not support index visibility, created with every index visible',
+        };
+    },
+];
+
 export const applyDifferences = async (connection, database, differences) => {
-   
+    // Every difference that could not be applied, so the caller can tell the user which
+    // ones are still outstanding and why. These used to be swallowed by a logger() call
+    // that only prints under --verbose, so a failed apply looked identical to a
+    // successful one and the same differences simply reappeared on the next compare.
+    const failures = [];
+    // Differences that were applied, but not exactly as the dump describes them.
+    const warnings = [];
+
+    // A dump written by MySQL 8 assumes explicit_defaults_for_timestamp is on, where a
+    // `timestamp NOT NULL` column with no DEFAULT is just a column with no default. With
+    // the MySQL 5.7 default of off, the server instead assigns every TIMESTAMP NOT NULL
+    // column after the first an implicit '0000-00-00 00:00:00', which strict mode then
+    // rejects at CREATE TABLE time. Matching MySQL 8 for this session applies that DDL as
+    // written; DDL that states its defaults - everything SHOW CREATE TABLE emits, on
+    // either version - parses the same way with the setting on or off.
+    try {
+        await connection.query('SET SESSION explicit_defaults_for_timestamp = 1');
+    } catch (e) {
+        logger(`Could not set explicit_defaults_for_timestamp for this session: ${e.message}`);
+    }
+
     differences.sort((a, b) => {
         //Sort to make sure we apply the differences in a logical order.
         const typePriority = {
@@ -44,7 +120,40 @@ export const applyDifferences = async (connection, database, differences) => {
                 const { tableName, createSQL } = diff;
                 logger(`Creating missing table ${tableName}`);
                 console.log(`Executing: ${createSQL}`);
-                await connection.query(createSQL);
+                try {
+                    await connection.query(createSQL);
+                } catch (e) {
+                    // The dump can name things this server has never heard of - a MySQL 8
+                    // collation, index visibility. Amend the statement for whatever the
+                    // server objected to and retry, one objection at a time, since it only
+                    // reports the first. The table then exists, but not exactly as dumped,
+                    // so record every change rather than calling it a clean success.
+                    let sql = createSQL;
+                    let error = e;
+                    const changes = [];
+
+                    while (error && changes.length < compatRewrites.length) {
+                        const message = error.message;
+                        const rewrite = compatRewrites.reduce((found, fn) => found || fn(sql, message), null);
+                        if (!rewrite) break;
+
+                        sql = rewrite.sql;
+                        changes.push(rewrite.message);
+                        console.log(`Retrying: ${sql}`);
+                        try {
+                            await connection.query(sql);
+                            error = null;
+                        } catch (retryError) {
+                            error = retryError;
+                        }
+                    }
+
+                    if (error) throw error;
+
+                    const message = changes.join('; ');
+                    console.warn(`Applied ${describeDiff(diff)} with a change: ${message}`);
+                    warnings.push({ type: diff.type, tableName, description: describeDiff(diff), message });
+                }
 
             } else if (diff.type === 'extra_table') {
                 const { tableName } = diff;
@@ -208,7 +317,10 @@ export const applyDifferences = async (connection, database, differences) => {
                 const missingColumns = Array.isArray(diff.index.ColumnName) ? diff.index.ColumnName.filter(col => !columnNames.includes(col) && !columnNames.includes(col.split("(")?.[0])) : [];
 
                 if (missingColumns.length > 0) {
-                    logger(`Cannot create index ${diff.index.Name} on ${diff.tableName}. Missing columns: ${missingColumns.join(', ')}`);
+                    const message = `Missing columns: ${missingColumns.join(', ')}`;
+                    logger(`Cannot create index ${diff.index.Name} on ${diff.tableName}. ${message}`);
+                    console.error(`Failed to apply ${describeDiff(diff)}: ${message}`);
+                    failures.push({ type: diff.type, tableName: diff.tableName, description: describeDiff(diff), message });
                     continue; // Skip index creation if columns are missing
                 }
 
@@ -358,6 +470,10 @@ export const applyDifferences = async (connection, database, differences) => {
             }
         } catch (e) {
             logger(`Error applying difference of type:${diff.type}. Error: ${e.message}`, diff);
+            console.error(`Failed to apply ${describeDiff(diff)}: ${e.message}`);
+            failures.push({ type: diff.type, tableName: diff.tableName, description: describeDiff(diff), message: e.message });
         }
     }
+
+    return { attempted: differences.length, failures, warnings };
 }

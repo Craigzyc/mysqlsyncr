@@ -145,8 +145,25 @@ export const startApiServer = (port, argv) => {
             checker.options = req.body;
             try {
                 console.log('Applying the database structure based on JSON dumps');
-                await applyDifferences(checker.connection, database, diffs);
-                res.json({ message: 'Apply completed successfully' });
+                const { attempted, failures, warnings } = await applyDifferences(checker.connection, database, diffs);
+                const warningText = warnings.length
+                    ? ` ${warnings.length} applied with changes: ` + warnings.map(w => `${w.description} (${w.message})`).join('; ')
+                    : '';
+                if (failures.length) {
+                    // Reporting success here would be a lie: the same differences come
+                    // back on the next compare with no indication of why.
+                    res.status(500).json({
+                        message: `Applied ${attempted - failures.length} of ${attempted}. ${failures.length} failed: `
+                            + failures.map(f => `${f.description} (${f.message})`).join('; ') + warningText,
+                        failures,
+                        warnings,
+                    });
+                } else {
+                    res.json({
+                        message: `Applied ${attempted} of ${attempted}.` + warningText,
+                        warnings,
+                    });
+                }
             } catch (err) {
                 res.status(500).json({ message: err.message });
             } finally {

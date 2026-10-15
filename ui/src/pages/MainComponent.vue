@@ -287,10 +287,27 @@
                                 selectedIssues[0].type?.replace(/_/g, ' ')
                             }}</q-badge>
                         </div>
-                        <div class="text-subtitle2 q-mb-sm">Name: {{ selectedIssues[0].Name }}</div>
+                        <div v-if="issueName(selectedIssues[0])" class="text-subtitle2 q-mb-sm">
+                            Name: {{ issueName(selectedIssues[0]) }}
+                        </div>
 
                         <div v-if="selectedIssues[0].tableName" class="q-mb-sm">
                             <strong>Table:</strong> {{ selectedIssues[0].tableName }}
+                        </div>
+
+                        <div v-if="selectedIssues[0].index" class="q-mb-sm">
+                            <strong>Columns:</strong>
+                            {{ (selectedIssues[0].index.ColumnName || []).join(', ') }}
+                            <q-badge v-if="selectedIssues[0].index.Primary" color="primary" class="q-ml-sm">
+                                PRIMARY
+                            </q-badge>
+                            <q-badge
+                                v-else-if="selectedIssues[0].index.Unique"
+                                color="secondary"
+                                class="q-ml-sm"
+                            >
+                                UNIQUE
+                            </q-badge>
                         </div>
 
                         <div v-if="selectedIssues[0].createSQL" class="q-mt-md">
@@ -302,11 +319,11 @@
                             </q-card>
                         </div>
 
-                        <div v-if="selectedIssues[0].Definition" class="q-mt-md">
+                        <div v-if="selectedIssues[0].Definition || selectedIssues[0].definition" class="q-mt-md">
                             <div class="text-subtitle2 q-mb-sm">Definition:</div>
                             <q-card class="bg-grey-2">
                                 <q-card-section class="q-pa-md">
-                                    <pre class="sql-code">{{ selectedIssues[0].Definition }}</pre>
+                                    <pre class="sql-code">{{ selectedIssues[0].Definition || selectedIssues[0].definition }}</pre>
                                 </q-card-section>
                             </q-card>
                         </div>
@@ -334,7 +351,7 @@
                         </div>
 
                         <q-btn
-                            @click="fixNodeIssues(this.selectedNode)"
+                            @click="fixSingleIssue()"
                             :loading="isNodeFixing['single-issue']"
                             color="primary"
                             class="q-mt-md"
@@ -354,6 +371,7 @@
                                     label: 'Type',
                                     field: (row) => row.type?.replace(/_/g, ' '),
                                 },
+                                { name: 'name', label: 'Name', field: (row) => issueName(row) },
                                 { name: 'tableName', label: 'Table', field: 'tableName' },
                                 { name: 'actions', label: 'Actions', field: 'actions' },
                             ]"
@@ -363,6 +381,7 @@
                             <template v-slot:body="props">
                                 <q-tr :props="props">
                                     <q-td key="type">{{ props.row.type?.replace(/_/g, ' ') }}</q-td>
+                                    <q-td key="name">{{ issueName(props.row) }}</q-td>
                                     <q-td key="tableName">{{ props.row.tableName }}</q-td>
                                     <q-td key="actions">
                                         <q-btn
@@ -370,7 +389,7 @@
                                             dense
                                             color="primary"
                                             icon="visibility"
-                                            @click="showSingleIssue(props.row)"
+                                            @click="showSingleIssue(props.row, selectedIssueDbName)"
                                         >
                                             <q-tooltip>View Details</q-tooltip>
                                         </q-btn>
@@ -383,7 +402,8 @@
                                             @click="
                                                 fixNodeIssues({
                                                     type: 'issue',
-                                                    id: this.selectedNode.id,
+                                                    id: `issue-${props.rowIndex}`,
+                                                    dbName: selectedIssueDbName,
                                                     issueData: props.row,
                                                 })
                                             "
@@ -397,7 +417,7 @@
 
                         <q-btn
                             @click="fixNodeIssues(this.selectedNode)"
-                            :loading="isNodeFixing['all-issues']"
+                            :loading="isNodeFixing[selectedNode?.id]"
                             color="primary"
                             class="q-mt-md"
                             label="Fix All Issues"
@@ -452,6 +472,7 @@ export default {
             issueDialog: false,
             selectedIssues: [],
             selectedNode: null,
+            selectedIssueDbName: null,
             isNodeFixing: {}, // Tracks loading state for each node
             showFolderBrowser: false,
             isFixingAll: false,
@@ -918,16 +939,56 @@ export default {
                 this.$q.loading.hide()
             }
         },
+        issueName(issue) {
+            if (!issue) return ''
+            // Each difference type carries its name under a different key
+            // (see src/differences.js), so resolve most specific first.
+            return (
+                issue.indexName ||
+                issue.index?.Name ||
+                issue.viewName ||
+                issue.trigger?.Name ||
+                issue.field?.Field ||
+                issue.currentField?.Field ||
+                issue.Name ||
+                issue.tableName ||
+                ''
+            )
+        },
         showIssueDetails(issue, node) {
             console.log('Showing issue details:', issue, "from node:", node)
             this.selectedIssues = Array.isArray(issue) ? issue : [issue]
             this.selectedNode = node;
+            this.selectedIssueDbName = this.getDbNameFromNode(node)
             this.issueDialog = true
         },
         showSingleIssue(issue, dbName) {
             this.selectedIssues = [issue]
-            this.selectedIssueDbName = dbName;
+            this.selectedIssueDbName = dbName || this.getDbNameFromNode(this.selectedNode)
             this.issueDialog = true
+        },
+        // Fixes only the issue currently shown in the single-issue view, rather
+        // than everything under the node the dialog was opened from.
+        async fixSingleIssue() {
+            const issue = this.selectedIssues[0]
+            if (!issue) return
+            if (!this.selectedIssueDbName) {
+                // Without the database the synthetic node id below would be
+                // parsed as one, so refuse rather than apply to the wrong db.
+                console.error('No database known for issue', issue)
+                this.$q.notify({
+                    type: 'negative',
+                    message: 'Could not determine which database this issue belongs to',
+                    position: 'top',
+                })
+                return
+            }
+            await this.fixNodeIssues({
+                type: 'issue',
+                id: 'single-issue',
+                dbName: this.selectedIssueDbName,
+                issueData: issue,
+            })
         },
         async fixNodeIssues(node) {
             if (!node) return
@@ -943,7 +1004,7 @@ export default {
                 }else{
                     issues = await this.collectIssuesForNode(node)
                 }
-                dbName = this.getDbNameFromNode(node)
+                dbName = node.dbName || this.getDbNameFromNode(node)
 
                 if (!issues.length){
                     console.error('No issues found to fix', node);
@@ -964,10 +1025,17 @@ export default {
                 })
 
                 if (response.data.message) {
+                    // The server reports differences it could only apply with a change
+                    // (an unsupported collation dropped, say). Those are not clean
+                    // successes, so say what happened rather than a bare count.
+                    const warnings = response.data.warnings || []
                     this.$q.notify({
-                        type: 'positive',
-                        message: `Fixed ${issues.length} issue(s) successfully`,
+                        type: warnings.length ? 'warning' : 'positive',
+                        message: warnings.length
+                            ? response.data.message
+                            : `Fixed ${issues.length} issue(s) successfully`,
                         position: 'top',
+                        timeout: warnings.length ? 10000 : undefined,
                     })
                     // Refresh the differences to update the UI
 
@@ -989,10 +1057,13 @@ export default {
         getDbNameFromNode(node) {
             // Extract database name from node ID (assumes format: "dbName-something-etc")
             if(!node || !node.id) node = this.selectedNode
+            if (!node || !node.id) {
+                console.error('Node ID is required to get db name', node)
+                return null
+            }
             if(node.id.startsWith('db-')){
                 return node.id.split('-')[1]
             }
-            if (!node.id) return null, console.error('Node ID is required to get db name', node);
             console.log('Node ID:', node.id)
             return node.id.split('-')[0]
         },
