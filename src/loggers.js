@@ -111,6 +111,13 @@ export const logDifferences = (differences, database, dryRun) => {
                     Details: `Trigger ${diff.trigger.Name} is missing`,
                     Action: 'Trigger is missing',
                 };
+            case 'missing_row':
+                return {
+                    Type: diff.type,
+                    Name: diff.tableName,
+                    Details: `Row ${JSON.stringify(diff.key)} is missing`,
+                    Action: 'Row is missing',
+                };
             default:
                 return {
                     Type: diff.type,

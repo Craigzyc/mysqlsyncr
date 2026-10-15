@@ -75,13 +75,14 @@ describe('Create Table Parser', () => {
                 "Field": "dateUpdated",
                 "Type": "timestamp",
                 "NotNull": true,
-                "Default": "CURRENT_TIMESTAMP"
+                "Default": "CURRENT_TIMESTAMP",
+                "OnUpdate": "CURRENT_TIMESTAMP"
               },
               {
                 "Field": "lastModifiedBy",
                 "Type": "varchar(32)",
                 "NotNull": true,
-                "Default": "System"
+                "Default": "System Generated"
               }
             ],
             "indexes": [

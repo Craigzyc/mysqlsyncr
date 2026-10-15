@@ -4,17 +4,18 @@ import { getDatabases, getDatabaseStructure } from './getters.js';
 import { findDifferences } from './differences.js';
 import { logDifferences, logger } from './loggers.js';
 import { applyDifferences } from './apply.js';
+import { loadSyncOptions, getTableOptions, applyDefinerOption } from './options.js';
+import { findMissingRows } from './rows.js';
 
 export const compareAllDatabases = async (connection, inputDir, update = false, command, options) => {
     if (connection.state === 'disconnected') {
         await connection.reconnect(); // Ensure the connection is open
     }
-    // Read the expected databases from the input directory
-    let expectedDatabases = await fs.readdir(inputDir);
-    //filter out diffs.json
-    expectedDatabases = expectedDatabases.filter(file => file !== 'diffs.json');
-    //filter out dumpInfo.json
-    expectedDatabases = expectedDatabases.filter(file => file !== 'dumpInfo.json');
+    // Each expected database is a folder in the input directory; files like diffs.json,
+    // dumpInfo.json and syncOptions.json sit alongside them
+    const entries = await fs.readdir(inputDir, { withFileTypes: true });
+    const expectedDatabases = entries.filter(entry => entry.isDirectory()).map(entry => entry.name);
+    const syncOptions = await loadSyncOptions(inputDir);
     logger('Expected databases from input directory:', expectedDatabases);
 
     // Check existing databases
@@ -69,11 +70,17 @@ export const compareAllDatabases = async (connection, inputDir, update = false, 
 
         try {
             const fileContent = await fs.readFile(filePath, 'utf-8');
-            const expectedStructure = JSON.parse(fileContent);
+            const expectedStructure = applyDefinerOption(JSON.parse(fileContent), syncOptions.definer);
             logger('Getting database structure for', database);
             const currentStructure = await getDatabaseStructure(connection, database, command, options);
             logger('Database structure for', database, 'obtained');
-            const differences = findDifferences(expectedStructure, currentStructure);
+            const differences = findDifferences(expectedStructure, currentStructure, (tableName) => getTableOptions(syncOptions, database, tableName));
+            // A seed-row problem shouldn't hide this database's structure differences
+            try {
+                differences.push(...await findMissingRows(connection, database, expectedStructure, currentStructure, syncOptions));
+            } catch (err) {
+                console.error(`Could not check seed rows for ${database}: ${err.message}`);
+            }
             logger('Differences for', database, 'obtained');
             if (!update) {
                 logger('Logging differences for', database);
@@ -82,11 +89,15 @@ export const compareAllDatabases = async (connection, inputDir, update = false, 
                 logger('Logging differences for', database);
                 logDifferences(differences, database, false);
                 logger('Applying differences for', database);
-                await applyDifferences(connection, database, differences);
+                try {
+                    await applyDifferences(connection, database, differences);
+                } catch (err) {
+                    console.error(`Error applying differences for ${database}: ${err.message}`);
+                }
             }
             allDifferences[database] = differences;
         } catch (err) {
-            logger(`Error processing database ${database}:`, err.message);
+            console.error(`Error processing database ${database}: ${err.message}`);
         }
     }
     return allDifferences;

@@ -2,6 +2,7 @@ import { parseCreateTableSQL } from './parsers.js';
 import path from 'path';
 import fs from 'fs/promises';
 import { logger } from './loggers.js';
+import { applyAutoIncrementOption, applyDefiner, getTableOptions } from './options.js';
 
 export const getDatabases = async (connection) => {
     const databases = await connection.query('SHOW DATABASES');
@@ -11,7 +12,12 @@ export const getDatabases = async (connection) => {
 }
 
 
-export const getDatabaseStructure = async (connection, database, command, options) => {
+/**
+ * @param syncOptions  options from syncOptions.json; when dumping, each table's
+ *                     autoIncrement option is applied to its saved CREATE TABLE,
+ *                     and the definer option to procedures, triggers and views
+ */
+export const getDatabaseStructure = async (connection, database, command, options, syncOptions = {}) => {
     if (connection.state === 'disconnected') {
         await connection.reconnect(); // Ensure the connection is open
     }
@@ -40,7 +46,10 @@ export const getDatabaseStructure = async (connection, database, command, option
 
         // Get the CREATE TABLE statement
         const createTableRow = await connection.query(`SHOW CREATE TABLE \`${tableName}\``);
-        const createTableSQL = createTableRow[0]['Create Table'];
+        const liveCreateTableSQL = createTableRow[0]['Create Table'];
+        const createTableSQL = command === 'dump'
+            ? applyAutoIncrementOption(liveCreateTableSQL, getTableOptions(syncOptions, database, tableName).autoIncrement)
+            : liveCreateTableSQL;
 
         const parsedTable = parseCreateTableSQL(createTableSQL);
 
@@ -69,6 +78,7 @@ export const getDatabaseStructure = async (connection, database, command, option
     for (const row of routineRows) {
         let createSQLrow = await connection.query(`SHOW CREATE PROCEDURE \`${row.Name}\``);
         let createSQL = createSQLrow[0]['Create Procedure'];
+        if (command === 'dump') createSQL = applyDefiner(createSQL, syncOptions.definer);
         procedures.push({
             Name: row.Name,
             Definition: createSQL
@@ -94,7 +104,8 @@ export const getDatabaseStructure = async (connection, database, command, option
 
         // Ensure triggerDefinition is defined before using it
         const triggerDefinitionRow = await connection.query(`SHOW CREATE TRIGGER \`${triggerName}\``);
-        const triggerDefinition = triggerDefinitionRow[0]['SQL Original Statement'];
+        const liveTriggerDefinition = triggerDefinitionRow[0]['SQL Original Statement'];
+        const triggerDefinition = command === 'dump' ? applyDefiner(liveTriggerDefinition, syncOptions.definer) : liveTriggerDefinition;
 
         if (triggerDefinition) {
 
@@ -123,11 +134,12 @@ export const getDatabaseStructure = async (connection, database, command, option
         logger(`getting view Tables_in_${database}`, viewName);
         try {
             const viewDefinition = await connection.query(`SHOW CREATE VIEW \`${viewName}\``);
-            views[viewName] = viewDefinition[0]['Create View'];
+            const liveViewDefinition = viewDefinition[0]['Create View'];
+            views[viewName] = command === 'dump' ? applyDefiner(liveViewDefinition, syncOptions.definer) : liveViewDefinition;
             if (command === 'dump') {
                 const filePath = path.join(dbDir, 'views', `${viewName}.sql`); // Use the table directory for file saving
                 await fs.mkdir(path.dirname(filePath), { recursive: true }); // Create the views directory if it doesn't exist
-                await fs.writeFile(filePath, `${viewDefinition[0]['Create View']}\n`, 'utf-8');
+                await fs.writeFile(filePath, `${views[viewName]}\n`, 'utf-8');
                 logger(`View definition saved to: ${filePath}`);
             }
         } catch (error) {

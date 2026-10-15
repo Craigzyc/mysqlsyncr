@@ -95,11 +95,13 @@ describe('Create Table Parser', () => {
               },
               {
                 "Field": "oorValue",
-                "Type": "float(10,2)"
+                "Type": "float(10,2)",
+                "Default": "NULL"
               },
               {
                 "Field": "thresholdValue",
-                "Type": "float(10,2)"
+                "Type": "float(10,2)",
+                "Default": "NULL"
               },
               {
                 "Field": "dateCreated",
@@ -110,7 +112,8 @@ describe('Create Table Parser', () => {
                 "Field": "dateUpdated",
                 "Type": "timestamp",
                 "NotNull": true,
-                "Default": "CURRENT_TIMESTAMP"
+                "Default": "CURRENT_TIMESTAMP",
+                "OnUpdate": "CURRENT_TIMESTAMP"
               }
             ],
             "indexes": [

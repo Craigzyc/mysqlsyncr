@@ -55,6 +55,19 @@
                             {{ totalIssueCount }}
                         </q-badge>
                     </div>
+                    <q-space />
+                    <q-btn
+                        v-if="ignoredCount > 0"
+                        flat
+                        dense
+                        no-caps
+                        color="white"
+                        icon="visibility"
+                        :label="`${ignoredCount} ignored`"
+                        @click="showAllIgnored"
+                    >
+                        <q-tooltip>Show all ignored differences again</q-tooltip>
+                    </q-btn>
                     <q-btn
                         v-if="totalIssueCount > 0"
                         flat
@@ -77,6 +90,7 @@
 
             <q-card-section>
                 <q-tree
+                    ref="tree"
                     :nodes="databaseTree"
                     node-key="id"
                     v-model:expanded="expandedNodes"
@@ -110,7 +124,33 @@
                                 >
                                     {{ prop.node.diffCount }}
                                 </q-badge>
+                                <q-badge
+                                    v-if="prop.node.hiddenCount"
+                                    color="grey"
+                                    outline
+                                    class="q-ml-sm"
+                                >
+                                    {{ prop.node.hiddenCount }} ignored
+                                </q-badge>
                             </div>
+
+                            <q-btn
+                                v-if="
+                                    ['database', 'table'].includes(prop.node.type) &&
+                                    (prop.node.diffCount || isNodeIgnored(prop.node))
+                                "
+                                flat
+                                dense
+                                color="grey-7"
+                                :icon="isNodeIgnored(prop.node) ? 'visibility' : 'visibility_off'"
+                                size="sm"
+                                class="q-ml-md"
+                                @click.stop="toggleIgnored(prop.node)"
+                            >
+                                <q-tooltip>
+                                    {{ isNodeIgnored(prop.node) ? 'Show these differences again' : 'Ignore these differences for this session' }}
+                                </q-tooltip>
+                            </q-btn>
 
                             <q-btn
                                 v-if="
@@ -281,65 +321,90 @@
                 <!-- Single Issue View -->
                 <template v-if="selectedIssues.length === 1">
                     <q-card-section class="q-pt-none">
+                        <q-btn
+                            v-if="issueListBeforeDetails"
+                            flat
+                            dense
+                            icon="arrow_back"
+                            label="Back to list"
+                            color="primary"
+                            class="q-mb-sm"
+                            @click="backToIssueList"
+                        />
                         <div class="text-subtitle2 q-mb-sm">
                             Issue Type:
                             <q-badge color="negative">{{
                                 selectedIssues[0].type?.replace(/_/g, ' ')
                             }}</q-badge>
                         </div>
-                        <div class="text-subtitle2 q-mb-sm">Name: {{ selectedIssues[0].Name }}</div>
-
                         <div v-if="selectedIssues[0].tableName" class="q-mb-sm">
                             <strong>Table:</strong> {{ selectedIssues[0].tableName }}
                         </div>
+                        <div v-if="issueName(selectedIssues[0])" class="q-mb-sm">
+                            <strong>{{ issueNameLabel(selectedIssues[0]) }}:</strong> {{ issueName(selectedIssues[0]) }}
+                        </div>
+                        <div class="q-mb-sm">{{ issueSummary(selectedIssues[0]) }}</div>
 
-                        <div v-if="selectedIssues[0].createSQL" class="q-mt-md">
-                            <div class="text-subtitle2 q-mb-sm">SQL Definition:</div>
+                        <div v-if="definitionComparison(selectedIssues[0])" class="q-mt-md">
+                            <div class="text-subtitle2 q-mb-sm">Definition differences:</div>
+                            <DefinitionDiff
+                                :expected="definitionComparison(selectedIssues[0]).expected"
+                                :current="definitionComparison(selectedIssues[0]).current"
+                            />
+                        </div>
+
+                        <div v-else-if="singleDefinition(selectedIssues[0])" class="q-mt-md">
+                            <div class="text-subtitle2 q-mb-sm">{{ singleDefinition(selectedIssues[0]).label }}:</div>
                             <q-card class="bg-grey-2">
                                 <q-card-section class="q-pa-md">
-                                    <pre class="sql-code">{{ selectedIssues[0].createSQL }}</pre>
+                                    <pre class="sql-code">{{ singleDefinition(selectedIssues[0]).sql }}</pre>
                                 </q-card-section>
                             </q-card>
                         </div>
 
-                        <div v-if="selectedIssues[0].Definition" class="q-mt-md">
-                            <div class="text-subtitle2 q-mb-sm">Definition:</div>
-                            <q-card class="bg-grey-2">
-                                <q-card-section class="q-pa-md">
-                                    <pre class="sql-code">{{ selectedIssues[0].Definition }}</pre>
-                                </q-card-section>
-                            </q-card>
-                        </div>
-
-                        <div v-if="selectedIssues[0].currentField" class="q-mt-md">
-                            <div class="text-subtitle2 q-mb-sm">Field Comparison:</div>
-                            <q-markup-table flat bordered>
+                        <div v-if="issueComparison(selectedIssues[0])" class="q-mt-md">
+                            <div class="text-subtitle2 q-mb-sm">Comparison:</div>
+                            <q-markup-table flat bordered dense>
                                 <thead>
                                     <tr>
                                         <th class="text-left">Property</th>
-                                        <th class="text-left">Current</th>
-                                        <th class="text-left">Expected</th>
+                                        <th class="text-left">Database (current)</th>
+                                        <th class="text-left">Template (expected)</th>
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    <tr v-for="(value, key) in selectedIssues[0].currentField" :key="key">
-                                        <td>{{ key }}</td>
-                                        <td>{{ value }}</td>
-                                        <td :class="{ 'text-negative': value !== selectedIssues[0].field?.[key] }">
-                                            {{ selectedIssues[0].field?.[key] }}
+                                    <tr v-for="row in issueComparison(selectedIssues[0])" :key="row.property">
+                                        <td>{{ row.property }}</td>
+                                        <td :class="{ 'text-grey': row.current === undefined }">
+                                            {{ formatIssueValue(row.current, row.currentPresent) }}
+                                        </td>
+                                        <td :class="{ 'text-negative': row.differs, 'text-grey': row.expected === undefined }">
+                                            {{ formatIssueValue(row.expected, row.expectedPresent) }}
                                         </td>
                                     </tr>
                                 </tbody>
                             </q-markup-table>
                         </div>
 
-                        <q-btn
-                            @click="fixNodeIssues(this.selectedNode)"
-                            :loading="isNodeFixing['single-issue']"
-                            color="primary"
-                            class="q-mt-md"
-                            label="Fix Issue"
-                        />
+                        <div class="row q-gutter-sm q-mt-md">
+                            <!-- Act on the issue shown, not on every issue under the selected tree node -->
+                            <q-btn
+                                @click="fixNodeIssues({ type: 'issue', id: selectedNode?.id, issueData: selectedIssues[0] })"
+                                :loading="isNodeFixing[selectedNode?.id]"
+                                color="primary"
+                                label="Fix Issue"
+                            />
+                            <q-btn
+                                v-if="canKeepCurrent(selectedIssues[0])"
+                                @click="keepCurrentInTemplate({ type: 'issue', id: selectedNode?.id, issueData: selectedIssues[0] })"
+                                :loading="isNodeKeeping[selectedNode?.id]"
+                                color="secondary"
+                                outline
+                                label="Keep Current"
+                            >
+                                <q-tooltip>Overwrite the template with the database's current value</q-tooltip>
+                            </q-btn>
+                        </div>
                     </q-card-section>
                 </template>
 
@@ -355,6 +420,7 @@
                                     field: (row) => row.type?.replace(/_/g, ' '),
                                 },
                                 { name: 'tableName', label: 'Table', field: 'tableName' },
+                                { name: 'item', label: 'Item', field: (row) => issueName(row) },
                                 { name: 'actions', label: 'Actions', field: 'actions' },
                             ]"
                             row-key="id"
@@ -364,6 +430,7 @@
                                 <q-tr :props="props">
                                     <q-td key="type">{{ props.row.type?.replace(/_/g, ' ') }}</q-td>
                                     <q-td key="tableName">{{ props.row.tableName }}</q-td>
+                                    <q-td key="item">{{ issueName(props.row) }}</q-td>
                                     <q-td key="actions">
                                         <q-btn
                                             flat
@@ -389,6 +456,23 @@
                                             "
                                         >
                                             <q-tooltip>Fix Issue</q-tooltip>
+                                        </q-btn>
+                                        <q-btn
+                                            v-if="canKeepCurrent(props.row)"
+                                            flat
+                                            dense
+                                            color="secondary"
+                                            icon="save_as"
+                                            :loading="isNodeKeeping[`issue-${props.rowIndex}`]"
+                                            @click="
+                                                keepCurrentInTemplate({
+                                                    type: 'issue',
+                                                    id: this.selectedNode.id,
+                                                    issueData: props.row,
+                                                }, `issue-${props.rowIndex}`)
+                                            "
+                                        >
+                                            <q-tooltip>Keep Current: overwrite the template with the database's current value</q-tooltip>
                                         </q-btn>
                                     </q-td>
                                 </q-tr>
@@ -421,11 +505,30 @@
 
 <script>
 import FolderBrowser from '../components/FolderBrowser.vue'
+import DefinitionDiff from '../components/DefinitionDiff.vue'
+
+// Ignored databases/tables last for the browser tab, so they survive a reload but not a new session
+const IGNORED_KEY = 'mysqlsyncr.ignored'
+const loadIgnored = () => {
+    try {
+        return JSON.parse(sessionStorage.getItem(IGNORED_KEY)) || {}
+    } catch {
+        return {}
+    }
+}
+const saveIgnored = (ignoredByScope) => {
+    try {
+        sessionStorage.setItem(IGNORED_KEY, JSON.stringify(ignoredByScope))
+    } catch {
+        // Storage unavailable (private window etc.): ignoring still works until the page reloads
+    }
+}
 
 
 export default {
     components: {
-        FolderBrowser
+        FolderBrowser,
+        DefinitionDiff
     },
     data() {
         return {
@@ -453,12 +556,27 @@ export default {
             selectedIssues: [],
             selectedNode: null,
             isNodeFixing: {}, // Tracks loading state for each node
+            isNodeKeeping: {}, // Tracks loading state for Keep Current
+            issueListBeforeDetails: null, // The issue list View Details was opened from
+            rawDifferences: {}, // differences as the server sent them; this.differences leaves out ignored ones
+            // { 'host:port|folder': { databases: [db], tables: ['db.table'] } }, kept for this browser session
+            ignoredByScope: loadIgnored(),
             showFolderBrowser: false,
             isFixingAll: false,
             currentFixProgress: 0,
         }
     },
     computed: {
+        // What's ignored for the current server and template folder
+        ignored() {
+            return this.ignoredByScope[this.ignoredScope] || { databases: [], tables: [] }
+        },
+        ignoredScope() {
+            return `${this.host}:${this.port}|${this.dbFolder}`
+        },
+        ignoredCount() {
+            return this.ignored.databases.length + this.ignored.tables.length
+        },
         totalIssueCount() {
             return Object.values(this.differences)
                 .reduce((total, dbIssues) => total + dbIssues.length, 0);
@@ -499,7 +617,7 @@ export default {
                         database: this.database,
                     },
                 })
-                this.differences = response.data
+                this.setDifferences(response.data)
             } catch (error) {
                 console.error('Error fetching differences:', error)
             }
@@ -535,13 +653,15 @@ export default {
                 const dbDiffs = this.differences[dbName] || []
                 const totalIssues = dbDiffs.length
                 console.log(`Database ${dbName} differences ${totalIssues}:`, dbDiffs)
+                const ignored = this.isDatabaseIgnored(dbName)
                 return {
                     id: `db-${dbName}`,
                     label: dbName,
                     type: 'database',
                     lazy: true,
-                    icon: totalIssues > 0 ? 'warning' : 'check_circle',
-                    iconColor: totalIssues > 0 ? 'negative' : 'positive',
+                    icon: ignored ? 'visibility_off' : totalIssues > 0 ? 'warning' : 'check_circle',
+                    iconColor: ignored ? 'grey' : totalIssues > 0 ? 'negative' : 'positive',
+                    hiddenCount: this.hiddenCount(dbName),
                     diffCount: totalIssues || null,
                     dbData: db,
                     dbName: dbName,
@@ -560,17 +680,12 @@ export default {
                     const dbDiffs = this.differences[node.dbName] || []
 
                     // Count issues by main category
-                    const tableIssues = dbDiffs.filter(
-                        (d) =>
-                            d.type.includes('table') ||
-                            d.type.includes('field') ||
-                            d.type.includes('index') ||
-                            d.type.includes('trigger'),
-                    )
+                    const tableIssues = dbDiffs.filter((d) => this.issueCategory(d) === 'tables')
                     console.log('Table issues:', tableIssues)
 
-                    const procedureIssues = dbDiffs.filter((d) => d.type.includes('procedure'))
-                    const viewIssues = dbDiffs.filter((d) => d.type.includes('view'))
+                    const procedureIssues = dbDiffs.filter((d) => this.issueCategory(d) === 'procedures')
+                    const viewIssues = dbDiffs.filter((d) => this.issueCategory(d) === 'views')
+                    const otherIssues = dbDiffs.filter((d) => this.issueCategory(d) === 'other')
 
                     const children = [
                         {
@@ -591,7 +706,8 @@ export default {
                             iconColor: procedureIssues.length > 0 ? 'negative' : 'positive',
                             diffCount: procedureIssues.length || null,
                         },
-                        db.views && {
+                        // Shown for view differences too, e.g. a view only in the database
+                        (db.views || viewIssues.length > 0) && {
                             id: `${node.dbName}-views`,
                             label: 'Views',
                             type: 'category',
@@ -599,6 +715,26 @@ export default {
                             icon: viewIssues.length > 0 ? 'warning' : 'check_circle',
                             iconColor: viewIssues.length > 0 ? 'negative' : 'positive',
                             diffCount: viewIssues.length || null,
+                        },
+                        // Differences that belong to no table, procedure or view, so every counted one is shown
+                        otherIssues.length > 0 && {
+                            id: `${node.dbName}-other`,
+                            label: 'Other',
+                            type: 'category',
+                            lazy: false,
+                            icon: 'warning',
+                            iconColor: 'negative',
+                            diffCount: otherIssues.length,
+                            children: otherIssues.map((issue, i) => ({
+                                id: `${node.dbName}-other-${i}`,
+                                label: `${issue.type.replace(/_/g, ' ')}${this.issueName(issue) ? `: ${this.issueName(issue)}` : ''}`,
+                                type: 'issue',
+                                icon: 'warning',
+                                iconColor: 'negative',
+                                expandable: false,
+                                diffCount: 1,
+                                issueData: issue,
+                            })),
                         },
                     ].filter(Boolean)
 
@@ -610,13 +746,7 @@ export default {
                     const dbDiffs = this.differences[dbName] || []
 
                     if (node.id.includes('-tables')) {
-                        const tableIssues = dbDiffs.filter(
-                            (d) =>
-                                d.type.includes('table') ||
-                                d.type.includes('field') ||
-                                d.type.includes('index') ||
-                                d.type.includes('trigger'),
-                        )
+                        const tableIssues = dbDiffs.filter((d) => this.issueCategory(d) === 'tables')
                         console.log('Table category issues:', tableIssues)
 
                         const children = []
@@ -634,8 +764,15 @@ export default {
                         //     })
                         // }
 
-                        // Add actual tables
-                        const tables = this.existingDatabases[dbName].tables
+                        // Add actual tables, plus any only in the database (extra_table) so their issues show
+                        const tables = { ...this.existingDatabases[dbName].tables }
+                        const onlyInDatabase = new Set()
+                        for (const issue of [...tableIssues, ...(this.rawDifferences[dbName] || [])]) {
+                            if (issue.tableName && !tables[issue.tableName] && this.issueCategory(issue) === 'tables') {
+                                tables[issue.tableName] = null
+                                onlyInDatabase.add(issue.tableName)
+                            }
+                        }
                         console.log('Tables:', tables)
 
                         children.push(
@@ -646,13 +783,18 @@ export default {
                                 console.log(`Issues for table ${tableName}:`, specificTableIssues)
                                 const hasIssues = specificTableIssues.length > 0
 
+                                const ignored = this.isTableIgnored(dbName, tableName) || this.isDatabaseIgnored(dbName)
                                 return {
                                     id: `${dbName}-table-${tableName}`,
-                                    label: tableName,
+                                    label: onlyInDatabase.has(tableName) ? `${tableName} (not in template)` : tableName,
                                     type: 'table',
-                                    lazy: true,
-                                    icon: hasIssues ? 'warning' : 'check_circle',
-                                    iconColor: hasIssues ? 'negative' : 'positive',
+                                    dbName,
+                                    tableName,
+                                    // A table only in the database has no template structure to expand
+                                    lazy: table !== null,
+                                    icon: ignored ? 'visibility_off' : hasIssues ? 'warning' : 'check_circle',
+                                    iconColor: ignored ? 'grey' : hasIssues ? 'negative' : 'positive',
+                                    hiddenCount: this.hiddenCount(dbName, tableName),
                                     diffCount: hasIssues ? specificTableIssues.length : null,
                                     tableData: table,
                                     issueData: specificTableIssues,
@@ -693,16 +835,32 @@ export default {
                         done(children)
                     } else if (node.id.includes('-views')) {
                         const children = []
-                        const views = this.existingDatabases[dbName].views
+                        const views = { ...(this.existingDatabases[dbName].views || {}) }
+                        const viewIssues = dbDiffs.filter((d) => this.issueCategory(d) === 'views')
+                        const onlyInDatabase = new Set()
+                        for (const issue of viewIssues) {
+                            if (!(issue.viewName in views)) {
+                                views[issue.viewName] = null
+                                onlyInDatabase.add(issue.viewName)
+                            }
+                        }
                         console.log('Views:', views)
                         children.push(
-                            ...Object.entries(views).map(([name, view]) => ({
-                                id: `${dbName}-view-${name}`,
-                                label: name,
-                                type: 'view',
-                                lazy: false,
-                                view: view,
-                            })),
+                            ...Object.entries(views).map(([name, view]) => {
+                                const specificViewIssues = viewIssues.filter((d) => d.viewName === name)
+                                const hasIssues = specificViewIssues.length > 0
+                                return {
+                                    id: `${dbName}-view-${name}`,
+                                    label: onlyInDatabase.has(name) ? `${name} (not in template)` : name,
+                                    type: 'view',
+                                    lazy: false,
+                                    view: view,
+                                    icon: hasIssues ? 'warning' : 'check_circle',
+                                    iconColor: hasIssues ? 'negative' : 'positive',
+                                    diffCount: hasIssues ? specificViewIssues.length : null,
+                                    issueData: specificViewIssues,
+                                }
+                            }),
                         )
                         done(children)
                     }
@@ -807,7 +965,7 @@ export default {
                         output: this.dbFolder,
                 },
                 })
-                this.differences = response.data
+                this.setDifferences(response.data)
                 console.log('Differences in fetchAllDifferences:', this.differences)
             } catch (error) {
                 console.error('Error fetching all differences:', error)
@@ -833,7 +991,7 @@ export default {
                         database: selectedDbName,
                         },
                     })
-                    this.differences = response.data
+                    this.setDifferences(response.data)
                 } catch (error) {
                     console.error('Error fetching differences for selected db:', error)
                 }
@@ -920,11 +1078,14 @@ export default {
         },
         showIssueDetails(issue, node) {
             console.log('Showing issue details:', issue, "from node:", node)
+            this.issueListBeforeDetails = null
             this.selectedIssues = Array.isArray(issue) ? issue : [issue]
             this.selectedNode = node;
             this.issueDialog = true
         },
         showSingleIssue(issue, dbName) {
+            // Remember the list so the details view can go back to it
+            if (this.selectedIssues.length > 1) this.issueListBeforeDetails = this.selectedIssues
             this.selectedIssues = [issue]
             this.selectedIssueDbName = dbName;
             this.issueDialog = true
@@ -969,10 +1130,9 @@ export default {
                         message: `Fixed ${issues.length} issue(s) successfully`,
                         position: 'top',
                     })
-                    // Refresh the differences to update the UI
-
-                    await this.fetchAllDifferences()
-                    await this.buildDatabaseTree()
+                    this.afterIssuesResolved(issues)
+                    // Refresh the differences, keeping the tree as it was
+                    await this.refreshKeepingExpanded()
                 }
             } catch (error) {
                 console.error('Error fixing issues:', error)
@@ -981,9 +1141,266 @@ export default {
                     message: error.response?.data?.message || 'Error fixing issues',
                     position: 'top',
                 })
+                // The server tries every difference and saves the ones that work, so refresh
+                // to drop those that were applied; the dialog keeps the rest
+                if (error.response) {
+                    await this.refreshKeepingExpanded().catch((refreshError) => console.error('Error refreshing:', refreshError))
+                }
             } finally {
                 this.isNodeFixing[node.id] = false
                 this.isNodeFixing = { ...this.isNodeFixing } // Trigger reactivity
+            }
+        },
+        setDifferences(raw) {
+            this.rawDifferences = raw || {}
+            this.differences = this.withoutIgnored(this.rawDifferences)
+        },
+        withoutIgnored(raw) {
+            return Object.fromEntries(
+                Object.entries(raw).map(([dbName, diffs]) => [
+                    dbName,
+                    this.isDatabaseIgnored(dbName)
+                        ? []
+                        : (Array.isArray(diffs) ? diffs : []).filter(
+                              (diff) => !(diff.tableName && this.isTableIgnored(dbName, diff.tableName)),
+                          ),
+                ]),
+            )
+        },
+        isDatabaseIgnored(dbName) {
+            return this.ignored.databases.includes(dbName)
+        },
+        isTableIgnored(dbName, tableName) {
+            return this.ignored.tables.includes(`${dbName}.${tableName}`)
+        },
+        // How many of a database's (or one table's) differences are hidden by ignoring
+        hiddenCount(dbName, tableName) {
+            const diffs = Array.isArray(this.rawDifferences[dbName]) ? this.rawDifferences[dbName] : []
+            if (tableName) {
+                const hidden = this.isTableIgnored(dbName, tableName) || this.isDatabaseIgnored(dbName)
+                return hidden ? diffs.filter((d) => d.tableName === tableName).length : 0
+            }
+            return diffs.length - (this.differences[dbName]?.length ?? 0)
+        },
+        isNodeIgnored(node) {
+            if (node.type === 'database') return this.isDatabaseIgnored(node.dbName)
+            if (node.type === 'table') return this.isTableIgnored(node.dbName, node.tableName)
+            return false
+        },
+        async setIgnored(ignored) {
+            this.ignoredByScope = { ...this.ignoredByScope, [this.ignoredScope]: ignored }
+            saveIgnored(this.ignoredByScope)
+            this.differences = this.withoutIgnored(this.rawDifferences)
+            await this.rebuildTreeKeepingExpanded()
+        },
+        // Hide a database's or table's differences for this session, or show them again
+        async toggleIgnored(node) {
+            const { databases, tables } = this.ignored
+            if (node.type === 'database') {
+                const dbName = node.dbName
+                await this.setIgnored({
+                    databases: databases.includes(dbName) ? databases.filter((d) => d !== dbName) : [...databases, dbName],
+                    tables,
+                })
+            } else if (node.type === 'table') {
+                const key = `${node.dbName}.${node.tableName}`
+                await this.setIgnored({
+                    databases,
+                    tables: tables.includes(key) ? tables.filter((t) => t !== key) : [...tables, key],
+                })
+            }
+        },
+        async showAllIgnored() {
+            await this.setIgnored({ databases: [], tables: [] })
+        },
+        async rebuildTreeKeepingExpanded() {
+            const expanded = [...this.expandedNodes]
+            await this.buildDatabaseTree()
+            await this.restoreExpanded(expanded)
+        },
+        // Reload the differences (and the template if it changed) and rebuild the tree,
+        // re-opening the nodes that were expanded
+        async refreshKeepingExpanded({ reloadTemplate = false } = {}) {
+            const expanded = [...this.expandedNodes]
+            await this.fetchAllDifferences()
+            if (reloadTemplate) await this.getDatabasesFromExistingDumps()
+            await this.buildDatabaseTree()
+            await this.restoreExpanded(expanded)
+        },
+        // Expand the given nodes again. Children of lazy nodes only exist once their
+        // parent is expanded, so expand level by level until nothing more is found
+        async restoreExpanded(keys) {
+            const tree = this.$refs.tree
+            if (!tree) return
+            const pending = new Set(keys)
+            while (pending.size > 0) {
+                await this.$nextTick()
+                const found = [...pending].filter((key) => tree.getNodeByKey(key))
+                if (found.length === 0) break
+                for (const key of found) {
+                    tree.setExpanded(key, true)
+                    pending.delete(key)
+                }
+            }
+        },
+        // Which part of the tree a difference is shown under: tables, procedures, views or other
+        issueCategory(issue) {
+            if (issue.type?.includes('procedure')) return 'procedures'
+            if (issue.type?.includes('view')) return 'views'
+            if (issue.tableName) return 'tables'
+            return 'other'
+        },
+        // The column, index, trigger, procedure, view or row an issue is about
+        issueName(issue) {
+            if (!issue) return ''
+            if (issue.field?.Field) return issue.field.Field
+            if (issue.indexName || issue.index?.Name) return issue.indexName || issue.index.Name
+            if (issue.trigger?.Name) return issue.trigger.Name
+            if (issue.key) return Object.entries(issue.key).map(([k, v]) => `${k} = ${v}`).join(', ')
+            return issue.viewName || issue.Name || issue.database || ''
+        },
+        issueNameLabel(issue) {
+            const kind = issue?.type?.split('_').slice(1).join('_')
+            return { field: 'Column', index: 'Index', trigger: 'Trigger', procedure: 'Procedure', view: 'View', row: 'Row', database: 'Database' }[kind] || 'Name'
+        },
+        issueSummary(issue) {
+            if (!issue?.type) return ''
+            const [state, ...rest] = issue.type.split('_')
+            const kind = this.issueNameLabel(issue).toLowerCase()
+            const thing = rest.join('_') === 'table' ? 'This table' : `The ${kind}`
+            if (state === 'extra') return `${thing} is in the database but not in the template.`
+            if (state === 'missing') return `${thing} is in the template but not in the database.`
+            if (state === 'mismatched') {
+                const what = issue.info || issue.from
+                return `${thing} differs between the database and the template${what ? ` (${what})` : ''}.`
+            }
+            return ''
+        },
+        // [{ property, current, expected, ... }] comparing the database and template side of an issue, or null
+        issueComparison(issue) {
+            const sides = {
+                extra_field: [issue?.field, undefined],
+                missing_field: [undefined, issue?.field],
+                mismatched_field: [issue?.currentField, issue?.field],
+                extra_index: [issue?.index, undefined],
+                missing_index: [undefined, issue?.index],
+                missing_row: [undefined, issue?.row],
+            }[issue?.type]
+            if (!sides) return null
+            const [current, expected] = sides
+            const keys = [...new Set([...Object.keys(current || {}), ...Object.keys(expected || {})])]
+            return keys
+                .filter((key) => (current?.[key] ?? null) !== null || (expected?.[key] ?? null) !== null)
+                .map((key) => ({
+                    property: key,
+                    current: current?.[key],
+                    expected: expected?.[key],
+                    currentPresent: !!current,
+                    expectedPresent: !!expected,
+                    differs: !!current && !!expected && JSON.stringify(current[key] ?? null) !== JSON.stringify(expected[key] ?? null),
+                }))
+        },
+        // { expected, current } definitions of a mismatched procedure, view or trigger, or null
+        definitionComparison(issue) {
+            const pair = {
+                mismatched_procedure: [issue?.Definition, issue?.currentDefinition],
+                mismatched_view: [issue?.definition, issue?.current],
+                mismatched_trigger: [issue?.trigger?.Definition, issue?.currentTrigger?.Definition],
+            }[issue?.type]
+            // Diffs from an older server have no current definition to compare
+            if (!pair || pair[1] === undefined) return null
+            return { expected: pair[0] ?? '', current: pair[1] ?? '' }
+        },
+        // { label, sql } for an issue that has a definition on one side only
+        singleDefinition(issue) {
+            if (!issue) return null
+            const sql = issue.createSQL || issue.Definition || issue.definition || issue.trigger?.Definition
+            if (!sql) return null
+            const fromDatabase = issue.type?.startsWith('extra_')
+            return { label: `Definition in the ${fromDatabase ? 'database (current)' : 'template (expected)'}`, sql }
+        },
+        formatIssueValue(value, present) {
+            if (!present) return '(not present)'
+            if (value === undefined || value === null) return '—'
+            if (Array.isArray(value)) return value.join(', ')
+            if (typeof value === 'boolean') return value ? 'yes' : 'no'
+            return String(value)
+        },
+        // Drop resolved issues from the dialog: back to the list when the details view
+        // is done, and close once nothing is left
+        afterIssuesResolved(resolved) {
+            const remaining = (list) => list?.filter((issue) => !resolved.includes(issue))
+            this.issueListBeforeDetails = remaining(this.issueListBeforeDetails)
+            this.selectedIssues = remaining(this.selectedIssues)
+            if (this.selectedIssues.length === 0 && this.issueListBeforeDetails?.length) {
+                this.backToIssueList()
+            }
+            if (this.selectedIssues.length === 0) this.issueDialog = false
+        },
+        backToIssueList() {
+            this.selectedIssues = this.issueListBeforeDetails
+            this.issueListBeforeDetails = null
+        },
+        // Every difference except these can be kept by changing the template
+        canKeepCurrent(issue) {
+            return !!issue && !['missing_database', 'missing_row'].includes(issue.type)
+        },
+        // The opposite of fixNodeIssues: change the template to match the database
+        async keepCurrentInTemplate(node, loadingKey = node?.id) {
+            if (!node) return
+            const issues = node.issueData
+                ? (Array.isArray(node.issueData) ? node.issueData : [node.issueData])
+                : await this.collectIssuesForNode(node)
+            const keepable = issues.filter((issue) => this.canKeepCurrent(issue))
+            if (!keepable.length) {
+                this.$q.notify({ type: 'warning', message: 'Nothing here can be kept as the current value', position: 'top' })
+                return
+            }
+
+            const confirmed = await new Promise((resolve) => {
+                this.$q
+                    .dialog({
+                        title: 'Keep Current',
+                        message: `Overwrite the template in ${this.dbFolder} with the database's current value for ${keepable.length} difference(s)? The database isn't changed.`,
+                        cancel: true,
+                        persistent: true,
+                    })
+                    .onOk(() => resolve(true))
+                    .onCancel(() => resolve(false))
+            })
+            if (!confirmed) return
+
+            this.isNodeKeeping = { ...this.isNodeKeeping, [loadingKey]: true }
+            try {
+                await this.$api.post('/api/acceptCurrent', {
+                    config: {
+                        host: this.host,
+                        port: this.port,
+                        user: this.user,
+                        password: this.password,
+                        output: this.dbFolder,
+                    },
+                    database: this.getDbNameFromNode(node),
+                    diffs: keepable,
+                })
+                this.$q.notify({
+                    type: 'positive',
+                    message: `Template updated for ${keepable.length} difference(s)`,
+                    position: 'top',
+                })
+                this.afterIssuesResolved(keepable)
+            } catch (error) {
+                console.error('Error keeping current values:', error)
+                this.$q.notify({
+                    type: 'negative',
+                    message: error.response?.data?.message || 'Error updating the template',
+                    position: 'top',
+                })
+            } finally {
+                this.isNodeKeeping = { ...this.isNodeKeeping, [loadingKey]: false }
+                // Refresh even after a partial failure: the differences that succeeded were saved.
+                // The template changed too, so reload it
+                await this.refreshKeepingExpanded({ reloadTemplate: true })
             }
         },
         getDbNameFromNode(node) {

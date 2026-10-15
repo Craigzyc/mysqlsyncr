@@ -11,9 +11,6 @@ export const parseCreateTableSQL = (createTableSQL) => {
     // Split the SQL statement into lines and filter out empty lines
     const lines = createTableSQL.split('\n').map(line => line.trim()).filter(line => line.length > 0);
 
-    // Regular expression to match column definitions
-    const columnRegex = /`([^`]+)`\s+([^\s,]+)(\s+NOT NULL|\s+NULL)?(\s+DEFAULT\s+([^,\s]+))?(\s+AUTO_INCREMENT)?/;
-
     // Regular expression to match index definitions
     const indexRegex_Old = /(PRIMARY|UNIQUE)?\s*KEY\s*`([^`]+)`\s*\(([^)]+)\)|PRIMARY KEY\s*\(([^)]+)\)/;
 
@@ -30,35 +27,12 @@ export const parseCreateTableSQL = (createTableSQL) => {
         if (line.includes('CREATE TABLE')) {
             continue;
         }
-        // Check if the line contains a column definition
-        const columnMatch = columnRegex.exec(line);
+        // Column definitions are the only lines that start with a backticked name
+        const column = parseColumnDefinition(line);
         const indexMatch = indexRegex.exec(line);
-        const indexMatch_Old = indexRegex_Old.exec(line);
 
         const constraintMatch = parseConstraint(line);
-        if (columnMatch && !indexMatch && !constraintMatch) {
-            const columnType = parseColumnType(line);
-            const column = {
-                Field: columnMatch[1],
-                Type: columnType
-            };
-
-            // Set Null property based on NOT NULL presence
-            if (columnMatch[3] && columnMatch[3].includes('NOT NULL')) {
-                column.NotNull = true; // Set to false if NOT NULL is present
-            }
-
-            // Set Default property if it exists
-            if (columnMatch[5]) {
-                // console.log('columnMatch[5]', columnMatch[5], columnMatch[5].replace(/'/g, ''))
-                column.Default = columnMatch[5].replace(/'/g, '');
-            }
-
-            // Set AutoIncrement property if it exists
-            if (columnMatch[6]) {
-                column.AutoIncrement = true; // Set to true if AUTO_INCREMENT is present
-            }
-
+        if (column) {
             columns.push(column);
         } else if (indexMatch && !constraintMatch) {
 
@@ -141,11 +115,99 @@ export const parseConstraint = (sql) => {
     };
 };
 
-const parseColumnType = (line) => {
-    // Match type pattern including parameters, handling both single and double parameter types
-    const typeRegex = /`[^`]+`\s+([a-zA-Z]+(?:\([0-9]+(?:,[0-9]+)?\))?)/i;
-    const match = line.match(typeRegex);
-    
-    if (!match) return null;
-    return match[1]; // Returns the full type including parameters
+// A quoted SQL string, allowing '' and backslash escapes inside it
+const quotedStringRegex = /'(?:[^'\\]|\\.|'')*'/g;
+
+const unquote = (quoted) => quoted.slice(1, -1).replace(/''/g, "'").replace(/\\(.)/g, '$1');
+
+// Type with its parameters: int, float(10,2), enum('a','b'), varchar(45); then unsigned/zerofill
+const columnTypeRegex = /^([a-zA-Z]+(?:\((?:'(?:[^'\\]|\\.|'')*'|[^)'])*\))?)((?:\s+(?:unsigned|zerofill)\b)*)/i;
+
+/**
+ * Parse one column line of a SHOW CREATE TABLE statement, e.g.
+ *   `IID` varchar(25) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'x',
+ * Returns null if the line isn't a column definition.
+ */
+export const parseColumnDefinition = (line) => {
+    const lineMatch = line.trim().match(/^`([^`]+)`\s+(.*?),?$/);
+    if (!lineMatch) return null;
+    const typeMatch = lineMatch[2].match(columnTypeRegex);
+    if (!typeMatch) return null;
+
+    const column = {
+        Field: lineMatch[1],
+        // unsigned/zerofill are part of the type: a column restated without them changes
+        Type: typeMatch[1] + typeMatch[2].toLowerCase()
+    };
+
+    // Swap quoted strings for numbered placeholders so keywords inside a
+    // COMMENT or DEFAULT value aren't matched as attributes
+    const strings = [];
+    const quoted = [];
+    const rest = lineMatch[2].slice(typeMatch[0].length).replace(quotedStringRegex, (text) => {
+        strings.push(unquote(text));
+        quoted.push(text);
+        return `'${strings.length - 1}'`;
+    });
+    // Put the original quoted text back, e.g. b'0' or (_utf8mb4'[]')
+    const restoreQuoted = (text) => text.replace(/'(\d+)'/g, (_, i) => quoted[i]);
+
+    if (/\bNOT NULL\b/i.test(rest)) {
+        column.NotNull = true;
+    }
+
+    const defaultMatch = rest.match(/\bDEFAULT\s+('\d+'|\((?:[^()]|\([^()]*\))*\)|[^\s,]+)/i);
+    if (defaultMatch) {
+        // A plain string default is stored unquoted; anything else (NULL,
+        // CURRENT_TIMESTAMP, b'0', an expression) is kept as written
+        const whole = defaultMatch[1].match(/^'(\d+)'$/);
+        column.Default = whole ? strings[whole[1]] : restoreQuoted(defaultMatch[1]);
+    }
+
+    const generatedMatch = rest.match(/\bGENERATED ALWAYS AS\s*(\((?:[^()]|\((?:[^()]|\([^()]*\))*\))*\))\s*(STORED|VIRTUAL)?/i);
+    if (generatedMatch) {
+        column.Generated = `${restoreQuoted(generatedMatch[1])}${generatedMatch[2] ? ` ${generatedMatch[2].toUpperCase()}` : ''}`;
+    }
+
+    if (/\bAUTO_INCREMENT\b/i.test(rest)) {
+        column.AutoIncrement = true;
+    }
+
+    const onUpdateMatch = rest.match(/\bON UPDATE\s+(CURRENT_TIMESTAMP(?:\(\d*\))?)/i);
+    if (onUpdateMatch) {
+        column.OnUpdate = onUpdateMatch[1];
+    }
+
+    const charsetMatch = rest.match(/\bCHARACTER SET\s+(\w+)/i);
+    if (charsetMatch) {
+        column.Charset = charsetMatch[1];
+    }
+
+    const collateMatch = rest.match(/\bCOLLATE\s+(\w+)/i);
+    if (collateMatch) {
+        column.Collate = collateMatch[1];
+    }
+
+    const commentMatch = rest.match(/\bCOMMENT\s+'(\d+)'/i);
+    if (commentMatch) {
+        column.Comment = strings[commentMatch[1]];
+    }
+
+    return column;
+};
+
+/**
+ * What versions before this one read from a column line. It cut some values
+ * short: enum(...) became enum, 'System Generated' became System, and a type
+ * like float(10,2), or a COLLATE before DEFAULT, lost NOT NULL and DEFAULT.
+ * Used to recognise template JSON written by those versions.
+ */
+export const parseColumnDefinitionLegacy = (line) => {
+    const columnMatch = /`([^`]+)`\s+([^\s,]+)(\s+NOT NULL|\s+NULL)?(\s+DEFAULT\s+([^,\s]+))?(\s+AUTO_INCREMENT)?/.exec(line);
+    if (!columnMatch) return null;
+    const typeMatch = line.match(/`[^`]+`\s+([a-zA-Z]+(?:\([0-9]+(?:,[0-9]+)?\))?)/i);
+    const column = { Field: columnMatch[1], Type: typeMatch ? typeMatch[1] : null };
+    if (columnMatch[3] && columnMatch[3].includes('NOT NULL')) column.NotNull = true;
+    if (columnMatch[5]) column.Default = columnMatch[5].replace(/'/g, '');
+    return column;
 };

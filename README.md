@@ -63,6 +63,9 @@ mysqlsyncr <command> [options]
 - `compare`: Compares the database structure with JSON dumps (dry run).
 - `update`: Updates the database structure based on JSON dumps.
 - `ui`: Opens a web-based database browser in your default system browser.
+- `rebuild`: Rebuilds each table's columns and indexes in the dump's JSON from its `CREATE TABLE` statement, and lists what changes. Dry run unless `--write` is given. Needs no database connection.
+
+Run `mysqlsyncr` with no command in a terminal and it asks for the command and its options (host, port, user, password, database and folder) instead. The password isn't shown as you type, and `update` asks for confirmation before changing anything.
 
 ### Configuration Options
 
@@ -79,6 +82,48 @@ You can configure the following options when running the commands:
 | `database`  | `-d`  | Target database                                                            | `null`                        |
 | `output`    | `-o`  | Output directory for dumping. Default is one level up from the current directory in a new folder called `db-dump` | `../db-dump`                  |
 | `verbose`   | `-v`  | Enable verbose logging (boolean)                                          | `false`                       |
+| `write`     |       | With `rebuild`, write the rebuilt files (boolean)                         | `false`                       |
+
+### Sync Options File
+
+Put a `syncOptions.json` file in the dump directory (next to the database folders) to control table creation and seed rows. It's optional; without it everything behaves as before.
+
+```json
+{
+  "definer": "root@%",
+  "autoIncrement": false,
+  "databases": {
+    "Alerts": {
+      "AlarmRules": {
+        "autoIncrement": 1000,
+        "rows": [
+          { "idAlarmRule": 1, "name": "Default rule" }
+        ]
+      },
+      "Settings": {
+        "rowKey": ["settingName"],
+        "rows": [
+          { "settingName": "emailEnabled", "value": "1" }
+        ]
+      }
+    }
+  }
+}
+```
+
+**`autoIncrement`** sets the table's `AUTO_INCREMENT=N` counter in `CREATE TABLE`. The `AUTO_INCREMENT` attribute on the id column is never changed. Set it at the top level as the default for every table, and per table to override it.
+
+| Value | Effect |
+|-------|--------|
+| `true` | Keep the counter as dumped (default) |
+| `false` | Remove the counter, so new tables start at 1 |
+| A number | Start new tables at that number |
+
+It applies when `dump` saves a table, when `update` creates a missing table, and when `rebuild` rewrites a template. The counter is always ignored when comparing tables.
+
+**`rows`** are seed rows. `compare` reports each row that isn't in the table as `missing_row`, and `update` inserts it after any table and column changes. A row counts as present when a row with the same `rowKey` values exists, so existing rows are never changed. `rowKey` defaults to the table's primary key; every row must include the key columns.
+
+**`definer`** sets the `DEFINER` of every stored procedure, view and trigger, written as `root@%` or `` `root`@`%` ``. The template's definers are replaced with it before comparing, so an object in the database with a different definer is reported and `update` recreates it with this one. `dump` and Keep Current in the UI also save it. The MySQL user running the sync needs the `SET_USER_ID` (or `SUPER`) privilege to create objects for another definer, and the definer user should exist.
 
 ### Example Usage
 

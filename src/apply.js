@@ -1,6 +1,95 @@
 import { logger } from './loggers.js';
 
+const quoteString = (value) => `'${String(value).replace(/\\/g, '\\\\').replace(/'/g, "''")}'`;
+
+// Types MySQL won't give a literal default
+const noLiteralDefaultRegex = /^(tiny|medium|long)?(text|blob)$|^json$|^geometry|^point$|^linestring$|^polygon$/i;
+
+const defaultClause = (field) => {
+    const value = field.Default;
+    if (value === undefined || value === null || value === 'NULL') {
+        // A NOT NULL column can't default to NULL; leave it without a default
+        return field.NotNull ? '' : 'DEFAULT NULL';
+    }
+    // Functions, expressions, and bit/hex literals such as b'0' are written as they were read
+    if (/^(CURRENT_TIMESTAMP|now)(\(\d*\))?$/i.test(value) || value.startsWith('(') || /^[bx]'[0-9a-f]*'$/i.test(value) || /^0x[0-9a-f]+$/i.test(value)) {
+        return `DEFAULT ${value}`;
+    }
+    if (noLiteralDefaultRegex.test(field.Type)) {
+        return '';
+    }
+    return `DEFAULT ${quoteString(value)}`;
+}
+
+// Template value for a column detail, or the live column's when the template doesn't record it
+const columnDetail = (field, currentField, key) => key in field ? field[key] : currentField?.[key];
+
+/**
+ * Full column definition for ADD/CHANGE, e.g.
+ *   timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+ * NULL/NOT NULL is always explicit: without it a timestamp is NOT NULL when
+ * explicit_defaults_for_timestamp is OFF, and DEFAULT NULL then fails.
+ * Charset, collation, comment, ON UPDATE and a generated column's expression
+ * come from the template when it has them and are otherwise kept from the live
+ * column, since CHANGE drops anything not restated.
+ */
+export const columnDefinition = (field, currentField) => {
+    const charset = columnDetail(field, currentField, 'Charset');
+    const collate = columnDetail(field, currentField, 'Collate');
+    const onUpdate = columnDetail(field, currentField, 'OnUpdate');
+    const comment = columnDetail(field, currentField, 'Comment');
+    const generated = columnDetail(field, currentField, 'Generated');
+    if (generated) {
+        // A generated column takes no DEFAULT, ON UPDATE or AUTO_INCREMENT
+        return [
+            field.Type,
+            charset ? `CHARACTER SET ${charset}` : '',
+            collate ? `COLLATE ${collate}` : '',
+            `GENERATED ALWAYS AS ${generated}`,
+            field.NotNull ? 'NOT NULL' : 'NULL',
+            comment ? `COMMENT ${quoteString(comment)}` : ''
+        ].filter(Boolean).join(' ');
+    }
+    return [
+        field.Type,
+        charset ? `CHARACTER SET ${charset}` : '',
+        collate ? `COLLATE ${collate}` : '',
+        field.NotNull ? 'NOT NULL' : 'NULL',
+        defaultClause(field),
+        onUpdate ? `ON UPDATE ${onUpdate}` : '',
+        field.AutoIncrement ? 'AUTO_INCREMENT' : '',
+        comment ? `COMMENT ${quoteString(comment)}` : ''
+    ].filter(Boolean).join(' ');
+}
+
+// `col`, or `col`(255) for a prefix index on a text column
+const formatIndexColumns = (columns) => columns.map(col => {
+    const match = col.match(/^`?([^`(]+)`?(?:\((\d+)\))?$/);
+    if (!match) return `\`${col}\``;
+    return `\`${match[1]}\`${match[2] ? `(${match[2]})` : ''}`;
+}).join(', ');
+
+const isPrimaryIndex = (index) => !!index.Primary || index.Name === 'PRIMARY';
+
+const addIndexClause = (index) => isPrimaryIndex(index)
+    ? `ADD PRIMARY KEY (${formatIndexColumns(index.ColumnName)})`
+    : `ADD ${index.Unique ? 'UNIQUE ' : ''}INDEX \`${index.Name}\` (${formatIndexColumns(index.ColumnName)})`;
+
+const dropIndexClause = (index) => isPrimaryIndex(index) ? 'DROP PRIMARY KEY' : `DROP INDEX \`${index.Name}\``;
+
+const describeDifference = (diff) => {
+    const name = diff.tableName || diff.viewName || diff.Name || diff.database || '';
+    const detail = diff.field?.Field || diff.indexName || diff.trigger?.Name || (diff.key ? JSON.stringify(diff.key) : '');
+    return `${diff.type} ${name}${detail ? '.' + detail : ''}`;
+}
+
+/**
+ * Apply the differences in order. A failing difference doesn't stop the rest;
+ * once all have been tried, throws an Error whose `errors` lists each failure
+ * as { difference, error }.
+ */
 export const applyDifferences = async (connection, database, differences) => {
+    const errors = [];
    
     differences.sort((a, b) => {
         //Sort to make sure we apply the differences in a logical order.
@@ -21,7 +110,9 @@ export const applyDifferences = async (connection, database, differences) => {
             'extra_view': 6,
             'missing_trigger': 7,
             'mismatched_trigger': 7,
-            'extra_trigger': 7
+            'extra_trigger': 7,
+            // after the table and its columns exist
+            'missing_row': 8
         };
         
         return (typePriority[a.type] || 999) - (typePriority[b.type] || 999);
@@ -32,7 +123,7 @@ export const applyDifferences = async (connection, database, differences) => {
         try {
 
             if(diff.type == 'missing_database'){
-                const createDatabaseSQL = `CREATE DATABASE \`${differences[0].database}\`;`;
+                const createDatabaseSQL = `CREATE DATABASE \`${diff.database}\`;`;
                 console.log(`Executing: ${createDatabaseSQL}`);
                 await connection.query(createDatabaseSQL);
                 continue;
@@ -54,27 +145,10 @@ export const applyDifferences = async (connection, database, differences) => {
                 await connection.query(dropTableSQL);
 
             } else if (diff.type === 'missing_field') {
-                // Step 1: Add column with DEFAULT NULL to handle existing records
-                const addFieldSQL = `ALTER TABLE \`${diff.tableName}\` ADD \`${diff.field.Field}\` ${diff.field.Type} DEFAULT NULL;`;
+                // Existing rows get the column's default, or the type's implicit default for NOT NULL without one
+                const addFieldSQL = `ALTER TABLE \`${diff.tableName}\` ADD COLUMN \`${diff.field.Field}\` ${columnDefinition(diff.field)};`;
                 console.log(`Executing: ${addFieldSQL}`);
                 await connection.query(addFieldSQL);
-
-                // Step 2: If NOT NULL is required and no default was specified, modify the column to remove DEFAULT NULL
-                if (diff.field.NotNull && !diff.field.Default) {
-                    const modifyFieldSQL = `ALTER TABLE \`${diff.tableName}\` MODIFY \`${diff.field.Field}\` ${diff.field.Type} NOT NULL;`;
-                    console.log(`Executing: ${modifyFieldSQL}`);
-                    await connection.query(modifyFieldSQL);
-                }
-                if(diff.field.Default){
-                    const defaultClause = diff.field.Default === 'CURRENT_TIMESTAMP' 
-                    ? 'DEFAULT CURRENT_TIMESTAMP'
-                    : diff.field.Default !== undefined && diff.field.Default !== null 
-                        ? `DEFAULT '${diff.field.Default}'` 
-                        : '';
-                    const modifyFieldSQL = `ALTER TABLE \`${diff.tableName}\` MODIFY \`${diff.field.Field}\` ${diff.field.Type} ${defaultClause};`;
-                    console.log(`Executing: ${modifyFieldSQL}`);
-                    await connection.query(modifyFieldSQL);
-                }
 
             } else if (diff.type === 'extra_field') {
                 const dropFieldSQL = `ALTER TABLE \`${diff.tableName}\` DROP COLUMN \`${diff.field.Field}\`;`;
@@ -180,22 +254,7 @@ export const applyDifferences = async (connection, database, differences) => {
                 //     console.log(`Completed type conversion for ${field.Field}. Total rows converted: ${totalUpdated}`);
                 // } else {
                     // Original mismatched field handling for simple changes
-                    const isTimestamp = field.Type.toLowerCase().includes('timestamp');
-                    
-                    // Handle timestamp specific attributes
-                    const defaultClause = field.Default === 'CURRENT_TIMESTAMP' 
-                        ? 'DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP'
-                        : field.Default === 'NULL'
-                            ? isTimestamp ? 'NULL DEFAULT NULL' : 'DEFAULT NULL'
-                            : field.Default !== undefined && field.Default !== null 
-                                ? `DEFAULT '${field.Default}'` 
-                                : isTimestamp ? 'NULL DEFAULT NULL' : 'DEFAULT NULL';
-                    
-                    // Remove ON UPDATE CURRENT_TIMESTAMP if we're changing away from CURRENT_TIMESTAMP
-                    const hasOnUpdate = currentField?.Default === 'CURRENT_TIMESTAMP' && 
-                        field.Default !== 'CURRENT_TIMESTAMP';
-                    
-                    const modifyFieldSQL = `ALTER TABLE \`${tableName}\` CHANGE \`${field.Field}\` \`${field.Field}\` ${field.Type} ${field.NotNull ? 'NOT NULL' : ''} ${defaultClause}${hasOnUpdate ? ' ON UPDATE CURRENT_TIMESTAMP' : ''};`;
+                    const modifyFieldSQL = `ALTER TABLE \`${tableName}\` CHANGE \`${field.Field}\` \`${field.Field}\` ${columnDefinition(field, currentField)};`;
                     console.log(`Executing: ${modifyFieldSQL}`);
                     await connection.query(modifyFieldSQL);
                 // }
@@ -208,86 +267,28 @@ export const applyDifferences = async (connection, database, differences) => {
                 const missingColumns = Array.isArray(diff.index.ColumnName) ? diff.index.ColumnName.filter(col => !columnNames.includes(col) && !columnNames.includes(col.split("(")?.[0])) : [];
 
                 if (missingColumns.length > 0) {
-                    logger(`Cannot create index ${diff.index.Name} on ${diff.tableName}. Missing columns: ${missingColumns.join(', ')}`);
-                    continue; // Skip index creation if columns are missing
+                    throw new Error(`Cannot create index ${diff.index.Name} on ${diff.tableName}. Missing columns: ${missingColumns.join(', ')}`);
                 }
 
-                // Prepare the index columns with proper formatting
-                const indexColumns = diff.index.ColumnName.map(col => {
-                    if(col.includes("(")){                        
-                        
-                        const match = col.match(/^(?:`([^`]+)`|([A-Za-z_][A-Za-z0-9_\$]*))\((\d+)\)$/);
-
-                        if (match) {
-                            const name = match[1] || match[2]; // one of them will be filled
-                            const size = match[3];
-                            console.log(name, size);
-                            return `\`${name}\`(${size})`;
-                        }
-
-                        return `\`${col.split("(")[0]}\``
-                    } else {
-                        return `\`${col}\``; // Format column names
-                    }
-                });
-                // Handle PRIMARY index creation
-                if (diff.index.Name === 'PRIMARY') {
-                    if (indexColumns.length > 0) {
-                        const primaryKeySQL = `ALTER TABLE \`${diff.tableName}\` ADD PRIMARY KEY (${indexColumns.join(', ')});`;
-                        console.log(`Executing: ${primaryKeySQL}`);
-                        await connection.query(primaryKeySQL);
-                    } else {
-                        logger(`Cannot create PRIMARY index on ${diff.tableName}. ColumnName is undefined or empty.`, diff.index);
-                    }
-                } else {
-                    // Create the new index with UNIQUE if applicable
-                    const uniqueSQL = diff.index.Unique ? 'UNIQUE ' : ''; // Check if the index is unique
-                    if (indexColumns.length > 0) {
-                        const addIndexSQL = `ALTER TABLE \`${diff.tableName}\` ADD ${uniqueSQL}INDEX \`${diff.index.Name}\` (${indexColumns.join(', ')});`;
-                        console.log(`Executing: ${addIndexSQL}`);
-                        await connection.query(addIndexSQL);
-                    } else {
-                        logger(`Cannot create index ${diff.index.Name} on ${diff.tableName}. ColumnName is undefined or empty.`, diff.index);
-                    }
+                if (!Array.isArray(diff.index.ColumnName) || diff.index.ColumnName.length === 0) {
+                    throw new Error(`Cannot create index ${diff.index.Name} on ${diff.tableName}. ColumnName is undefined or empty.`);
                 }
+                const addIndexSQL = `ALTER TABLE \`${diff.tableName}\` ${addIndexClause(diff.index)};`;
+                console.log(`Executing: ${addIndexSQL}`);
+                await connection.query(addIndexSQL);
 
             } else if (diff.type === 'extra_index') {
-                // Handle dropping of extra indexes
-                if (diff.index.Name === 'PRIMARY') {
-                    const dropPrimaryKeySQL = `ALTER TABLE \`${diff.tableName}\` DROP PRIMARY KEY;`;
-                    console.log(`Executing: ${dropPrimaryKeySQL}`);
-                    await connection.query(dropPrimaryKeySQL);
-                } else {
-                    const dropIndexSQL = `DROP INDEX \`${diff.index.Name}\` ON \`${diff.tableName}\`;`;
-                    console.log(`Executing: ${dropIndexSQL}`);
-                    await connection.query(dropIndexSQL);
-                }
+                const dropIndexSQL = `ALTER TABLE \`${diff.tableName}\` ${dropIndexClause(diff.index)};`;
+                console.log(`Executing: ${dropIndexSQL}`);
+                await connection.query(dropIndexSQL);
 
             } else if (diff.type === 'mismatched_index') {
                 const { tableName, index } = diff;
-                // Drop the existing index
-                if (index.Name === 'PRIMARY') {
-                    const dropPrimaryKeySQL = `ALTER TABLE \`${tableName}\` DROP PRIMARY KEY;`;
-                    console.log(`Executing: ${dropPrimaryKeySQL}`);
-                    await connection.query(dropPrimaryKeySQL);
-                } else {
-                    const dropIndexSQL = `DROP INDEX \`${index.Name}\` ON \`${tableName}\`;`;
-                    console.log(`Executing: ${dropIndexSQL}`);
-                    await connection.query(dropIndexSQL);
-                }
-                console.log('index', index)
-
-                // Create the new index
-                const uniqueSQL = index.Unique ? 'UNIQUE ' : ''; // Check if the index is unique
-                if (index.Name === 'PRIMARY') {
-                    const addPrimaryKeySQL = `ALTER TABLE \`${tableName}\` ADD PRIMARY KEY (${index.ColumnName.join(', ')});`;
-                    console.log(`Executing: ${addPrimaryKeySQL}`);
-                    await connection.query(addPrimaryKeySQL);
-                } else {
-                    const addIndexSQL = `ALTER TABLE \`${tableName}\` ADD ${uniqueSQL}INDEX \`${index.Name}\` (${index.ColumnName.join(', ')});`; // Include UNIQUE if applicable
-                    console.log(`Executing: ${addIndexSQL}`);
-                    await connection.query(addIndexSQL);
-                }
+                // Drop and re-add in one statement: the index is never missing if the add fails,
+                // and a primary key on an AUTO_INCREMENT column can be replaced
+                const replaceIndexSQL = `ALTER TABLE \`${tableName}\` ${dropIndexClause(index)}, ${addIndexClause(index)};`;
+                console.log(`Executing: ${replaceIndexSQL}`);
+                await connection.query(replaceIndexSQL);
 
             } else if (diff.type === 'missing_procedure' || diff.type === 'mismatched_procedure') {
 
@@ -348,16 +349,30 @@ export const applyDifferences = async (connection, database, differences) => {
                 console.log(`Executing: ${dropTriggerSQL}`);
                 await connection.query(dropTriggerSQL);
 
+            } else if (diff.type === 'missing_row') {
+                const columns = Object.keys(diff.row);
+                const insertRowSQL = `INSERT INTO \`${diff.tableName}\` (${columns.map(col => `\`${col}\``).join(', ')}) VALUES (${columns.map(() => '?').join(', ')});`;
+                console.log(`Executing: ${insertRowSQL}`, JSON.stringify(diff.row));
+                await connection.query(insertRowSQL, columns.map(col => diff.row[col]));
+
             }else if(diff.type === 'missing_database'){
                 logger('fixing missing database', diff.database)
                 const createDatabaseSQL = `CREATE DATABASE \`${diff.database}\`;`;
                 console.log(`Executing: ${createDatabaseSQL}`);
                 await connection.query(createDatabaseSQL);
             } else {
-                logger(`Error applying difference of type:${diff.type}`, diff)
+                throw new Error(`Unknown difference type: ${diff.type}`);
             }
         } catch (e) {
-            logger(`Error applying difference of type:${diff.type}. Error: ${e.message}`, diff);
+            console.error(`Error applying ${describeDifference(diff)}: ${e.message}`);
+            logger(diff);
+            errors.push({ difference: describeDifference(diff), error: e.message });
         }
+    }
+
+    if (errors.length > 0) {
+        const error = new Error(`${errors.length} of ${differences.length} difference(s) failed to apply: ${errors.map(e => `${e.difference} (${e.error})`).join('; ')}`);
+        error.errors = errors;
+        throw error;
     }
 }
