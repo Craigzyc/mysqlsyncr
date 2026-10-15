@@ -1,4 +1,5 @@
 import { logger } from './loggers.js';
+import { adaptSQLForServer, getServerVersion } from './versions.js';
 
 const quoteString = (value) => `'${String(value).replace(/\\/g, '\\\\').replace(/'/g, "''")}'`;
 
@@ -90,6 +91,14 @@ const describeDifference = (diff) => {
  */
 export const applyDifferences = async (connection, database, differences) => {
     const errors = [];
+
+    // Template SQL from MySQL 8.0 can name collations a 5.7 server doesn't have
+    const serverVersion = await getServerVersion(connection);
+    const query = async (sql, values) => {
+        const adapted = adaptSQLForServer(sql, serverVersion);
+        if (adapted !== sql) console.log(`Adapted for MySQL ${serverVersion}: ${adapted}`);
+        return connection.query(adapted, values);
+    };
    
     differences.sort((a, b) => {
         //Sort to make sure we apply the differences in a logical order.
@@ -125,35 +134,35 @@ export const applyDifferences = async (connection, database, differences) => {
             if(diff.type == 'missing_database'){
                 const createDatabaseSQL = `CREATE DATABASE \`${diff.database}\`;`;
                 console.log(`Executing: ${createDatabaseSQL}`);
-                await connection.query(createDatabaseSQL);
+                await query(createDatabaseSQL);
                 continue;
             }
 
 
-            await connection.query(`USE \`${database}\``);
+            await query(`USE \`${database}\``);
             if (diff.type === 'missing_table') {
                 const { tableName, createSQL } = diff;
                 logger(`Creating missing table ${tableName}`);
                 console.log(`Executing: ${createSQL}`);
-                await connection.query(createSQL);
+                await query(createSQL);
 
             } else if (diff.type === 'extra_table') {
                 const { tableName } = diff;
                 logger(`Dropping extra table ${tableName}`);
                 const dropTableSQL = `DROP TABLE \`${tableName}\`;`;
                 console.log(`Executing: ${dropTableSQL}`);
-                await connection.query(dropTableSQL);
+                await query(dropTableSQL);
 
             } else if (diff.type === 'missing_field') {
                 // Existing rows get the column's default, or the type's implicit default for NOT NULL without one
                 const addFieldSQL = `ALTER TABLE \`${diff.tableName}\` ADD COLUMN \`${diff.field.Field}\` ${columnDefinition(diff.field)};`;
                 console.log(`Executing: ${addFieldSQL}`);
-                await connection.query(addFieldSQL);
+                await query(addFieldSQL);
 
             } else if (diff.type === 'extra_field') {
                 const dropFieldSQL = `ALTER TABLE \`${diff.tableName}\` DROP COLUMN \`${diff.field.Field}\`;`;
                 console.log(`Executing: ${dropFieldSQL}`);
-                await connection.query(dropFieldSQL);
+                await query(dropFieldSQL);
 
             } else if (diff.type === 'mismatched_field') {
                 const { tableName, field, currentField } = diff;
@@ -206,7 +215,7 @@ export const applyDifferences = async (connection, database, differences) => {
                 //     // Step 1: Add new column
                 //     const addColumnSQL = `ALTER TABLE \`${tableName}\` ADD COLUMN \`${field.Field}_new\` ${field.Type} DEFAULT NULL;`;
                 //     console.log(`Adding new column for type conversion: ${addColumnSQL}`);
-                //     await connection.query(addColumnSQL);
+                //     await query(addColumnSQL);
 
                 //     // Step 2: Copy data in batches
                 //     let totalUpdated = 0;
@@ -221,7 +230,7 @@ export const applyDifferences = async (connection, database, differences) => {
                 //             AND \`${field.Field}\` IS NOT NULL
                 //             LIMIT ${batchSize};
                 //         `;
-                //         const result = await connection.query(updateSQL);
+                //         const result = await query(updateSQL);
                 //         const rowsAffected = result.affectedRows;
                         
                 //         if (rowsAffected === 0) break;
@@ -237,7 +246,7 @@ export const applyDifferences = async (connection, database, differences) => {
                 //         WHERE \`${field.Field}\` IS NOT NULL 
                 //         AND \`${field.Field}_new\` IS NULL;
                 //     `;
-                //     const [verifyResult] = await connection.query(verifySQL);
+                //     const [verifyResult] = await query(verifySQL);
                 //     if (verifyResult.mismatch > 0) {
                 //         console.log(`Warning: ${verifyResult.mismatch} rows may have failed conversion`);
                 //     }
@@ -249,18 +258,18 @@ export const applyDifferences = async (connection, database, differences) => {
                 //         RENAME COLUMN \`${field.Field}_new\` TO \`${field.Field}\`
                 //     `;
                 //     console.log(`Executing: ${swapColumnsSQL}`);
-                //     await connection.query(swapColumnsSQL);
+                //     await query(swapColumnsSQL);
                     
                 //     console.log(`Completed type conversion for ${field.Field}. Total rows converted: ${totalUpdated}`);
                 // } else {
                     // Original mismatched field handling for simple changes
                     const modifyFieldSQL = `ALTER TABLE \`${tableName}\` CHANGE \`${field.Field}\` \`${field.Field}\` ${columnDefinition(field, currentField)};`;
                     console.log(`Executing: ${modifyFieldSQL}`);
-                    await connection.query(modifyFieldSQL);
+                    await query(modifyFieldSQL);
                 // }
 
             } else if (diff.type === 'missing_index') {
-                const existingColumns = await connection.query(`SHOW COLUMNS FROM \`${diff.tableName}\``);
+                const existingColumns = await query(`SHOW COLUMNS FROM \`${diff.tableName}\``);
                 const columnNames = existingColumns.map(col => col.Field);
 
                 // Check if all columns for the index exist
@@ -275,12 +284,12 @@ export const applyDifferences = async (connection, database, differences) => {
                 }
                 const addIndexSQL = `ALTER TABLE \`${diff.tableName}\` ${addIndexClause(diff.index)};`;
                 console.log(`Executing: ${addIndexSQL}`);
-                await connection.query(addIndexSQL);
+                await query(addIndexSQL);
 
             } else if (diff.type === 'extra_index') {
                 const dropIndexSQL = `ALTER TABLE \`${diff.tableName}\` ${dropIndexClause(diff.index)};`;
                 console.log(`Executing: ${dropIndexSQL}`);
-                await connection.query(dropIndexSQL);
+                await query(dropIndexSQL);
 
             } else if (diff.type === 'mismatched_index') {
                 const { tableName, index } = diff;
@@ -288,78 +297,78 @@ export const applyDifferences = async (connection, database, differences) => {
                 // and a primary key on an AUTO_INCREMENT column can be replaced
                 const replaceIndexSQL = `ALTER TABLE \`${tableName}\` ${dropIndexClause(index)}, ${addIndexClause(index)};`;
                 console.log(`Executing: ${replaceIndexSQL}`);
-                await connection.query(replaceIndexSQL);
+                await query(replaceIndexSQL);
 
             } else if (diff.type === 'missing_procedure' || diff.type === 'mismatched_procedure') {
 
                 // Drop the procedure if it exists
                 const dropCurrentProcSQL = `DROP PROCEDURE IF EXISTS \`${diff.Name}\`;`;
                 console.log(`Executing: ${dropCurrentProcSQL}`);
-                await connection.query(dropCurrentProcSQL);
+                await query(dropCurrentProcSQL);
 
                 // Create the procedure
                 const createProcSQL = diff.Definition;
                 console.log(`Executing: ${createProcSQL}`); // Log the SQL statement
-                await connection.query(createProcSQL);
+                await query(createProcSQL);
 
 
 
             } else if (diff.type === 'missing_view') {
                 const dropViewSQL = `DROP VIEW IF EXISTS \`${diff.viewName}\`;`;
                 console.log(`Executing: ${dropViewSQL}`);
-                await connection.query(dropViewSQL);
+                await query(dropViewSQL);
                 const createViewSQL = diff.definition; // Use the expected definition to create the view
                 console.log(`Executing: ${createViewSQL}`);
-                await connection.query(createViewSQL);
+                await query(createViewSQL);
 
 
             } else if (diff.type === 'mismatched_view') {
                 const dropViewSQL = `DROP VIEW IF EXISTS \`${diff.viewName}\`;`;
                 console.log(`Executing: ${dropViewSQL}`);
-                await connection.query(dropViewSQL);
+                await query(dropViewSQL);
                 const createViewSQL = diff.definition; // Use the expected definition to create the view
                 console.log(`Executing: ${createViewSQL}`);
-                await connection.query(createViewSQL);
+                await query(createViewSQL);
 
 
             } else if (diff.type === 'extra_view') {
                 const dropViewSQL = `DROP VIEW IF EXISTS \`${diff.viewName}\`;`;
                 console.log(`Executing: ${dropViewSQL}`);
-                await connection.query(dropViewSQL);
+                await query(dropViewSQL);
 
 
             } else if (diff.type === 'missing_trigger') {
                 const createTriggerSQL = diff.trigger.Definition;
                 logger('fixing trigger', diff.trigger.Name)
                 console.log(`Executing: ${createTriggerSQL}`);
-                await connection.query(createTriggerSQL);
+                await query(createTriggerSQL);
 
 
             } else if (diff.type === 'mismatched_trigger') {
                 const dropTriggerSQL = `DROP TRIGGER IF EXISTS \`${diff.trigger.Name}\`;`;
                 console.log(`Executing: ${dropTriggerSQL}`);
-                await connection.query(dropTriggerSQL);
+                await query(dropTriggerSQL);
                 const createTriggerSQL = diff.trigger.Definition;
                 console.log(`Executing: ${createTriggerSQL}`);
-                await connection.query(createTriggerSQL);
+                await query(createTriggerSQL);
 
 
             } else if (diff.type === 'extra_trigger') {
                 const dropTriggerSQL = `DROP TRIGGER IF EXISTS \`${diff.trigger.Name}\`;`;
                 console.log(`Executing: ${dropTriggerSQL}`);
-                await connection.query(dropTriggerSQL);
+                await query(dropTriggerSQL);
 
             } else if (diff.type === 'missing_row') {
                 const columns = Object.keys(diff.row);
                 const insertRowSQL = `INSERT INTO \`${diff.tableName}\` (${columns.map(col => `\`${col}\``).join(', ')}) VALUES (${columns.map(() => '?').join(', ')});`;
                 console.log(`Executing: ${insertRowSQL}`, JSON.stringify(diff.row));
-                await connection.query(insertRowSQL, columns.map(col => diff.row[col]));
+                await query(insertRowSQL, columns.map(col => diff.row[col]));
 
             }else if(diff.type === 'missing_database'){
                 logger('fixing missing database', diff.database)
                 const createDatabaseSQL = `CREATE DATABASE \`${diff.database}\`;`;
                 console.log(`Executing: ${createDatabaseSQL}`);
-                await connection.query(createDatabaseSQL);
+                await query(createDatabaseSQL);
             } else {
                 throw new Error(`Unknown difference type: ${diff.type}`);
             }

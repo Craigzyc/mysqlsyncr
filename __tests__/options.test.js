@@ -106,7 +106,7 @@ describe('seed rows', () => {
 
     test('rows are inserted after the table is created', async () => {
         const statements = [];
-        const connection = { query: async (sql, values) => { if (!sql.startsWith('USE')) statements.push({ sql, values }); return []; } };
+        const connection = { query: async (sql, values) => { if (!sql.startsWith('USE') && !sql.startsWith('SELECT VERSION')) statements.push({ sql, values }); return []; } };
         await applyDifferences(connection, 'Alerts', [
             { type: 'missing_row', tableName: 'AlarmRules', key: { idAlarmRule: 1 }, row: { idAlarmRule: 1, name: "it's" } },
             { type: 'missing_table', tableName: 'AlarmRules', createSQL: 'CREATE TABLE ...' }

@@ -8,6 +8,7 @@ import { applyDifferences } from './apply.js';
 import { startApiServer } from './socketServer.js'; // Import the new socket server
 import { rebuildTemplate } from './rebuild.js';
 import { assertOutsidePackage, templateFolderProblem } from './paths.js';
+import { getVersionInfo } from './versions.js';
 import { acceptCurrentIntoTemplate } from './acceptCurrent.js';
 import open from 'open';
 import fs from 'fs';
@@ -76,6 +77,16 @@ const apply = async (config, database, diffs) => {
 }
 
 export { DBStructureChecker, dumpAllDatabases, compare, startApiServer, apply, getDatabasesFromExistingDumps, rebuildTemplate, acceptCurrentIntoTemplate };
+
+// Show which MySQL versions are being compared, and what that means
+const printVersions = async (connection, templateDir) => {
+    const { server, template, notes } = await getVersionInfo(connection, templateDir);
+    const templateText = template
+        ? `${template.version}${template.inferred ? ` (inferred: ${template.reason})` : ''}`
+        : 'unknown';
+    console.log(`MySQL server: ${server ?? 'unknown'}; template: ${templateText}`);
+    for (const note of notes) console.log(`  Note: ${note}`);
+}
 
 // Only run this if this is the main module
 const isMain = (() => {
@@ -166,12 +177,14 @@ if (isMain) {
                         console.log('Dumping the database structure to files');
                         await dumpAllDatabases(checker.connection, command, argv);
                     } else if (command === 'compare') {
+                        await printVersions(checker.connection, argv.output);
                         console.log('Comparing the database structure with JSON dumps (dry run)');
                         let diffs = await compareAllDatabases(checker.connection, argv.output, false, command, argv); // Dry run
                         let totalDiffs = Object.values(diffs).reduce((acc, arr) => acc + arr.length, 0);
                         console.log('Total differences count:', totalDiffs);
                         fs.writeFileSync(path.join(argv.output, 'diffs.json'), JSON.stringify(diffs, null, 4));
                     } else if (command === 'update') {
+                        await printVersions(checker.connection, argv.output);
                         console.log('Updating the database structure based on JSON dumps');
                         let totalDiffs = Infinity; // Initialize with a large number
                         let previousDiffs = totalDiffs; // Store previous differences

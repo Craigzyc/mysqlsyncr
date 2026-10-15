@@ -77,7 +77,7 @@ function _createClass(e, r, t) {
 function _createForOfIteratorHelper(r, e) {
   var t = "undefined" != typeof Symbol && r[Symbol.iterator] || r["@@iterator"];
   if (!t) {
-    if (Array.isArray(r) || (t = _unsupportedIterableToArray(r)) || e) {
+    if (Array.isArray(r) || (t = _unsupportedIterableToArray(r)) || e && r && "number" == typeof r.length) {
       t && (r = t);
       var n = 0,
         F = function () {};
@@ -3760,12 +3760,245 @@ var getDatabaseStructure = /*#__PURE__*/function () {
   };
 }();
 
+// '8.0.36-log' -> { major: 8, minor: 0 }; also takes '5.7'
+var parseVersion = function parseVersion(version) {
+  var match = typeof version === 'string' && version.match(/^(\d+)\.(\d+)/);
+  return match ? {
+    major: Number(match[1]),
+    minor: Number(match[2])
+  } : null;
+};
+var majorMinor = function majorMinor(version) {
+  var parsed = parseVersion(version);
+  return parsed ? "".concat(parsed.major, ".").concat(parsed.minor) : null;
+};
+var isBefore80 = function isBefore80(version) {
+  var parsed = parseVersion(version);
+  return !!parsed && parsed.major < 8;
+};
+var getServerVersion = /*#__PURE__*/function () {
+  var _ref = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee(connection) {
+    var _rows$0$version, _rows$, rows;
+    return _regeneratorRuntime().wrap(function _callee$(_context) {
+      while (1) switch (_context.prev = _context.next) {
+        case 0:
+          _context.prev = 0;
+          _context.next = 3;
+          return connection.query('SELECT VERSION() AS version');
+        case 3:
+          rows = _context.sent;
+          return _context.abrupt("return", (_rows$0$version = rows === null || rows === undefined || (_rows$ = rows[0]) === null || _rows$ === undefined ? undefined : _rows$.version) !== null && _rows$0$version !== undefined ? _rows$0$version : null);
+        case 7:
+          _context.prev = 7;
+          _context.t0 = _context["catch"](0);
+          return _context.abrupt("return", null);
+        case 10:
+        case "end":
+          return _context.stop();
+      }
+    }, _callee, null, [[0, 7]]);
+  }));
+  return function getServerVersion(_x) {
+    return _ref.apply(this, arguments);
+  };
+}();
+
+/**
+ * The MySQL version a template was dumped from: recorded in dumpInfo.json by
+ * dump, or else inferred from how its SQL is written. Returns
+ * { version, inferred, reason? } or null when it can't tell.
+ */
+var getTemplateVersion = /*#__PURE__*/function () {
+  var _ref2 = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee2(dir) {
+    var info, sql, _iterator, _step, entry, structure;
+    return _regeneratorRuntime().wrap(function _callee2$(_context2) {
+      while (1) switch (_context2.prev = _context2.next) {
+        case 0:
+          _context2.prev = 0;
+          _context2.t0 = JSON;
+          _context2.next = 4;
+          return fs$1.readFile(path.join(dir, 'dumpInfo.json'), 'utf-8');
+        case 4:
+          _context2.t1 = _context2.sent;
+          info = _context2.t0.parse.call(_context2.t0, _context2.t1);
+          if (!info.mysqlVersion) {
+            _context2.next = 8;
+            break;
+          }
+          return _context2.abrupt("return", {
+            version: info.mysqlVersion,
+            inferred: false
+          });
+        case 8:
+          _context2.next = 12;
+          break;
+        case 10:
+          _context2.prev = 10;
+          _context2.t2 = _context2["catch"](0);
+        case 12:
+          sql = '';
+          _context2.prev = 13;
+          _context2.t3 = _createForOfIteratorHelper;
+          _context2.next = 17;
+          return fs$1.readdir(dir, {
+            withFileTypes: true
+          });
+        case 17:
+          _context2.t4 = _context2.sent;
+          _iterator = (0, _context2.t3)(_context2.t4);
+          _context2.prev = 19;
+          _iterator.s();
+        case 21:
+          if ((_step = _iterator.n()).done) {
+            _context2.next = 38;
+            break;
+          }
+          entry = _step.value;
+          if (entry.isDirectory()) {
+            _context2.next = 25;
+            break;
+          }
+          return _context2.abrupt("continue", 36);
+        case 25:
+          _context2.prev = 25;
+          _context2.t5 = JSON;
+          _context2.next = 29;
+          return fs$1.readFile(path.join(dir, entry.name, "".concat(entry.name, ".json")), 'utf-8');
+        case 29:
+          _context2.t6 = _context2.sent;
+          structure = _context2.t5.parse.call(_context2.t5, _context2.t6);
+          sql += Object.values(structure.tables || {}).map(function (t) {
+            return t.createSQL || '';
+          }).join('\n');
+          _context2.next = 36;
+          break;
+        case 34:
+          _context2.prev = 34;
+          _context2.t7 = _context2["catch"](25);
+        case 36:
+          _context2.next = 21;
+          break;
+        case 38:
+          _context2.next = 43;
+          break;
+        case 40:
+          _context2.prev = 40;
+          _context2.t8 = _context2["catch"](19);
+          _iterator.e(_context2.t8);
+        case 43:
+          _context2.prev = 43;
+          _iterator.f();
+          return _context2.finish(43);
+        case 46:
+          _context2.next = 51;
+          break;
+        case 48:
+          _context2.prev = 48;
+          _context2.t9 = _context2["catch"](13);
+          return _context2.abrupt("return", null);
+        case 51:
+          if (!/utf8mb4_0900_|\butf8mb3\b/i.test(sql)) {
+            _context2.next = 53;
+            break;
+          }
+          return _context2.abrupt("return", {
+            version: '8.0',
+            inferred: true,
+            reason: 'uses utf8mb4_0900 collations or utf8mb3, which only 8.0 prints'
+          });
+        case 53:
+          if (!/\b(?:smallint|mediumint|int|bigint)\(\d+\)|\btinyint\((?!1\))\d+\)/i.test(sql)) {
+            _context2.next = 55;
+            break;
+          }
+          return _context2.abrupt("return", {
+            version: '5.7',
+            inferred: true,
+            reason: 'shows integer display widths like int(11), as 5.7 and 8.0 before 8.0.19 do'
+          });
+        case 55:
+          if (!/\b(?:smallint|mediumint|int|bigint)\b(?!\()/i.test(sql)) {
+            _context2.next = 57;
+            break;
+          }
+          return _context2.abrupt("return", {
+            version: '8.0',
+            inferred: true,
+            reason: 'shows integers without display widths, as 8.0.19 and later do'
+          });
+        case 57:
+          return _context2.abrupt("return", null);
+        case 58:
+        case "end":
+          return _context2.stop();
+      }
+    }, _callee2, null, [[0, 10], [13, 48], [19, 40, 43, 46], [25, 34]]);
+  }));
+  return function getTemplateVersion(_x2) {
+    return _ref2.apply(this, arguments);
+  };
+}();
+
+/**
+ * What to know when the template and the server are different MySQL versions.
+ */
+var versionNotes = function versionNotes(templateVersion, serverVersion) {
+  var template = majorMinor(templateVersion);
+  var server = majorMinor(serverVersion);
+  if (!template || !server || template === server) return [];
+  var notes = ["The template is from MySQL ".concat(template, " and the server is MySQL ").concat(server, ". Integer display widths (int(11) vs int), YEAR(4) and utf8 vs utf8mb3 are printed differently by these versions and are ignored when comparing.")];
+  if (isBefore80(serverVersion) && !isBefore80(templateVersion)) {
+    notes.push("MySQL ".concat(server, " has no utf8mb4_0900 collations, so tables and columns are created with utf8mb4_general_ci (utf8mb4_bin for utf8mb4_0900_bin) instead."));
+    notes.push("Expression defaults such as DEFAULT (...) need MySQL 8.0.13 or later and fail on MySQL ".concat(server, "."));
+  }
+  return notes;
+};
+var getVersionInfo = /*#__PURE__*/function () {
+  var _ref3 = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee3(connection, templateDir) {
+    var server, template;
+    return _regeneratorRuntime().wrap(function _callee3$(_context3) {
+      while (1) switch (_context3.prev = _context3.next) {
+        case 0:
+          _context3.next = 2;
+          return getServerVersion(connection);
+        case 2:
+          server = _context3.sent;
+          _context3.next = 5;
+          return getTemplateVersion(templateDir);
+        case 5:
+          template = _context3.sent;
+          return _context3.abrupt("return", {
+            server: server,
+            template: template,
+            notes: versionNotes(template === null || template === undefined ? undefined : template.version, server)
+          });
+        case 7:
+        case "end":
+          return _context3.stop();
+      }
+    }, _callee3);
+  }));
+  return function getVersionInfo(_x3, _x4) {
+    return _ref3.apply(this, arguments);
+  };
+}();
+
+/**
+ * Rewrite SQL from a template so the server can run it: MySQL 5.7 doesn't
+ * know the utf8mb4_0900 collations that 8.0 uses by default, or the utf8mb3_
+ * collation names 8.0 prints.
+ */
+var adaptSQLForServer = function adaptSQLForServer(sql, serverVersion) {
+  if (typeof sql !== 'string' || !isBefore80(serverVersion)) return sql;
+  return sql.replace(/\butf8mb4_0900_bin\b/gi, 'utf8mb4_bin').replace(/\butf8mb4_0900_\w+/gi, 'utf8mb4_general_ci').replace(/\butf8mb3_(\w+)/gi, 'utf8_$1');
+};
+
 // const require = createRequire(import.meta.url);
 // const { version } = require('../package.json');
 
 var dumpAllDatabases = /*#__PURE__*/function () {
   var _ref = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee(connection, command, options) {
-    var response, databases, syncOptions, _iterator, _step, database, dbStructure;
+    var response, databases, syncOptions, _iterator, _step, database, dbStructure, mysqlVersion;
     return _regeneratorRuntime().wrap(function _callee$(_context) {
       while (1) switch (_context.prev = _context.next) {
         case 0:
@@ -3824,12 +4057,17 @@ var dumpAllDatabases = /*#__PURE__*/function () {
           return _context.finish(30);
         case 33:
           _context.next = 35;
-          return fs$1.writeFile(path.join(options.output, 'dumpInfo.json'), JSON.stringify({
-            timestamp: new Date().toISOString()
-          }, null, 4), 'utf-8');
+          return getServerVersion(connection);
         case 35:
+          mysqlVersion = _context.sent;
+          _context.next = 38;
+          return fs$1.writeFile(path.join(options.output, 'dumpInfo.json'), JSON.stringify({
+            timestamp: new Date().toISOString(),
+            mysqlVersion: mysqlVersion
+          }, null, 4), 'utf-8');
+        case 38:
           return _context.abrupt("return", response);
-        case 36:
+        case 39:
         case "end":
           return _context.stop();
       }
@@ -3915,8 +4153,30 @@ var getDatabasesFromExistingDumps = /*#__PURE__*/function () {
   };
 }();
 
+/**
+ * Undo formatting that differs between MySQL versions but doesn't change the
+ * structure, so a template dumped from one version compares cleanly with
+ * another:
+ *   - integer display widths: int(11) in 5.7 is int from 8.0.19, except
+ *     tinyint(1) and ZEROFILL types, which keep them
+ *   - year(4) in 5.7 is year from 8.0.19
+ *   - utf8 is shown as utf8mb3 from 8.0.24 (fully from 8.0.30)
+ * Applies to column types and to procedure, trigger and view definitions.
+ */
+var normalizeVersionFormatting = function normalizeVersionFormatting(sql) {
+  if (typeof sql !== 'string') return sql;
+  return sql.replace(/\b(tinyint|smallint|mediumint|int|integer|bigint)\((\d+)\)(\s+unsigned)?(?!\s+(?:unsigned\s+)?zerofill)/gi, function (match, type, width) {
+    var unsigned = arguments.length > 3 && arguments[3] !== undefined ? arguments[3] : '';
+    return type.toLowerCase() === 'tinyint' && width === '1' && !unsigned ? match : "".concat(type).concat(unsigned);
+  }).replace(/\byear\(4\)/gi, 'year').replace(/\butf8mb3(?=\b|_)/gi, 'utf8');
+};
+
+// A column type compared across MySQL versions
+var normalizeColumnType = function normalizeColumnType(type) {
+  return normalizeVersionFormatting(type);
+};
 var normalizeSQLDefinition = function normalizeSQLDefinition(definition) {
-  return definition.replace(/\s+/g, ' ') // Replace multiple whitespace with a single space
+  return normalizeVersionFormatting(definition).replace(/\s+/g, ' ') // Replace multiple whitespace with a single space
   .replace(/'/g, "\\'") // Escape single quotes
   .trim(); // Trim leading and trailing whitespace
 };
@@ -3925,9 +4185,6 @@ var normalizeSQLDefinition = function normalizeSQLDefinition(definition) {
 // exactly. Filled from the expected createSQL when the JSON doesn't record them;
 // null means the expected column doesn't have it.
 var COLUMN_DETAILS = ['OnUpdate', 'Charset', 'Collate', 'Comment', 'Generated'];
-var withoutIntegerWidth = function withoutIntegerWidth(type) {
-  return type.replace(/^(tinyint|smallint|mediumint|int|bigint)\(\d+\)/i, '$1');
-};
 
 // { columnName: its line } in a CREATE TABLE statement
 var columnLines = function columnLines(createSQL) {
@@ -4208,8 +4465,8 @@ var findDifferences = function findDifferences(expected, current) {
             });
           }
           if (field.Type !== currentField.Type) {
-            // Older MySQL versions show integer display widths: int(11), bigint(20) unsigned, ...
-            if (withoutIntegerWidth(field.Type) === field.Type && withoutIntegerWidth(currentField.Type) === field.Type) return 0; // continue
+            // int(11) in 5.7 is int in 8.0, year(4) is year, utf8 is utf8mb3: formatting, not structure
+            if (normalizeColumnType(field.Type) === normalizeColumnType(currentField.Type)) return 0; // continue
             if (field.Type == 'varchar' && currentField.Type.startsWith('varchar(')) return 0; // continue
             // varchar(255) is the default for varchar and used on older versions of mysql
             differences.push({
@@ -4402,7 +4659,7 @@ var findDifferences = function findDifferences(expected, current) {
             viewName: _viewName2,
             definition: _expectedDefinition
           });
-        } else if (current.views[_viewName2] !== _expectedDefinition) {
+        } else if (normalizeSQLDefinition(current.views[_viewName2]) !== normalizeSQLDefinition(_expectedDefinition)) {
           differences.push({
             type: 'mismatched_view',
             viewName: _viewName2,
@@ -4506,12 +4763,35 @@ var describeDifference$1 = function describeDifference(diff) {
  * as { difference, error }.
  */
 var applyDifferences = /*#__PURE__*/function () {
-  var _ref = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee(connection, database, differences) {
-    var errors, _iterator, _step, _loop, error;
-    return _regeneratorRuntime().wrap(function _callee$(_context2) {
-      while (1) switch (_context2.prev = _context2.next) {
+  var _ref = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee2(connection, database, differences) {
+    var errors, serverVersion, query, _iterator, _step, _loop, error;
+    return _regeneratorRuntime().wrap(function _callee2$(_context3) {
+      while (1) switch (_context3.prev = _context3.next) {
         case 0:
-          errors = [];
+          errors = []; // Template SQL from MySQL 8.0 can name collations a 5.7 server doesn't have
+          _context3.next = 3;
+          return getServerVersion(connection);
+        case 3:
+          serverVersion = _context3.sent;
+          query = /*#__PURE__*/function () {
+            var _ref2 = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee(sql, values) {
+              var adapted;
+              return _regeneratorRuntime().wrap(function _callee$(_context) {
+                while (1) switch (_context.prev = _context.next) {
+                  case 0:
+                    adapted = adaptSQLForServer(sql, serverVersion);
+                    if (adapted !== sql) console.log("Adapted for MySQL ".concat(serverVersion, ": ").concat(adapted));
+                    return _context.abrupt("return", connection.query(adapted, values));
+                  case 3:
+                  case "end":
+                    return _context.stop();
+                }
+              }, _callee);
+            }));
+            return function query(_x4, _x5) {
+              return _ref2.apply(this, arguments);
+            };
+          }();
           differences.sort(function (a, b) {
             //Sort to make sure we apply the differences in a logical order.
             var typePriority = {
@@ -4538,82 +4818,82 @@ var applyDifferences = /*#__PURE__*/function () {
             return (typePriority[a.type] || 999) - (typePriority[b.type] || 999);
           });
           _iterator = _createForOfIteratorHelper(differences);
-          _context2.prev = 3;
+          _context3.prev = 7;
           _loop = /*#__PURE__*/_regeneratorRuntime().mark(function _loop() {
             var diff, createDatabaseSQL, tableName, createSQL, _tableName, dropTableSQL, addFieldSQL, dropFieldSQL, _tableName2, field, currentField, modifyFieldSQL, existingColumns, columnNames, missingColumns, addIndexSQL, dropIndexSQL, _tableName3, index, replaceIndexSQL, dropCurrentProcSQL, createProcSQL, dropViewSQL, createViewSQL, _dropViewSQL, _createViewSQL, _dropViewSQL2, createTriggerSQL, dropTriggerSQL, _createTriggerSQL, _dropTriggerSQL, columns, insertRowSQL, _createDatabaseSQL;
-            return _regeneratorRuntime().wrap(function _loop$(_context) {
-              while (1) switch (_context.prev = _context.next) {
+            return _regeneratorRuntime().wrap(function _loop$(_context2) {
+              while (1) switch (_context2.prev = _context2.next) {
                 case 0:
                   diff = _step.value;
-                  _context.prev = 1;
+                  _context2.prev = 1;
                   if (!(diff.type == 'missing_database')) {
-                    _context.next = 8;
+                    _context2.next = 8;
                     break;
                   }
                   createDatabaseSQL = "CREATE DATABASE `".concat(diff.database, "`;");
                   console.log("Executing: ".concat(createDatabaseSQL));
-                  _context.next = 7;
-                  return connection.query(createDatabaseSQL);
+                  _context2.next = 7;
+                  return query(createDatabaseSQL);
                 case 7:
-                  return _context.abrupt("return", 1);
+                  return _context2.abrupt("return", 1);
                 case 8:
-                  _context.next = 10;
-                  return connection.query("USE `".concat(database, "`"));
+                  _context2.next = 10;
+                  return query("USE `".concat(database, "`"));
                 case 10:
                   if (!(diff.type === 'missing_table')) {
-                    _context.next = 18;
+                    _context2.next = 18;
                     break;
                   }
                   tableName = diff.tableName, createSQL = diff.createSQL;
                   logger("Creating missing table ".concat(tableName));
                   console.log("Executing: ".concat(createSQL));
-                  _context.next = 16;
-                  return connection.query(createSQL);
+                  _context2.next = 16;
+                  return query(createSQL);
                 case 16:
-                  _context.next = 163;
+                  _context2.next = 163;
                   break;
                 case 18:
                   if (!(diff.type === 'extra_table')) {
-                    _context.next = 27;
+                    _context2.next = 27;
                     break;
                   }
                   _tableName = diff.tableName;
                   logger("Dropping extra table ".concat(_tableName));
                   dropTableSQL = "DROP TABLE `".concat(_tableName, "`;");
                   console.log("Executing: ".concat(dropTableSQL));
-                  _context.next = 25;
-                  return connection.query(dropTableSQL);
+                  _context2.next = 25;
+                  return query(dropTableSQL);
                 case 25:
-                  _context.next = 163;
+                  _context2.next = 163;
                   break;
                 case 27:
                   if (!(diff.type === 'missing_field')) {
-                    _context.next = 34;
+                    _context2.next = 34;
                     break;
                   }
                   // Existing rows get the column's default, or the type's implicit default for NOT NULL without one
                   addFieldSQL = "ALTER TABLE `".concat(diff.tableName, "` ADD COLUMN `").concat(diff.field.Field, "` ").concat(columnDefinition(diff.field), ";");
                   console.log("Executing: ".concat(addFieldSQL));
-                  _context.next = 32;
-                  return connection.query(addFieldSQL);
+                  _context2.next = 32;
+                  return query(addFieldSQL);
                 case 32:
-                  _context.next = 163;
+                  _context2.next = 163;
                   break;
                 case 34:
                   if (!(diff.type === 'extra_field')) {
-                    _context.next = 41;
+                    _context2.next = 41;
                     break;
                   }
                   dropFieldSQL = "ALTER TABLE `".concat(diff.tableName, "` DROP COLUMN `").concat(diff.field.Field, "`;");
                   console.log("Executing: ".concat(dropFieldSQL));
-                  _context.next = 39;
-                  return connection.query(dropFieldSQL);
+                  _context2.next = 39;
+                  return query(dropFieldSQL);
                 case 39:
-                  _context.next = 163;
+                  _context2.next = 163;
                   break;
                 case 41:
                   if (!(diff.type === 'mismatched_field')) {
-                    _context.next = 49;
+                    _context2.next = 49;
                     break;
                   }
                   _tableName2 = diff.tableName, field = diff.field, currentField = diff.currentField; // use alter table rather than adding fields
@@ -4656,7 +4936,7 @@ var applyDifferences = /*#__PURE__*/function () {
                   //     // Step 1: Add new column
                   //     const addColumnSQL = `ALTER TABLE \`${tableName}\` ADD COLUMN \`${field.Field}_new\` ${field.Type} DEFAULT NULL;`;
                   //     console.log(`Adding new column for type conversion: ${addColumnSQL}`);
-                  //     await connection.query(addColumnSQL);
+                  //     await query(addColumnSQL);
                   //     // Step 2: Copy data in batches
                   //     let totalUpdated = 0;
                   //     let batchSize = 10000;
@@ -4669,7 +4949,7 @@ var applyDifferences = /*#__PURE__*/function () {
                   //             AND \`${field.Field}\` IS NOT NULL
                   //             LIMIT ${batchSize};
                   //         `;
-                  //         const result = await connection.query(updateSQL);
+                  //         const result = await query(updateSQL);
                   //         const rowsAffected = result.affectedRows;
                   //         if (rowsAffected === 0) break;
                   //         totalUpdated += rowsAffected;
@@ -4682,7 +4962,7 @@ var applyDifferences = /*#__PURE__*/function () {
                   //         WHERE \`${field.Field}\` IS NOT NULL 
                   //         AND \`${field.Field}_new\` IS NULL;
                   //     `;
-                  //     const [verifyResult] = await connection.query(verifySQL);
+                  //     const [verifyResult] = await query(verifySQL);
                   //     if (verifyResult.mismatch > 0) {
                   //         console.log(`Warning: ${verifyResult.mismatch} rows may have failed conversion`);
                   //     }
@@ -4693,26 +4973,26 @@ var applyDifferences = /*#__PURE__*/function () {
                   //         RENAME COLUMN \`${field.Field}_new\` TO \`${field.Field}\`
                   //     `;
                   //     console.log(`Executing: ${swapColumnsSQL}`);
-                  //     await connection.query(swapColumnsSQL);
+                  //     await query(swapColumnsSQL);
                   //     console.log(`Completed type conversion for ${field.Field}. Total rows converted: ${totalUpdated}`);
                   // } else {
                   // Original mismatched field handling for simple changes
                   modifyFieldSQL = "ALTER TABLE `".concat(_tableName2, "` CHANGE `").concat(field.Field, "` `").concat(field.Field, "` ").concat(columnDefinition(field, currentField), ";");
                   console.log("Executing: ".concat(modifyFieldSQL));
-                  _context.next = 47;
-                  return connection.query(modifyFieldSQL);
+                  _context2.next = 47;
+                  return query(modifyFieldSQL);
                 case 47:
-                  _context.next = 163;
+                  _context2.next = 163;
                   break;
                 case 49:
                   if (!(diff.type === 'missing_index')) {
-                    _context.next = 65;
+                    _context2.next = 65;
                     break;
                   }
-                  _context.next = 52;
-                  return connection.query("SHOW COLUMNS FROM `".concat(diff.tableName, "`"));
+                  _context2.next = 52;
+                  return query("SHOW COLUMNS FROM `".concat(diff.tableName, "`"));
                 case 52:
-                  existingColumns = _context.sent;
+                  existingColumns = _context2.sent;
                   columnNames = existingColumns.map(function (col) {
                     return col.Field;
                   }); // Check if all columns for the index exist
@@ -4721,160 +5001,160 @@ var applyDifferences = /*#__PURE__*/function () {
                     return !columnNames.includes(col) && !columnNames.includes((_col$split = col.split("(")) === null || _col$split === undefined ? undefined : _col$split[0]);
                   }) : [];
                   if (!(missingColumns.length > 0)) {
-                    _context.next = 57;
+                    _context2.next = 57;
                     break;
                   }
                   throw new Error("Cannot create index ".concat(diff.index.Name, " on ").concat(diff.tableName, ". Missing columns: ").concat(missingColumns.join(', ')));
                 case 57:
                   if (!(!Array.isArray(diff.index.ColumnName) || diff.index.ColumnName.length === 0)) {
-                    _context.next = 59;
+                    _context2.next = 59;
                     break;
                   }
                   throw new Error("Cannot create index ".concat(diff.index.Name, " on ").concat(diff.tableName, ". ColumnName is undefined or empty."));
                 case 59:
                   addIndexSQL = "ALTER TABLE `".concat(diff.tableName, "` ").concat(addIndexClause(diff.index), ";");
                   console.log("Executing: ".concat(addIndexSQL));
-                  _context.next = 63;
-                  return connection.query(addIndexSQL);
+                  _context2.next = 63;
+                  return query(addIndexSQL);
                 case 63:
-                  _context.next = 163;
+                  _context2.next = 163;
                   break;
                 case 65:
                   if (!(diff.type === 'extra_index')) {
-                    _context.next = 72;
+                    _context2.next = 72;
                     break;
                   }
                   dropIndexSQL = "ALTER TABLE `".concat(diff.tableName, "` ").concat(dropIndexClause(diff.index), ";");
                   console.log("Executing: ".concat(dropIndexSQL));
-                  _context.next = 70;
-                  return connection.query(dropIndexSQL);
+                  _context2.next = 70;
+                  return query(dropIndexSQL);
                 case 70:
-                  _context.next = 163;
+                  _context2.next = 163;
                   break;
                 case 72:
                   if (!(diff.type === 'mismatched_index')) {
-                    _context.next = 80;
+                    _context2.next = 80;
                     break;
                   }
                   _tableName3 = diff.tableName, index = diff.index; // Drop and re-add in one statement: the index is never missing if the add fails,
                   // and a primary key on an AUTO_INCREMENT column can be replaced
                   replaceIndexSQL = "ALTER TABLE `".concat(_tableName3, "` ").concat(dropIndexClause(index), ", ").concat(addIndexClause(index), ";");
                   console.log("Executing: ".concat(replaceIndexSQL));
-                  _context.next = 78;
-                  return connection.query(replaceIndexSQL);
+                  _context2.next = 78;
+                  return query(replaceIndexSQL);
                 case 78:
-                  _context.next = 163;
+                  _context2.next = 163;
                   break;
                 case 80:
                   if (!(diff.type === 'missing_procedure' || diff.type === 'mismatched_procedure')) {
-                    _context.next = 91;
+                    _context2.next = 91;
                     break;
                   }
                   // Drop the procedure if it exists
                   dropCurrentProcSQL = "DROP PROCEDURE IF EXISTS `".concat(diff.Name, "`;");
                   console.log("Executing: ".concat(dropCurrentProcSQL));
-                  _context.next = 85;
-                  return connection.query(dropCurrentProcSQL);
+                  _context2.next = 85;
+                  return query(dropCurrentProcSQL);
                 case 85:
                   // Create the procedure
                   createProcSQL = diff.Definition;
                   console.log("Executing: ".concat(createProcSQL)); // Log the SQL statement
-                  _context.next = 89;
-                  return connection.query(createProcSQL);
+                  _context2.next = 89;
+                  return query(createProcSQL);
                 case 89:
-                  _context.next = 163;
+                  _context2.next = 163;
                   break;
                 case 91:
                   if (!(diff.type === 'missing_view')) {
-                    _context.next = 102;
+                    _context2.next = 102;
                     break;
                   }
                   dropViewSQL = "DROP VIEW IF EXISTS `".concat(diff.viewName, "`;");
                   console.log("Executing: ".concat(dropViewSQL));
-                  _context.next = 96;
-                  return connection.query(dropViewSQL);
+                  _context2.next = 96;
+                  return query(dropViewSQL);
                 case 96:
                   createViewSQL = diff.definition; // Use the expected definition to create the view
                   console.log("Executing: ".concat(createViewSQL));
-                  _context.next = 100;
-                  return connection.query(createViewSQL);
+                  _context2.next = 100;
+                  return query(createViewSQL);
                 case 100:
-                  _context.next = 163;
+                  _context2.next = 163;
                   break;
                 case 102:
                   if (!(diff.type === 'mismatched_view')) {
-                    _context.next = 113;
+                    _context2.next = 113;
                     break;
                   }
                   _dropViewSQL = "DROP VIEW IF EXISTS `".concat(diff.viewName, "`;");
                   console.log("Executing: ".concat(_dropViewSQL));
-                  _context.next = 107;
-                  return connection.query(_dropViewSQL);
+                  _context2.next = 107;
+                  return query(_dropViewSQL);
                 case 107:
                   _createViewSQL = diff.definition; // Use the expected definition to create the view
                   console.log("Executing: ".concat(_createViewSQL));
-                  _context.next = 111;
-                  return connection.query(_createViewSQL);
+                  _context2.next = 111;
+                  return query(_createViewSQL);
                 case 111:
-                  _context.next = 163;
+                  _context2.next = 163;
                   break;
                 case 113:
                   if (!(diff.type === 'extra_view')) {
-                    _context.next = 120;
+                    _context2.next = 120;
                     break;
                   }
                   _dropViewSQL2 = "DROP VIEW IF EXISTS `".concat(diff.viewName, "`;");
                   console.log("Executing: ".concat(_dropViewSQL2));
-                  _context.next = 118;
-                  return connection.query(_dropViewSQL2);
+                  _context2.next = 118;
+                  return query(_dropViewSQL2);
                 case 118:
-                  _context.next = 163;
+                  _context2.next = 163;
                   break;
                 case 120:
                   if (!(diff.type === 'missing_trigger')) {
-                    _context.next = 128;
+                    _context2.next = 128;
                     break;
                   }
                   createTriggerSQL = diff.trigger.Definition;
                   logger('fixing trigger', diff.trigger.Name);
                   console.log("Executing: ".concat(createTriggerSQL));
-                  _context.next = 126;
-                  return connection.query(createTriggerSQL);
+                  _context2.next = 126;
+                  return query(createTriggerSQL);
                 case 126:
-                  _context.next = 163;
+                  _context2.next = 163;
                   break;
                 case 128:
                   if (!(diff.type === 'mismatched_trigger')) {
-                    _context.next = 139;
+                    _context2.next = 139;
                     break;
                   }
                   dropTriggerSQL = "DROP TRIGGER IF EXISTS `".concat(diff.trigger.Name, "`;");
                   console.log("Executing: ".concat(dropTriggerSQL));
-                  _context.next = 133;
-                  return connection.query(dropTriggerSQL);
+                  _context2.next = 133;
+                  return query(dropTriggerSQL);
                 case 133:
                   _createTriggerSQL = diff.trigger.Definition;
                   console.log("Executing: ".concat(_createTriggerSQL));
-                  _context.next = 137;
-                  return connection.query(_createTriggerSQL);
+                  _context2.next = 137;
+                  return query(_createTriggerSQL);
                 case 137:
-                  _context.next = 163;
+                  _context2.next = 163;
                   break;
                 case 139:
                   if (!(diff.type === 'extra_trigger')) {
-                    _context.next = 146;
+                    _context2.next = 146;
                     break;
                   }
                   _dropTriggerSQL = "DROP TRIGGER IF EXISTS `".concat(diff.trigger.Name, "`;");
                   console.log("Executing: ".concat(_dropTriggerSQL));
-                  _context.next = 144;
-                  return connection.query(_dropTriggerSQL);
+                  _context2.next = 144;
+                  return query(_dropTriggerSQL);
                 case 144:
-                  _context.next = 163;
+                  _context2.next = 163;
                   break;
                 case 146:
                   if (!(diff.type === 'missing_row')) {
-                    _context.next = 154;
+                    _context2.next = 154;
                     break;
                   }
                   columns = Object.keys(diff.row);
@@ -4884,76 +5164,76 @@ var applyDifferences = /*#__PURE__*/function () {
                     return '?';
                   }).join(', '), ");");
                   console.log("Executing: ".concat(insertRowSQL), JSON.stringify(diff.row));
-                  _context.next = 152;
-                  return connection.query(insertRowSQL, columns.map(function (col) {
+                  _context2.next = 152;
+                  return query(insertRowSQL, columns.map(function (col) {
                     return diff.row[col];
                   }));
                 case 152:
-                  _context.next = 163;
+                  _context2.next = 163;
                   break;
                 case 154:
                   if (!(diff.type === 'missing_database')) {
-                    _context.next = 162;
+                    _context2.next = 162;
                     break;
                   }
                   logger('fixing missing database', diff.database);
                   _createDatabaseSQL = "CREATE DATABASE `".concat(diff.database, "`;");
                   console.log("Executing: ".concat(_createDatabaseSQL));
-                  _context.next = 160;
-                  return connection.query(_createDatabaseSQL);
+                  _context2.next = 160;
+                  return query(_createDatabaseSQL);
                 case 160:
-                  _context.next = 163;
+                  _context2.next = 163;
                   break;
                 case 162:
                   throw new Error("Unknown difference type: ".concat(diff.type));
                 case 163:
-                  _context.next = 170;
+                  _context2.next = 170;
                   break;
                 case 165:
-                  _context.prev = 165;
-                  _context.t0 = _context["catch"](1);
-                  console.error("Error applying ".concat(describeDifference$1(diff), ": ").concat(_context.t0.message));
+                  _context2.prev = 165;
+                  _context2.t0 = _context2["catch"](1);
+                  console.error("Error applying ".concat(describeDifference$1(diff), ": ").concat(_context2.t0.message));
                   logger(diff);
                   errors.push({
                     difference: describeDifference$1(diff),
-                    error: _context.t0.message
+                    error: _context2.t0.message
                   });
                 case 170:
                 case "end":
-                  return _context.stop();
+                  return _context2.stop();
               }
             }, _loop, null, [[1, 165]]);
           });
           _iterator.s();
-        case 6:
-          if ((_step = _iterator.n()).done) {
-            _context2.next = 12;
-            break;
-          }
-          return _context2.delegateYield(_loop(), "t0", 8);
-        case 8:
-          if (!_context2.t0) {
-            _context2.next = 10;
-            break;
-          }
-          return _context2.abrupt("continue", 10);
         case 10:
-          _context2.next = 6;
-          break;
+          if ((_step = _iterator.n()).done) {
+            _context3.next = 16;
+            break;
+          }
+          return _context3.delegateYield(_loop(), "t0", 12);
         case 12:
-          _context2.next = 17;
-          break;
+          if (!_context3.t0) {
+            _context3.next = 14;
+            break;
+          }
+          return _context3.abrupt("continue", 14);
         case 14:
-          _context2.prev = 14;
-          _context2.t1 = _context2["catch"](3);
-          _iterator.e(_context2.t1);
-        case 17:
-          _context2.prev = 17;
+          _context3.next = 10;
+          break;
+        case 16:
+          _context3.next = 21;
+          break;
+        case 18:
+          _context3.prev = 18;
+          _context3.t1 = _context3["catch"](7);
+          _iterator.e(_context3.t1);
+        case 21:
+          _context3.prev = 21;
           _iterator.f();
-          return _context2.finish(17);
-        case 20:
+          return _context3.finish(21);
+        case 24:
           if (!(errors.length > 0)) {
-            _context2.next = 24;
+            _context3.next = 28;
             break;
           }
           error = new Error("".concat(errors.length, " of ").concat(differences.length, " difference(s) failed to apply: ").concat(errors.map(function (e) {
@@ -4961,11 +5241,11 @@ var applyDifferences = /*#__PURE__*/function () {
           }).join('; ')));
           error.errors = errors;
           throw error;
-        case 24:
+        case 28:
         case "end":
-          return _context2.stop();
+          return _context3.stop();
       }
-    }, _callee, null, [[3, 14, 17, 20]]);
+    }, _callee2, null, [[7, 18, 21, 24]]);
   }));
   return function applyDifferences(_x, _x2, _x3) {
     return _ref.apply(this, arguments);
@@ -6085,32 +6365,90 @@ var startApiServer = function startApiServer(port, argv) {
     };
   }());
 
-  // API endpoint to overwrite the template with the database's current values
-  app.post('/api/acceptCurrent', /*#__PURE__*/function () {
+  // API endpoint for the server's and the template's MySQL versions
+  app.post('/api/versions', /*#__PURE__*/function () {
     var _ref8 = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee9(req, res) {
-      var _req$body4, config, database, diffs, checker;
+      var config, checker;
       return _regeneratorRuntime().wrap(function _callee9$(_context9) {
         while (1) switch (_context9.prev = _context9.next) {
+          case 0:
+            config = req.body.config;
+            config = setConfig(config || {}, argv);
+            checker = new DBStructureChecker(config);
+            checker.connection.on('error', function (err) {
+              if (!res.headersSent) res.status(500).json({
+                message: 'Database connection failed',
+                error: err.message
+              });
+            });
+            checker.connection.on('connect', /*#__PURE__*/_asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee8() {
+              return _regeneratorRuntime().wrap(function _callee8$(_context8) {
+                while (1) switch (_context8.prev = _context8.next) {
+                  case 0:
+                    _context8.prev = 0;
+                    _context8.t0 = res;
+                    _context8.next = 4;
+                    return getVersionInfo(checker.connection, config.output);
+                  case 4:
+                    _context8.t1 = _context8.sent;
+                    _context8.t0.json.call(_context8.t0, _context8.t1);
+                    _context8.next = 11;
+                    break;
+                  case 8:
+                    _context8.prev = 8;
+                    _context8.t2 = _context8["catch"](0);
+                    res.status(500).json({
+                      message: _context8.t2.message
+                    });
+                  case 11:
+                    _context8.prev = 11;
+                    _context8.next = 14;
+                    return checker.closeConnection();
+                  case 14:
+                    return _context8.finish(11);
+                  case 15:
+                  case "end":
+                    return _context8.stop();
+                }
+              }, _callee8, null, [[0, 8, 11, 15]]);
+            })));
+          case 5:
+          case "end":
+            return _context9.stop();
+        }
+      }, _callee9);
+    }));
+    return function (_x9, _x10) {
+      return _ref8.apply(this, arguments);
+    };
+  }());
+
+  // API endpoint to overwrite the template with the database's current values
+  app.post('/api/acceptCurrent', /*#__PURE__*/function () {
+    var _ref10 = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee11(req, res) {
+      var _req$body4, config, database, diffs, checker;
+      return _regeneratorRuntime().wrap(function _callee11$(_context11) {
+        while (1) switch (_context11.prev = _context11.next) {
           case 0:
             _req$body4 = req.body, config = _req$body4.config, database = _req$body4.database, diffs = _req$body4.diffs;
             config = setConfig(config, argv);
             if (config.output) {
-              _context9.next = 4;
+              _context11.next = 4;
               break;
             }
-            return _context9.abrupt("return", res.status(400).json({
+            return _context11.abrupt("return", res.status(400).json({
               message: 'No template folder selected'
             }));
           case 4:
-            _context9.prev = 4;
+            _context11.prev = 4;
             assertOutsidePackage(config.output);
-            _context9.next = 11;
+            _context11.next = 11;
             break;
           case 8:
-            _context9.prev = 8;
-            _context9.t0 = _context9["catch"](4);
-            return _context9.abrupt("return", res.status(400).json({
-              message: _context9.t0.message
+            _context11.prev = 8;
+            _context11.t0 = _context11["catch"](4);
+            return _context11.abrupt("return", res.status(400).json({
+              message: _context11.t0.message
             }));
           case 11:
             checker = new DBStructureChecker(config, database);
@@ -6121,68 +6459,68 @@ var startApiServer = function startApiServer(port, argv) {
                 error: err.message
               });
             });
-            checker.connection.on('connect', /*#__PURE__*/_asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee8() {
+            checker.connection.on('connect', /*#__PURE__*/_asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee10() {
               var _diffs$length;
-              return _regeneratorRuntime().wrap(function _callee8$(_context8) {
-                while (1) switch (_context8.prev = _context8.next) {
+              return _regeneratorRuntime().wrap(function _callee10$(_context10) {
+                while (1) switch (_context10.prev = _context10.next) {
                   case 0:
-                    _context8.prev = 0;
+                    _context10.prev = 0;
                     console.log("Keeping current values in the template for ".concat((_diffs$length = diffs === null || diffs === undefined ? undefined : diffs.length) !== null && _diffs$length !== undefined ? _diffs$length : 0, " difference(s) in ").concat(database));
-                    _context8.next = 4;
+                    _context10.next = 4;
                     return acceptCurrentIntoTemplate(checker.connection, config.output, database, diffs || []);
                   case 4:
                     res.json({
                       message: 'Template updated with the current values'
                     });
-                    _context8.next = 10;
+                    _context10.next = 10;
                     break;
                   case 7:
-                    _context8.prev = 7;
-                    _context8.t0 = _context8["catch"](0);
+                    _context10.prev = 7;
+                    _context10.t0 = _context10["catch"](0);
                     res.status(500).json({
-                      message: _context8.t0.message,
-                      errors: _context8.t0.errors
+                      message: _context10.t0.message,
+                      errors: _context10.t0.errors
                     });
                   case 10:
-                    _context8.prev = 10;
-                    _context8.next = 13;
+                    _context10.prev = 10;
+                    _context10.next = 13;
                     return checker.closeConnection();
                   case 13:
-                    return _context8.finish(10);
+                    return _context10.finish(10);
                   case 14:
                   case "end":
-                    return _context8.stop();
+                    return _context10.stop();
                 }
-              }, _callee8, null, [[0, 7, 10, 14]]);
+              }, _callee10, null, [[0, 7, 10, 14]]);
             })));
           case 14:
           case "end":
-            return _context9.stop();
+            return _context11.stop();
         }
-      }, _callee9, null, [[4, 8]]);
+      }, _callee11, null, [[4, 8]]);
     }));
-    return function (_x9, _x10) {
-      return _ref8.apply(this, arguments);
+    return function (_x11, _x12) {
+      return _ref10.apply(this, arguments);
     };
   }());
   app.post('/api/browse-folders', /*#__PURE__*/function () {
-    var _ref10 = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee10(req, res) {
+    var _ref12 = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee12(req, res) {
       var _req$body$currentPath, currentPath, resolvedPath, contents, items, sortedItems;
-      return _regeneratorRuntime().wrap(function _callee10$(_context10) {
-        while (1) switch (_context10.prev = _context10.next) {
+      return _regeneratorRuntime().wrap(function _callee12$(_context12) {
+        while (1) switch (_context12.prev = _context12.next) {
           case 0:
-            _context10.prev = 0;
+            _context12.prev = 0;
             // Start where mysqlsyncr was run from, not in the package folder
             _req$body$currentPath = req.body.currentPath, currentPath = _req$body$currentPath === undefined ? process.cwd() : _req$body$currentPath;
             console.log('Browsing folder:', currentPath);
             resolvedPath = currentPath.startsWith('/') || currentPath.match(/^[A-Z]:\\/) ? path.resolve(currentPath) : path.resolve(currentPath);
             console.log('Resolved path:', resolvedPath);
-            _context10.next = 7;
+            _context12.next = 7;
             return fs$1.readdir(resolvedPath, {
               withFileTypes: true
             });
           case 7:
-            contents = _context10.sent;
+            contents = _context12.sent;
             // Separate directories and files
             items = contents.map(function (dirent) {
               return {
@@ -6210,36 +6548,36 @@ var startApiServer = function startApiServer(port, argv) {
               currentPath: resolvedPath,
               items: sortedItems
             });
-            _context10.next = 17;
+            _context12.next = 17;
             break;
           case 14:
-            _context10.prev = 14;
-            _context10.t0 = _context10["catch"](0);
+            _context12.prev = 14;
+            _context12.t0 = _context12["catch"](0);
             res.status(500).json({
-              error: _context10.t0.message
+              error: _context12.t0.message
             });
           case 17:
           case "end":
-            return _context10.stop();
+            return _context12.stop();
         }
-      }, _callee10, null, [[0, 14]]);
+      }, _callee12, null, [[0, 14]]);
     }));
-    return function (_x11, _x12) {
-      return _ref10.apply(this, arguments);
+    return function (_x13, _x14) {
+      return _ref12.apply(this, arguments);
     };
   }());
   app.post('/api/create-folder', /*#__PURE__*/function () {
-    var _ref11 = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee11(req, res) {
+    var _ref13 = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee13(req, res) {
       var folderPath, resolvedPath;
-      return _regeneratorRuntime().wrap(function _callee11$(_context11) {
-        while (1) switch (_context11.prev = _context11.next) {
+      return _regeneratorRuntime().wrap(function _callee13$(_context13) {
+        while (1) switch (_context13.prev = _context13.next) {
           case 0:
-            _context11.prev = 0;
+            _context13.prev = 0;
             folderPath = req.body.folderPath;
             console.log('Creating folder:', folderPath);
             resolvedPath = folderPath.startsWith('/') || folderPath.match(/^[A-Z]:\\/) ? path.resolve(folderPath) : path.resolve(process.cwd(), folderPath);
             assertOutsidePackage(resolvedPath);
-            _context11.next = 7;
+            _context13.next = 7;
             return fs$1.mkdir(resolvedPath, {
               recursive: true
             });
@@ -6248,22 +6586,22 @@ var startApiServer = function startApiServer(port, argv) {
               success: true,
               path: resolvedPath
             });
-            _context11.next = 13;
+            _context13.next = 13;
             break;
           case 10:
-            _context11.prev = 10;
-            _context11.t0 = _context11["catch"](0);
+            _context13.prev = 10;
+            _context13.t0 = _context13["catch"](0);
             res.status(500).json({
-              error: _context11.t0.message
+              error: _context13.t0.message
             });
           case 13:
           case "end":
-            return _context11.stop();
+            return _context13.stop();
         }
-      }, _callee11, null, [[0, 10]]);
+      }, _callee13, null, [[0, 10]]);
     }));
-    return function (_x13, _x14) {
-      return _ref11.apply(this, arguments);
+    return function (_x15, _x16) {
+      return _ref13.apply(this, arguments);
     };
   }());
 
@@ -7241,6 +7579,44 @@ var apply = /*#__PURE__*/function () {
   };
 }();
 
+// Show which MySQL versions are being compared, and what that means
+var printVersions = /*#__PURE__*/function () {
+  var _ref7 = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee7(connection, templateDir) {
+    var _yield$getVersionInfo, server, template, notes, templateText, _iterator, _step, note;
+    return _regeneratorRuntime().wrap(function _callee7$(_context7) {
+      while (1) switch (_context7.prev = _context7.next) {
+        case 0:
+          _context7.next = 2;
+          return getVersionInfo(connection, templateDir);
+        case 2:
+          _yield$getVersionInfo = _context7.sent;
+          server = _yield$getVersionInfo.server;
+          template = _yield$getVersionInfo.template;
+          notes = _yield$getVersionInfo.notes;
+          templateText = template ? "".concat(template.version).concat(template.inferred ? " (inferred: ".concat(template.reason, ")") : '') : 'unknown';
+          console.log("MySQL server: ".concat(server !== null && server !== undefined ? server : 'unknown', "; template: ").concat(templateText));
+          _iterator = _createForOfIteratorHelper(notes);
+          try {
+            for (_iterator.s(); !(_step = _iterator.n()).done;) {
+              note = _step.value;
+              console.log("  Note: ".concat(note));
+            }
+          } catch (err) {
+            _iterator.e(err);
+          } finally {
+            _iterator.f();
+          }
+        case 10:
+        case "end":
+          return _context7.stop();
+      }
+    }, _callee7);
+  }));
+  return function printVersions(_x9, _x10) {
+    return _ref7.apply(this, arguments);
+  };
+}();
+
 // Only run this if this is the main module
 var isMain = function () {
   // CommonJS build (dist/index.cjs, the mysqlsyncr bin)
@@ -7255,52 +7631,52 @@ var isMain = function () {
   }
 }();
 if (isMain) {
-  _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee8() {
-    var _yield$cli, command, config, argv, problem, PORT, report, _i, _Object$entries, _Object$entries$_i, table, changes, _iterator, _step, change, count, checker;
-    return _regeneratorRuntime().wrap(function _callee8$(_context8) {
-      while (1) switch (_context8.prev = _context8.next) {
+  _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee9() {
+    var _yield$cli, command, config, argv, problem, PORT, report, _i, _Object$entries, _Object$entries$_i, table, changes, _iterator2, _step2, change, count, checker;
+    return _regeneratorRuntime().wrap(function _callee9$(_context9) {
+      while (1) switch (_context9.prev = _context9.next) {
         case 0:
-          _context8.next = 2;
+          _context9.next = 2;
           return cli();
         case 2:
-          _yield$cli = _context8.sent;
+          _yield$cli = _context9.sent;
           command = _yield$cli.command;
           config = _yield$cli.config;
           argv = _yield$cli.argv;
           if (command) {
-            _context8.next = 9;
+            _context9.next = 9;
             break;
           }
           process.exitCode = 1;
-          return _context8.abrupt("return");
+          return _context9.abrupt("return");
         case 9:
           if (!(command === 'dump' || command === 'compare' || command === 'rebuild' && argv.write)) {
-            _context8.next = 19;
+            _context9.next = 19;
             break;
           }
-          _context8.prev = 10;
+          _context9.prev = 10;
           assertOutsidePackage(argv.output);
-          _context8.next = 19;
+          _context9.next = 19;
           break;
         case 14:
-          _context8.prev = 14;
-          _context8.t0 = _context8["catch"](10);
-          console.error(_context8.t0.message);
+          _context9.prev = 14;
+          _context9.t0 = _context9["catch"](10);
+          console.error(_context9.t0.message);
           process.exitCode = 1;
-          return _context8.abrupt("return");
+          return _context9.abrupt("return");
         case 19:
           if (!(command === 'compare' || command === 'update' || command === 'rebuild')) {
-            _context8.next = 25;
+            _context9.next = 25;
             break;
           }
           problem = templateFolderProblem(argv.output);
           if (!problem) {
-            _context8.next = 25;
+            _context9.next = 25;
             break;
           }
           console.error("Template folder: ".concat(problem));
           process.exitCode = 1;
-          return _context8.abrupt("return");
+          return _context9.abrupt("return");
         case 25:
           if (command === 'dump' && !fs.existsSync(argv.output)) {
             fs.mkdirSync(argv.output, {
@@ -7310,7 +7686,7 @@ if (isMain) {
           }
           console.log("MySQLsyncr started via command line");
           if (!(command === 'ui')) {
-            _context8.next = 37;
+            _context9.next = 37;
             break;
           }
           PORT = argv.uiPort;
@@ -7318,52 +7694,52 @@ if (isMain) {
           console.log('Server started on port', PORT);
           console.log('Open http://localhost:' + PORT + ' in your browser to use the UI');
           if (!(argv.openUI && argv.openUI === true || argv.openUI === 'true')) {
-            _context8.next = 35;
+            _context9.next = 35;
             break;
           }
-          _context8.next = 35;
+          _context9.next = 35;
           return open("http://localhost:".concat(PORT));
         case 35:
-          _context8.next = 57;
+          _context9.next = 57;
           break;
         case 37:
           if (!(command === 'rebuild')) {
-            _context8.next = 53;
+            _context9.next = 53;
             break;
           }
-          _context8.prev = 38;
-          _context8.next = 41;
+          _context9.prev = 38;
+          _context9.next = 41;
           return rebuildTemplate(argv.output, {
             write: argv.write
           });
         case 41:
-          report = _context8.sent;
+          report = _context9.sent;
           for (_i = 0, _Object$entries = Object.entries(report); _i < _Object$entries.length; _i++) {
             _Object$entries$_i = _slicedToArray(_Object$entries[_i], 2), table = _Object$entries$_i[0], changes = _Object$entries$_i[1];
             console.log("\n".concat(table));
-            _iterator = _createForOfIteratorHelper(changes);
+            _iterator2 = _createForOfIteratorHelper(changes);
             try {
-              for (_iterator.s(); !(_step = _iterator.n()).done;) {
-                change = _step.value;
+              for (_iterator2.s(); !(_step2 = _iterator2.n()).done;) {
+                change = _step2.value;
                 console.log("  ".concat(change));
               }
             } catch (err) {
-              _iterator.e(err);
+              _iterator2.e(err);
             } finally {
-              _iterator.f();
+              _iterator2.f();
             }
           }
           count = Object.keys(report).length;
           console.log("\n".concat(count, " table(s) ").concat(argv.write ? 'rebuilt' : 'would change. Run again with --write to rebuild them'));
-          _context8.next = 51;
+          _context9.next = 51;
           break;
         case 47:
-          _context8.prev = 47;
-          _context8.t1 = _context8["catch"](38);
-          console.error(_context8.t1.message);
+          _context9.prev = 47;
+          _context9.t1 = _context9["catch"](38);
+          console.error(_context9.t1.message);
           process.exitCode = 1;
         case 51:
-          _context8.next = 57;
+          _context9.next = 57;
           break;
         case 53:
           // Handle other commands (dump, compare, update) as before
@@ -7377,64 +7753,70 @@ if (isMain) {
             }
             process.exitCode = 1;
           });
-          checker.connection.on('connect', /*#__PURE__*/_asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee7() {
+          checker.connection.on('connect', /*#__PURE__*/_asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee8() {
             var diffs, totalDiffs, _totalDiffs, previousDiffs, runCount, maxRuns, _diffs;
-            return _regeneratorRuntime().wrap(function _callee7$(_context7) {
-              while (1) switch (_context7.prev = _context7.next) {
+            return _regeneratorRuntime().wrap(function _callee8$(_context8) {
+              while (1) switch (_context8.prev = _context8.next) {
                 case 0:
                   console.log('Connected to the database');
                   checker.targetDatabase = argv.database;
                   checker.command = command;
                   checker.options = argv;
-                  _context7.prev = 4;
+                  _context8.prev = 4;
                   if (!(command === 'dump')) {
-                    _context7.next = 11;
+                    _context8.next = 11;
                     break;
                   }
                   console.log('Dumping the database structure to files');
-                  _context7.next = 9;
+                  _context8.next = 9;
                   return dumpAllDatabases(checker.connection, command, argv);
                 case 9:
-                  _context7.next = 42;
+                  _context8.next = 46;
                   break;
                 case 11:
                   if (!(command === 'compare')) {
-                    _context7.next = 21;
+                    _context8.next = 23;
                     break;
                   }
+                  _context8.next = 14;
+                  return printVersions(checker.connection, argv.output);
+                case 14:
                   console.log('Comparing the database structure with JSON dumps (dry run)');
-                  _context7.next = 15;
+                  _context8.next = 17;
                   return compareAllDatabases(checker.connection, argv.output, false, command, argv);
-                case 15:
-                  diffs = _context7.sent;
+                case 17:
+                  diffs = _context8.sent;
                   // Dry run
                   totalDiffs = Object.values(diffs).reduce(function (acc, arr) {
                     return acc + arr.length;
                   }, 0);
                   console.log('Total differences count:', totalDiffs);
                   fs.writeFileSync(path.join(argv.output, 'diffs.json'), JSON.stringify(diffs, null, 4));
-                  _context7.next = 42;
+                  _context8.next = 46;
                   break;
-                case 21:
+                case 23:
                   if (!(command === 'update')) {
-                    _context7.next = 42;
+                    _context8.next = 46;
                     break;
                   }
+                  _context8.next = 26;
+                  return printVersions(checker.connection, argv.output);
+                case 26:
                   console.log('Updating the database structure based on JSON dumps');
                   _totalDiffs = Infinity; // Initialize with a large number
                   previousDiffs = _totalDiffs; // Store previous differences
                   runCount = 0; // Counter for the number of runs
                   maxRuns = 6;
-                case 27:
+                case 31:
                   if (!(runCount < maxRuns && _totalDiffs > 0 && (_totalDiffs < previousDiffs || previousDiffs === Infinity))) {
-                    _context7.next = 42;
+                    _context8.next = 46;
                     break;
                   }
                   console.log('Running update command. Run count:', runCount);
-                  _context7.next = 31;
+                  _context8.next = 35;
                   return compareAllDatabases(checker.connection, argv.output, true, command, argv);
-                case 31:
-                  _diffs = _context7.sent;
+                case 35:
+                  _diffs = _context8.sent;
                   // Apply updates
                   previousDiffs = _totalDiffs; // Update previous differences
                   _totalDiffs = Object.values(_diffs).reduce(function (acc, arr) {
@@ -7443,41 +7825,41 @@ if (isMain) {
                   console.log('Total differences count:', _totalDiffs);
                   runCount++;
                   if (!(_totalDiffs > 0 && runCount < maxRuns)) {
-                    _context7.next = 40;
+                    _context8.next = 44;
                     break;
                   }
                   console.log('Total differences count is still greater than 0. Waiting 1 second before next run. Run count:', runCount);
-                  _context7.next = 40;
+                  _context8.next = 44;
                   return new Promise(function (resolve) {
                     return setTimeout(resolve, 1000);
                   });
-                case 40:
-                  _context7.next = 27;
-                  break;
-                case 42:
-                  _context7.next = 47;
-                  break;
                 case 44:
-                  _context7.prev = 44;
-                  _context7.t0 = _context7["catch"](4);
-                  console.error(_context7.t0.message);
-                case 47:
-                  _context7.prev = 47;
-                  _context7.next = 50;
-                  return checker.closeConnection();
-                case 50:
-                  return _context7.finish(47);
+                  _context8.next = 31;
+                  break;
+                case 46:
+                  _context8.next = 51;
+                  break;
+                case 48:
+                  _context8.prev = 48;
+                  _context8.t0 = _context8["catch"](4);
+                  console.error(_context8.t0.message);
                 case 51:
+                  _context8.prev = 51;
+                  _context8.next = 54;
+                  return checker.closeConnection();
+                case 54:
+                  return _context8.finish(51);
+                case 55:
                 case "end":
-                  return _context7.stop();
+                  return _context8.stop();
               }
-            }, _callee7, null, [[4, 44, 47, 51]]);
+            }, _callee8, null, [[4, 48, 51, 55]]);
           })));
         case 57:
         case "end":
-          return _context8.stop();
+          return _context9.stop();
       }
-    }, _callee8, null, [[10, 14], [38, 47]]);
+    }, _callee9, null, [[10, 14], [38, 47]]);
   }))();
 }
 

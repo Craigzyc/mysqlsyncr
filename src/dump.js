@@ -4,6 +4,7 @@ import { getDatabases, getDatabaseStructure } from './getters.js';
 import { logger } from './loggers.js';
 import { loadSyncOptions, OPTIONS_FILE } from './options.js';
 import { assertOutsidePackage } from './paths.js';
+import { getServerVersion } from './versions.js';
 
 // const require = createRequire(import.meta.url);
 // const { version } = require('../package.json');
@@ -27,7 +28,9 @@ export const dumpAllDatabases = async (connection, command, options) => {
         response[database] = dbStructure;
     }
 
-    await fs.writeFile(path.join(options.output, 'dumpInfo.json'), JSON.stringify({timestamp: new Date().toISOString()}, null, 4), 'utf-8');
+    // The MySQL version lets compare explain differences that are only how another version prints SQL
+    const mysqlVersion = await getServerVersion(connection);
+    await fs.writeFile(path.join(options.output, 'dumpInfo.json'), JSON.stringify({ timestamp: new Date().toISOString(), mysqlVersion }, null, 4), 'utf-8');
     return response;
 }
 

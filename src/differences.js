@@ -1,5 +1,5 @@
 import { logger } from './loggers.js'; // Import the logger
-import { normalizeSQLDefinition } from './normalizers.js';
+import { normalizeSQLDefinition, normalizeColumnType } from './normalizers.js';
 import { parseCreateTableSQL, parseColumnDefinitionLegacy } from './parsers.js';
 import { applyAutoIncrementOption, removeAutoIncrementCounter } from './options.js';
 
@@ -7,8 +7,6 @@ import { applyAutoIncrementOption, removeAutoIncrementCounter } from './options.
 // exactly. Filled from the expected createSQL when the JSON doesn't record them;
 // null means the expected column doesn't have it.
 const COLUMN_DETAILS = ['OnUpdate', 'Charset', 'Collate', 'Comment', 'Generated'];
-
-const withoutIntegerWidth = (type) => type.replace(/^(tinyint|smallint|mediumint|int|bigint)\(\d+\)/i, '$1');
 
 // { columnName: its line } in a CREATE TABLE statement
 const columnLines = (createSQL) => {
@@ -176,8 +174,8 @@ export const findDifferences = (expected, current, getTableOptions = () => ({}))
                 differences.push({ type: 'mismatched_field', info: "Default", tableName, field, currentField });
             }
             if (field.Type !== currentField.Type) {
-                // Older MySQL versions show integer display widths: int(11), bigint(20) unsigned, ...
-                if (withoutIntegerWidth(field.Type) === field.Type && withoutIntegerWidth(currentField.Type) === field.Type) continue;
+                // int(11) in 5.7 is int in 8.0, year(4) is year, utf8 is utf8mb3: formatting, not structure
+                if (normalizeColumnType(field.Type) === normalizeColumnType(currentField.Type)) continue;
                 if (field.Type == 'varchar' && currentField.Type.startsWith('varchar(')) continue; // varchar(255) is the default for varchar and used on older versions of mysql
                 differences.push({ type: 'mismatched_field', info: "Type", tableName, field, currentField });
             }
@@ -272,7 +270,7 @@ export const findDifferences = (expected, current, getTableOptions = () => ({}))
             for (const [viewName, expectedDefinition] of Object.entries(expected.views)) {
                 if (!current.views[viewName]) {
                     differences.push({ type: 'missing_view', viewName, definition: expectedDefinition });
-                } else if (current.views[viewName] !== expectedDefinition) {
+                } else if (normalizeSQLDefinition(current.views[viewName]) !== normalizeSQLDefinition(expectedDefinition)) {
                     differences.push({
                         type: 'mismatched_view',
                         viewName,

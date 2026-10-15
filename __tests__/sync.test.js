@@ -23,7 +23,7 @@ const mockConnection = (failOn = []) => {
     return {
         statements,
         query: async (sql) => {
-            if (sql.startsWith('USE')) return [];
+            if (sql.startsWith('USE') || sql.startsWith('SELECT VERSION')) return [];
             if (sql.startsWith('SHOW COLUMNS')) return [{ Field: 'alarmString' }];
             statements.push(sql);
             const failure = failOn.find(f => sql.includes(f));

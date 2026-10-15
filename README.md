@@ -125,6 +125,18 @@ It applies when `dump` saves a table, when `update` creates a missing table, and
 
 **`definer`** sets the `DEFINER` of every stored procedure, view and trigger, written as `root@%` or `` `root`@`%` ``. The template's definers are replaced with it before comparing, so an object in the database with a different definer is reported and `update` recreates it with this one. `dump` and Keep Current in the UI also save it. The MySQL user running the sync needs the `SET_USER_ID` (or `SUPER`) privilege to create objects for another definer, and the definer user should exist.
 
+### MySQL Versions
+
+MySQL 5.7 and 8.0 print some definitions differently. These are formatting, not structure, so they're ignored when comparing tables, procedures, triggers and views:
+
+- Integer display widths: 5.7 prints `int(11)`, 8.0.19 and later print `int`. `tinyint(1)` and `ZEROFILL` types keep their width on both.
+- `YEAR(4)` is printed as `year` from 8.0.19.
+- `utf8` is printed as `utf8mb3` from 8.0.24 (fully from 8.0.30).
+
+`dump` records the server's version in `dumpInfo.json`. For templates dumped before that, the version is inferred from the SQL. `compare`, `update` and the UI show the template's and the server's versions and note what differs between them.
+
+When applying a template from 8.0 to a 5.7 server, the `utf8mb4_0900_*` collations 5.7 doesn't have are replaced with `utf8mb4_general_ci` (`utf8mb4_bin` for `utf8mb4_0900_bin`). Expression defaults such as `DEFAULT (...)` need 8.0.13 or later and fail on 5.7.
+
 ### Example Usage
 
 1. **Dump the database structure**:

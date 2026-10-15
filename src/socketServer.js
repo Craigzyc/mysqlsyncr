@@ -6,6 +6,7 @@ import { DBStructureChecker } from './DBStructureChecker.js';
 import { applyDifferences } from './apply.js';
 import { packageRoot, assertOutsidePackage } from './paths.js';
 import { acceptCurrentIntoTemplate } from './acceptCurrent.js';
+import { getVersionInfo } from './versions.js';
 import cors from 'cors';
 import { join } from 'path';
 import { readdir, mkdir } from 'fs/promises';
@@ -132,6 +133,27 @@ export const startApiServer = (port, argv) => {
                 res.json({ message: 'Apply completed successfully' });
             } catch (err) {
                 res.status(500).json({ message: err.message, errors: err.errors });
+            } finally {
+                await checker.closeConnection();
+            }
+        });
+    });
+
+    // API endpoint for the server's and the template's MySQL versions
+    app.post('/api/versions', async (req, res) => {
+        let { config } = req.body;
+        config = setConfig(config || {}, argv);
+        const checker = new DBStructureChecker(config);
+
+        checker.connection.on('error', (err) => {
+            if (!res.headersSent) res.status(500).json({ message: 'Database connection failed', error: err.message });
+        });
+
+        checker.connection.on('connect', async () => {
+            try {
+                res.json(await getVersionInfo(checker.connection, config.output));
+            } catch (err) {
+                res.status(500).json({ message: err.message });
             } finally {
                 await checker.closeConnection();
             }

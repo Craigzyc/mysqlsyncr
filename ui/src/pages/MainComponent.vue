@@ -54,6 +54,25 @@
                         >
                             {{ totalIssueCount }}
                         </q-badge>
+                        <q-chip
+                            v-if="versionInfo"
+                            dense
+                            :color="versionInfo.notes.length ? 'warning' : 'white'"
+                            :text-color="versionInfo.notes.length ? 'black' : 'primary'"
+                            :icon="versionInfo.notes.length ? 'warning' : 'dns'"
+                            class="q-ml-md"
+                        >
+                            Template MySQL {{ templateVersionText }} · Server MySQL {{ versionInfo.server || 'unknown' }}
+                            <q-tooltip max-width="420px">
+                                <div v-if="versionInfo.template?.inferred">
+                                    Template version inferred: it {{ versionInfo.template.reason }}. A new dump records it exactly.
+                                </div>
+                                <div v-for="note in versionInfo.notes" :key="note" class="q-mt-xs">{{ note }}</div>
+                                <div v-if="!versionInfo.notes.length && !versionInfo.template?.inferred">
+                                    The template and server are the same MySQL version.
+                                </div>
+                            </q-tooltip>
+                        </q-chip>
                     </div>
                     <q-space />
                     <q-btn
@@ -561,6 +580,7 @@ export default {
             rawDifferences: {}, // differences as the server sent them; this.differences leaves out ignored ones
             // { 'host:port|folder': { databases: [db], tables: ['db.table'] } }, kept for this browser session
             ignoredByScope: loadIgnored(),
+            versionInfo: null, // { server, template: { version, inferred, reason }, notes } from /api/versions
             showFolderBrowser: false,
             isFixingAll: false,
             currentFixProgress: 0,
@@ -573,6 +593,11 @@ export default {
         },
         ignoredScope() {
             return `${this.host}:${this.port}|${this.dbFolder}`
+        },
+        templateVersionText() {
+            const template = this.versionInfo?.template
+            if (!template) return 'unknown'
+            return template.inferred ? `${template.version} (inferred)` : template.version
         },
         ignoredCount() {
             return this.ignored.databases.length + this.ignored.tables.length
@@ -967,6 +992,7 @@ export default {
                 })
                 this.setDifferences(response.data)
                 console.log('Differences in fetchAllDifferences:', this.differences)
+                this.fetchVersions()
             } catch (error) {
                 console.error('Error fetching all differences:', error)
                 this.$q.notify({
@@ -1149,6 +1175,24 @@ export default {
             } finally {
                 this.isNodeFixing[node.id] = false
                 this.isNodeFixing = { ...this.isNodeFixing } // Trigger reactivity
+            }
+        },
+        // Shown next to the differences; a failure just leaves the versions out
+        async fetchVersions() {
+            try {
+                const response = await this.$api.post('/api/versions', {
+                    config: {
+                        host: this.host,
+                        port: this.port,
+                        user: this.user,
+                        password: this.password,
+                        output: this.dbFolder,
+                    },
+                })
+                this.versionInfo = response.data
+            } catch (error) {
+                console.error('Error fetching MySQL versions:', error)
+                this.versionInfo = null
             }
         },
         setDifferences(raw) {
