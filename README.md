@@ -238,6 +238,8 @@ Contributions are welcome! If you would like to contribute to MySQLSyncr, please
 4. Push your changes to your forked repository.
 5. Open a pull request to the main repository.
 
+Before committing, run `npm test` and `npm run build`, which rebuilds `dist/` from `src/`. If you changed the UI (`ui/src`), also rebuild `ui/dist` with `npm run build` in `ui/`. That needs Node.js 22.22.0 or later; see [ui/README.md](ui/README.md). Running or installing mysqlsyncr has no such requirement.
+
 
 ## License
 

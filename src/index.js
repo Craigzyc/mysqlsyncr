@@ -149,13 +149,17 @@ if (isMain) {
         } else if (command === 'rebuild') {
             // Works on the files only; no database connection needed
             try {
-                const report = await rebuildTemplate(argv.output, { write: argv.write });
+                const { changes: report, notes } = await rebuildTemplate(argv.output, { write: argv.write });
                 for (const [table, changes] of Object.entries(report)) {
                     console.log(`\n${table}`);
                     for (const change of changes) console.log(`  ${change}`);
                 }
                 const count = Object.keys(report).length;
                 console.log(`\n${count} table(s) ${argv.write ? 'rebuilt' : 'would change. Run again with --write to rebuild them'}`);
+                if (Object.keys(notes).length > 0) {
+                    console.log('\nCheck by hand:');
+                    for (const [table, note] of Object.entries(notes)) console.log(`  ${table}: ${note}`);
+                }
             } catch (err) {
                 console.error(err.message);
                 process.exitCode = 1;

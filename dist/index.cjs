@@ -187,6 +187,26 @@ function _objectSpread2(e) {
   }
   return e;
 }
+function _objectWithoutProperties(e, t) {
+  if (null == e) return {};
+  var o,
+    r,
+    i = _objectWithoutPropertiesLoose(e, t);
+  if (Object.getOwnPropertySymbols) {
+    var n = Object.getOwnPropertySymbols(e);
+    for (r = 0; r < n.length; r++) o = n[r], -1 === t.indexOf(o) && {}.propertyIsEnumerable.call(e, o) && (i[o] = e[o]);
+  }
+  return i;
+}
+function _objectWithoutPropertiesLoose(r, e) {
+  if (null == r) return {};
+  var t = {};
+  for (var n in r) if ({}.hasOwnProperty.call(r, n)) {
+    if (-1 !== e.indexOf(n)) continue;
+    t[n] = r[n];
+  }
+  return t;
+}
 function _regenerator() {
   /*! regenerator-runtime -- Copyright (c) 2014-present, Facebook, Inc. -- license (MIT): https://github.com/babel/babel/blob/main/packages/babel-helpers/LICENSE */
   var e,
@@ -2019,7 +2039,7 @@ var logDifferences = function logDifferences(differences, database, dryRun) {
           Action: 'Trigger is mismatched'
         };
       case 'missing_trigger':
-        console.log('missing_trigger', diff);
+        logger('missing_trigger', diff);
         return {
           Type: diff.type,
           Name: diff.trigger.Name,
@@ -4087,7 +4107,7 @@ var findDifferences = function findDifferences(expected, current) {
 
   // Compare stored procedures
   if (!expected.procedures) {
-    console.log('No procedures found in expected');
+    logger('No procedures found in expected');
   } else {
     var _loop6 = function _loop6() {
       var _Object$entries2$_i = _slicedToArray(_Object$entries2[_i4], 2);
@@ -4098,7 +4118,7 @@ var findDifferences = function findDifferences(expected, current) {
         return p.Name === procName;
       });
       if (!currentProc) {
-        console.log('missing_procedure', contents);
+        logger('missing_procedure', contents);
         differences.push(_objectSpread2({
           type: 'missing_procedure'
         }, contents));
@@ -5344,13 +5364,23 @@ var compareAllDatabases = /*#__PURE__*/function () {
   };
 }();
 
+var _excluded = ["output"];
+
+// The config also carries mysqlsyncr's own settings (the template folder); mysql2
+// warns about options it doesn't know, so pass it only the connection's
+var connectionOptions = function connectionOptions(config) {
+  var _ref = config || {};
+    _ref.output;
+    var options = _objectWithoutProperties(_ref, _excluded);
+  return options;
+};
 var DBStructureChecker = /*#__PURE__*/function () {
   function DBStructureChecker(config) {
     var targetDatabase = arguments.length > 1 && arguments[1] !== undefined ? arguments[1] : null;
     _classCallCheck(this, DBStructureChecker);
     this.config = config;
     this.targetDatabase = targetDatabase;
-    this.connection = mysql.createConnection(this.config);
+    this.connection = mysql.createConnection(connectionOptions(this.config));
     this.dumpAllDatabases = dumpAllDatabases;
     this.compareAllDatabases = compareAllDatabases;
     this.getDatabases = function () {
@@ -5369,7 +5399,7 @@ var DBStructureChecker = /*#__PURE__*/function () {
         return _regeneratorRuntime().wrap(function _callee$(_context) {
           while (1) switch (_context.prev = _context.next) {
             case 0:
-              this.connection = mysql.createConnection(this.config);
+              this.connection = mysql.createConnection(connectionOptions(this.config));
               this.connection.query = util.promisify(this.connection.query); // Promisify for async/await
               _context.next = 4;
               return this.connection.connect();
@@ -5766,6 +5796,234 @@ var acceptCurrentIntoTemplate = /*#__PURE__*/function () {
   };
 }();
 
+/**
+ * Split a tables/<table>.sql file into its CREATE TABLE statement (without a
+ * trailing semicolon) and whatever follows it, such as notes written by hand.
+ */
+var splitSqlFile = function splitSqlFile(content) {
+  var lines = content.replace(/\r\n/g, '\n').split('\n');
+  var start = lines.findIndex(function (line) {
+    return /^\s*CREATE TABLE/i.test(line);
+  });
+  var end = start === -1 ? -1 : lines.findIndex(function (line, i) {
+    return i > start && line.trim().startsWith(')');
+  });
+  if (start === -1 || end === -1) return {
+    statement: content.trim(),
+    semicolon: false,
+    before: '',
+    after: ''
+  };
+  var closing = lines[end].replace(/\s+$/, '');
+  var semicolon = closing.endsWith(';');
+  return {
+    before: lines.slice(0, start).join('\n'),
+    statement: [].concat(_toConsumableArray(lines.slice(start, end)), [semicolon ? closing.slice(0, -1) : closing]).join('\n'),
+    semicolon: semicolon,
+    after: lines.slice(end + 1).join('\n')
+  };
+};
+var joinSqlFile = function joinSqlFile(_ref) {
+  var before = _ref.before,
+    statement = _ref.statement,
+    semicolon = _ref.semicolon,
+    after = _ref.after;
+  return "".concat(before ? "".concat(before, "\n") : '').concat(statement).concat(semicolon ? ';' : '', "\n").concat(after.trim() ? "".concat(after.replace(/\n+$/, ''), "\n") : '');
+};
+var sameStatement = function sameStatement(a, b) {
+  return a.replace(/\r\n/g, '\n').replace(/;?\s*$/, '') === b.replace(/\r\n/g, '\n').replace(/;?\s*$/, '');
+};
+
+/**
+ * Tables whose tables/<table>.sql statement differs from the createSQL in the
+ * database's JSON (which is what comparing uses). Notes after the statement
+ * don't count. Returns [{ database, table, file, json, sql }].
+ */
+var findTemplateDrift = /*#__PURE__*/function () {
+  var _ref2 = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee(dir) {
+    var drift, entries, _iterator, _step, entry, database, structure, _i, _Object$entries, _Object$entries$_i, table, contents, file, content, _splitSqlFile, statement;
+    return _regeneratorRuntime().wrap(function _callee$(_context) {
+      while (1) switch (_context.prev = _context.next) {
+        case 0:
+          drift = [];
+          _context.next = 3;
+          return fs$1.readdir(dir, {
+            withFileTypes: true
+          });
+        case 3:
+          entries = _context.sent;
+          _iterator = _createForOfIteratorHelper(entries.filter(function (e) {
+            return e.isDirectory();
+          }));
+          _context.prev = 5;
+          _iterator.s();
+        case 7:
+          if ((_step = _iterator.n()).done) {
+            _context.next = 40;
+            break;
+          }
+          entry = _step.value;
+          database = entry.name;
+          structure = void 0;
+          _context.prev = 11;
+          _context.t0 = JSON;
+          _context.next = 15;
+          return fs$1.readFile(path.join(dir, database, "".concat(database, ".json")), 'utf-8');
+        case 15:
+          _context.t1 = _context.sent;
+          structure = _context.t0.parse.call(_context.t0, _context.t1);
+          _context.next = 22;
+          break;
+        case 19:
+          _context.prev = 19;
+          _context.t2 = _context["catch"](11);
+          return _context.abrupt("continue", 38);
+        case 22:
+          _i = 0, _Object$entries = Object.entries(structure.tables || {});
+        case 23:
+          if (!(_i < _Object$entries.length)) {
+            _context.next = 38;
+            break;
+          }
+          _Object$entries$_i = _slicedToArray(_Object$entries[_i], 2), table = _Object$entries$_i[0], contents = _Object$entries$_i[1];
+          if (contents.createSQL) {
+            _context.next = 27;
+            break;
+          }
+          return _context.abrupt("continue", 35);
+        case 27:
+          file = path.join('tables', "".concat(table, ".sql"));
+          _context.next = 30;
+          return fs$1.readFile(path.join(dir, database, file), 'utf-8')["catch"](function () {
+            return null;
+          });
+        case 30:
+          content = _context.sent;
+          if (!(content === null)) {
+            _context.next = 33;
+            break;
+          }
+          return _context.abrupt("continue", 35);
+        case 33:
+          _splitSqlFile = splitSqlFile(content), statement = _splitSqlFile.statement;
+          if (!sameStatement(statement, contents.createSQL)) {
+            drift.push({
+              database: database,
+              table: table,
+              file: file.replace(/\\/g, '/'),
+              json: contents.createSQL.replace(/;\s*$/, ''),
+              sql: statement
+            });
+          }
+        case 35:
+          _i++;
+          _context.next = 23;
+          break;
+        case 38:
+          _context.next = 7;
+          break;
+        case 40:
+          _context.next = 45;
+          break;
+        case 42:
+          _context.prev = 42;
+          _context.t3 = _context["catch"](5);
+          _iterator.e(_context.t3);
+        case 45:
+          _context.prev = 45;
+          _iterator.f();
+          return _context.finish(45);
+        case 48:
+          return _context.abrupt("return", drift);
+        case 49:
+        case "end":
+          return _context.stop();
+      }
+    }, _callee, null, [[5, 42, 45, 48], [11, 19]]);
+  }));
+  return function findTemplateDrift(_x) {
+    return _ref2.apply(this, arguments);
+  };
+}();
+
+/**
+ * Make one table's JSON createSQL and tables/<table>.sql agree.
+ *   keep 'json': the .sql file's statement is replaced by the JSON's createSQL; notes after it stay
+ *   keep 'sql':  the JSON's createSQL becomes the .sql file's statement, and its
+ *                columns/indexes/constraints are re-read from it
+ */
+var resolveTemplateDrift = /*#__PURE__*/function () {
+  var _ref3 = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee2(dir, database, table, keep) {
+    var _structure$tables;
+    var jsonPath, sqlPath, structure, contents, parts, parsed;
+    return _regeneratorRuntime().wrap(function _callee2$(_context2) {
+      while (1) switch (_context2.prev = _context2.next) {
+        case 0:
+          if (!(keep !== 'json' && keep !== 'sql')) {
+            _context2.next = 2;
+            break;
+          }
+          throw new Error("keep must be 'json' or 'sql', not ".concat(keep));
+        case 2:
+          assertOutsidePackage(dir);
+          jsonPath = path.join(dir, database, "".concat(database, ".json"));
+          sqlPath = path.join(dir, database, 'tables', "".concat(table, ".sql"));
+          _context2.t0 = JSON;
+          _context2.next = 8;
+          return fs$1.readFile(jsonPath, 'utf-8');
+        case 8:
+          _context2.t1 = _context2.sent;
+          structure = _context2.t0.parse.call(_context2.t0, _context2.t1);
+          contents = (_structure$tables = structure.tables) === null || _structure$tables === void 0 ? void 0 : _structure$tables[table];
+          if (contents !== null && contents !== void 0 && contents.createSQL) {
+            _context2.next = 13;
+            break;
+          }
+          throw new Error("".concat(database, ".").concat(table, " has no createSQL in ").concat(database, ".json"));
+        case 13:
+          _context2.t2 = splitSqlFile;
+          _context2.next = 16;
+          return fs$1.readFile(sqlPath, 'utf-8');
+        case 16:
+          _context2.t3 = _context2.sent;
+          parts = (0, _context2.t2)(_context2.t3);
+          if (!(keep === 'json')) {
+            _context2.next = 22;
+            break;
+          }
+          _context2.next = 21;
+          return fs$1.writeFile(sqlPath, joinSqlFile(_objectSpread2(_objectSpread2({}, parts), {}, {
+            statement: contents.createSQL.replace(/;\s*$/, '')
+          })), 'utf-8');
+        case 21:
+          return _context2.abrupt("return");
+        case 22:
+          parsed = parseCreateTableSQL(parts.statement);
+          if (!(!parsed || parsed.name !== table)) {
+            _context2.next = 25;
+            break;
+          }
+          throw new Error("tables/".concat(table, ".sql doesn't hold a CREATE TABLE for ").concat(table));
+        case 25:
+          structure.tables[table] = _objectSpread2(_objectSpread2({}, contents), {}, {
+            columns: parsed.columns,
+            indexes: parsed.indexes,
+            constraints: parsed.constraints,
+            createSQL: parts.statement
+          });
+          _context2.next = 28;
+          return fs$1.writeFile(jsonPath, JSON.stringify(structure, null, 4), 'utf-8');
+        case 28:
+        case "end":
+          return _context2.stop();
+      }
+    }, _callee2);
+  }));
+  return function resolveTemplateDrift(_x2, _x3, _x4, _x5) {
+    return _ref3.apply(this, arguments);
+  };
+}();
+
 var setConfig = function setConfig(config, argv) {
   if (!config.host && argv.host) {
     config.host = argv.host;
@@ -6040,12 +6298,98 @@ var startApiServer = function startApiServer(port, argv) {
     };
   }());
 
-  // API endpoint for the server's and the template's MySQL versions
-  app.post('/api/versions', /*#__PURE__*/function () {
-    var _ref8 = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee9(req, res) {
-      var config, checker;
+  // API endpoint for tables whose tables/<table>.sql disagrees with the createSQL in the
+  // template's JSON. Reads only the template, so no database connection is needed
+  app.post('/api/templateDrift', /*#__PURE__*/function () {
+    var _ref8 = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee8(req, res) {
+      var config;
+      return _regeneratorRuntime().wrap(function _callee8$(_context8) {
+        while (1) switch (_context8.prev = _context8.next) {
+          case 0:
+            config = setConfig(req.body.config || {}, argv);
+            if (config.output) {
+              _context8.next = 3;
+              break;
+            }
+            return _context8.abrupt("return", res.status(400).json({
+              message: 'No template folder selected'
+            }));
+          case 3:
+            _context8.prev = 3;
+            _context8.t0 = res;
+            _context8.next = 7;
+            return findTemplateDrift(config.output);
+          case 7:
+            _context8.t1 = _context8.sent;
+            _context8.t0.json.call(_context8.t0, _context8.t1);
+            _context8.next = 14;
+            break;
+          case 11:
+            _context8.prev = 11;
+            _context8.t2 = _context8["catch"](3);
+            res.status(500).json({
+              message: _context8.t2.message
+            });
+          case 14:
+          case "end":
+            return _context8.stop();
+        }
+      }, _callee8, null, [[3, 11]]);
+    }));
+    return function (_x9, _x0) {
+      return _ref8.apply(this, arguments);
+    };
+  }());
+
+  // API endpoint to make one table's JSON createSQL and .sql file agree, keeping 'json' or 'sql'
+  app.post('/api/resolveTemplateDrift', /*#__PURE__*/function () {
+    var _ref9 = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee9(req, res) {
+      var _req$body4, database, table, keep, config;
       return _regeneratorRuntime().wrap(function _callee9$(_context9) {
         while (1) switch (_context9.prev = _context9.next) {
+          case 0:
+            _req$body4 = req.body, database = _req$body4.database, table = _req$body4.table, keep = _req$body4.keep;
+            config = setConfig(req.body.config || {}, argv);
+            if (config.output) {
+              _context9.next = 4;
+              break;
+            }
+            return _context9.abrupt("return", res.status(400).json({
+              message: 'No template folder selected'
+            }));
+          case 4:
+            _context9.prev = 4;
+            _context9.next = 7;
+            return resolveTemplateDrift(config.output, database, table, keep);
+          case 7:
+            res.json({
+              message: "".concat(database, ".").concat(table, ": kept the ").concat(keep === 'json' ? 'JSON' : '.sql file', " version")
+            });
+            _context9.next = 13;
+            break;
+          case 10:
+            _context9.prev = 10;
+            _context9.t0 = _context9["catch"](4);
+            res.status(500).json({
+              message: _context9.t0.message
+            });
+          case 13:
+          case "end":
+            return _context9.stop();
+        }
+      }, _callee9, null, [[4, 10]]);
+    }));
+    return function (_x1, _x10) {
+      return _ref9.apply(this, arguments);
+    };
+  }());
+
+  // API endpoint for the server's and the template's MySQL versions
+  app.post('/api/versions', /*#__PURE__*/function () {
+    var _ref0 = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee1(req, res) {
+      var config, checker;
+      return _regeneratorRuntime().wrap(function _callee1$(_context1) {
+        while (1) switch (_context1.prev = _context1.next) {
           case 0:
             config = req.body.config;
             config = setConfig(config || {}, argv);
@@ -6056,74 +6400,74 @@ var startApiServer = function startApiServer(port, argv) {
                 error: err.message
               });
             });
-            checker.connection.on('connect', /*#__PURE__*/_asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee8() {
-              return _regeneratorRuntime().wrap(function _callee8$(_context8) {
-                while (1) switch (_context8.prev = _context8.next) {
+            checker.connection.on('connect', /*#__PURE__*/_asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee0() {
+              return _regeneratorRuntime().wrap(function _callee0$(_context0) {
+                while (1) switch (_context0.prev = _context0.next) {
                   case 0:
-                    _context8.prev = 0;
-                    _context8.t0 = res;
-                    _context8.next = 4;
+                    _context0.prev = 0;
+                    _context0.t0 = res;
+                    _context0.next = 4;
                     return getVersionInfo(checker.connection, config.output);
                   case 4:
-                    _context8.t1 = _context8.sent;
-                    _context8.t0.json.call(_context8.t0, _context8.t1);
-                    _context8.next = 11;
+                    _context0.t1 = _context0.sent;
+                    _context0.t0.json.call(_context0.t0, _context0.t1);
+                    _context0.next = 11;
                     break;
                   case 8:
-                    _context8.prev = 8;
-                    _context8.t2 = _context8["catch"](0);
+                    _context0.prev = 8;
+                    _context0.t2 = _context0["catch"](0);
                     res.status(500).json({
-                      message: _context8.t2.message
+                      message: _context0.t2.message
                     });
                   case 11:
-                    _context8.prev = 11;
-                    _context8.next = 14;
+                    _context0.prev = 11;
+                    _context0.next = 14;
                     return checker.closeConnection();
                   case 14:
-                    return _context8.finish(11);
+                    return _context0.finish(11);
                   case 15:
                   case "end":
-                    return _context8.stop();
+                    return _context0.stop();
                 }
-              }, _callee8, null, [[0, 8, 11, 15]]);
+              }, _callee0, null, [[0, 8, 11, 15]]);
             })));
           case 5:
           case "end":
-            return _context9.stop();
+            return _context1.stop();
         }
-      }, _callee9);
+      }, _callee1);
     }));
-    return function (_x9, _x0) {
-      return _ref8.apply(this, arguments);
+    return function (_x11, _x12) {
+      return _ref0.apply(this, arguments);
     };
   }());
 
   // API endpoint to overwrite the template with the database's current values
   app.post('/api/acceptCurrent', /*#__PURE__*/function () {
-    var _ref0 = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee1(req, res) {
-      var _req$body4, config, database, diffs, checker;
-      return _regeneratorRuntime().wrap(function _callee1$(_context1) {
-        while (1) switch (_context1.prev = _context1.next) {
+    var _ref10 = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee11(req, res) {
+      var _req$body5, config, database, diffs, checker;
+      return _regeneratorRuntime().wrap(function _callee11$(_context11) {
+        while (1) switch (_context11.prev = _context11.next) {
           case 0:
-            _req$body4 = req.body, config = _req$body4.config, database = _req$body4.database, diffs = _req$body4.diffs;
+            _req$body5 = req.body, config = _req$body5.config, database = _req$body5.database, diffs = _req$body5.diffs;
             config = setConfig(config, argv);
             if (config.output) {
-              _context1.next = 4;
+              _context11.next = 4;
               break;
             }
-            return _context1.abrupt("return", res.status(400).json({
+            return _context11.abrupt("return", res.status(400).json({
               message: 'No template folder selected'
             }));
           case 4:
-            _context1.prev = 4;
+            _context11.prev = 4;
             assertOutsidePackage(config.output);
-            _context1.next = 11;
+            _context11.next = 11;
             break;
           case 8:
-            _context1.prev = 8;
-            _context1.t0 = _context1["catch"](4);
-            return _context1.abrupt("return", res.status(400).json({
-              message: _context1.t0.message
+            _context11.prev = 8;
+            _context11.t0 = _context11["catch"](4);
+            return _context11.abrupt("return", res.status(400).json({
+              message: _context11.t0.message
             }));
           case 11:
             checker = new DBStructureChecker(config, database);
@@ -6134,67 +6478,67 @@ var startApiServer = function startApiServer(port, argv) {
                 error: err.message
               });
             });
-            checker.connection.on('connect', /*#__PURE__*/_asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee0() {
+            checker.connection.on('connect', /*#__PURE__*/_asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee10() {
               var _diffs$length;
-              return _regeneratorRuntime().wrap(function _callee0$(_context0) {
-                while (1) switch (_context0.prev = _context0.next) {
+              return _regeneratorRuntime().wrap(function _callee10$(_context10) {
+                while (1) switch (_context10.prev = _context10.next) {
                   case 0:
-                    _context0.prev = 0;
+                    _context10.prev = 0;
                     console.log("Keeping current values in the template for ".concat((_diffs$length = diffs === null || diffs === void 0 ? void 0 : diffs.length) !== null && _diffs$length !== void 0 ? _diffs$length : 0, " difference(s) in ").concat(database));
-                    _context0.next = 4;
+                    _context10.next = 4;
                     return acceptCurrentIntoTemplate(checker.connection, config.output, database, diffs || []);
                   case 4:
                     res.json({
                       message: 'Template updated with the current values'
                     });
-                    _context0.next = 10;
+                    _context10.next = 10;
                     break;
                   case 7:
-                    _context0.prev = 7;
-                    _context0.t0 = _context0["catch"](0);
+                    _context10.prev = 7;
+                    _context10.t0 = _context10["catch"](0);
                     res.status(500).json({
-                      message: _context0.t0.message
+                      message: _context10.t0.message
                     });
                   case 10:
-                    _context0.prev = 10;
-                    _context0.next = 13;
+                    _context10.prev = 10;
+                    _context10.next = 13;
                     return checker.closeConnection();
                   case 13:
-                    return _context0.finish(10);
+                    return _context10.finish(10);
                   case 14:
                   case "end":
-                    return _context0.stop();
+                    return _context10.stop();
                 }
-              }, _callee0, null, [[0, 7, 10, 14]]);
+              }, _callee10, null, [[0, 7, 10, 14]]);
             })));
           case 14:
           case "end":
-            return _context1.stop();
+            return _context11.stop();
         }
-      }, _callee1, null, [[4, 8]]);
+      }, _callee11, null, [[4, 8]]);
     }));
-    return function (_x1, _x10) {
-      return _ref0.apply(this, arguments);
+    return function (_x13, _x14) {
+      return _ref10.apply(this, arguments);
     };
   }());
   app.post('/api/browse-folders', /*#__PURE__*/function () {
-    var _ref10 = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee10(req, res) {
+    var _ref12 = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee12(req, res) {
       var _req$body$currentPath, currentPath, resolvedPath, contents, items, sortedItems;
-      return _regeneratorRuntime().wrap(function _callee10$(_context10) {
-        while (1) switch (_context10.prev = _context10.next) {
+      return _regeneratorRuntime().wrap(function _callee12$(_context12) {
+        while (1) switch (_context12.prev = _context12.next) {
           case 0:
-            _context10.prev = 0;
+            _context12.prev = 0;
             // Start where mysqlsyncr was run from, not in the package folder
             _req$body$currentPath = req.body.currentPath, currentPath = _req$body$currentPath === void 0 ? process.cwd() : _req$body$currentPath;
             console.log('Browsing folder:', currentPath);
             resolvedPath = currentPath.startsWith('/') || currentPath.match(/^[A-Z]:\\/) ? path.resolve(currentPath) : path.resolve(currentPath);
             console.log('Resolved path:', resolvedPath);
-            _context10.next = 7;
+            _context12.next = 7;
             return fs$1.readdir(resolvedPath, {
               withFileTypes: true
             });
           case 7:
-            contents = _context10.sent;
+            contents = _context12.sent;
             // Separate directories and files
             items = contents.map(function (dirent) {
               return {
@@ -6222,36 +6566,36 @@ var startApiServer = function startApiServer(port, argv) {
               currentPath: resolvedPath,
               items: sortedItems
             });
-            _context10.next = 17;
+            _context12.next = 17;
             break;
           case 14:
-            _context10.prev = 14;
-            _context10.t0 = _context10["catch"](0);
+            _context12.prev = 14;
+            _context12.t0 = _context12["catch"](0);
             res.status(500).json({
-              error: _context10.t0.message
+              error: _context12.t0.message
             });
           case 17:
           case "end":
-            return _context10.stop();
+            return _context12.stop();
         }
-      }, _callee10, null, [[0, 14]]);
+      }, _callee12, null, [[0, 14]]);
     }));
-    return function (_x11, _x12) {
-      return _ref10.apply(this, arguments);
+    return function (_x15, _x16) {
+      return _ref12.apply(this, arguments);
     };
   }());
   app.post('/api/create-folder', /*#__PURE__*/function () {
-    var _ref11 = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee11(req, res) {
+    var _ref13 = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee13(req, res) {
       var folderPath, resolvedPath;
-      return _regeneratorRuntime().wrap(function _callee11$(_context11) {
-        while (1) switch (_context11.prev = _context11.next) {
+      return _regeneratorRuntime().wrap(function _callee13$(_context13) {
+        while (1) switch (_context13.prev = _context13.next) {
           case 0:
-            _context11.prev = 0;
+            _context13.prev = 0;
             folderPath = req.body.folderPath;
             console.log('Creating folder:', folderPath);
             resolvedPath = folderPath.startsWith('/') || folderPath.match(/^[A-Z]:\\/) ? path.resolve(folderPath) : path.resolve(process.cwd(), folderPath);
             assertOutsidePackage(resolvedPath);
-            _context11.next = 7;
+            _context13.next = 7;
             return fs$1.mkdir(resolvedPath, {
               recursive: true
             });
@@ -6260,22 +6604,22 @@ var startApiServer = function startApiServer(port, argv) {
               success: true,
               path: resolvedPath
             });
-            _context11.next = 13;
+            _context13.next = 13;
             break;
           case 10:
-            _context11.prev = 10;
-            _context11.t0 = _context11["catch"](0);
+            _context13.prev = 10;
+            _context13.t0 = _context13["catch"](0);
             res.status(500).json({
-              error: _context11.t0.message
+              error: _context13.t0.message
             });
           case 13:
           case "end":
-            return _context11.stop();
+            return _context13.stop();
         }
-      }, _callee11, null, [[0, 10]]);
+      }, _callee13, null, [[0, 10]]);
     }));
-    return function (_x13, _x14) {
-      return _ref11.apply(this, arguments);
+    return function (_x17, _x18) {
+      return _ref13.apply(this, arguments);
     };
   }());
 
@@ -6381,8 +6725,9 @@ var tableChanges = function tableChanges(table, rebuilt, createSQL) {
 /**
  * Rebuild each table's columns/indexes/constraints in a template from its
  * createSQL with the current parser, applying the autoIncrement option to the
- * createSQL. Returns { 'db.table': [change, ...] } for tables that would change;
- * only writes the files when write is true.
+ * createSQL. Returns { changes, notes }: changes is { 'db.table': [change, ...] }
+ * for tables that would change, notes is { 'db.table': note } for things to check
+ * by hand. Only writes the files when write is true.
  */
 var rebuildTemplate = /*#__PURE__*/function () {
   var _ref = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee(dir) {
@@ -6391,6 +6736,7 @@ var rebuildTemplate = /*#__PURE__*/function () {
       write,
       syncOptions,
       report,
+      notes,
       entries,
       _iterator5,
       _step5,
@@ -6408,6 +6754,11 @@ var rebuildTemplate = /*#__PURE__*/function () {
       rebuilt,
       changes,
       sqlPath,
+      sqlFile,
+      fixedSqlFile,
+      sqlCounterChanged,
+      sameSQL,
+      sqlFileDrifted,
       _args = arguments;
     return _regeneratorRuntime().wrap(function _callee$(_context) {
       while (1) switch (_context.prev = _context.next) {
@@ -6419,130 +6770,148 @@ var rebuildTemplate = /*#__PURE__*/function () {
         case 4:
           syncOptions = _context.sent;
           report = {};
-          _context.next = 8;
+          notes = {};
+          _context.next = 9;
           return fs$1.readdir(dir, {
             withFileTypes: true
           });
-        case 8:
+        case 9:
           entries = _context.sent;
           _iterator5 = _createForOfIteratorHelper(entries.filter(function (e) {
             return e.isDirectory();
           }));
-          _context.prev = 10;
+          _context.prev = 11;
           _iterator5.s();
-        case 12:
+        case 13:
           if ((_step5 = _iterator5.n()).done) {
-            _context.next = 65;
+            _context.next = 71;
             break;
           }
           entry = _step5.value;
           database = entry.name;
           jsonPath = path.join(dir, database, "".concat(database, ".json"));
           structure = void 0;
-          _context.prev = 17;
+          _context.prev = 18;
           _context.t0 = JSON;
-          _context.next = 21;
+          _context.next = 22;
           return fs$1.readFile(jsonPath, 'utf-8');
-        case 21:
+        case 22:
           _context.t1 = _context.sent;
           structure = _context.t0.parse.call(_context.t0, _context.t1);
-          _context.next = 30;
+          _context.next = 31;
           break;
-        case 25:
-          _context.prev = 25;
-          _context.t2 = _context["catch"](17);
+        case 26:
+          _context.prev = 26;
+          _context.t2 = _context["catch"](18);
           if (!(_context.t2.code === 'ENOENT')) {
-            _context.next = 29;
+            _context.next = 30;
             break;
           }
-          return _context.abrupt("continue", 63);
-        case 29:
-          throw new Error("Could not read ".concat(jsonPath, ": ").concat(_context.t2.message));
+          return _context.abrupt("continue", 69);
         case 30:
+          throw new Error("Could not read ".concat(jsonPath, ": ").concat(_context.t2.message));
+        case 31:
           changed = false;
           _i = 0, _Object$entries = Object.entries(structure.tables || {});
-        case 32:
+        case 33:
           if (!(_i < _Object$entries.length)) {
-            _context.next = 60;
+            _context.next = 66;
             break;
           }
           _Object$entries$_i = _slicedToArray(_Object$entries[_i], 2), tableName = _Object$entries$_i[0], table = _Object$entries$_i[1];
           if (table.createSQL) {
-            _context.next = 36;
+            _context.next = 37;
             break;
           }
-          return _context.abrupt("continue", 57);
-        case 36:
+          return _context.abrupt("continue", 63);
+        case 37:
           createSQL = applyAutoIncrementOption(table.createSQL, getTableOptions(syncOptions, database, tableName).autoIncrement);
           rebuilt = parseCreateTableSQL(createSQL);
-          changes = tableChanges(table, rebuilt, createSQL);
-          if (!(changes.length === 0)) {
-            _context.next = 41;
+          changes = tableChanges(table, rebuilt, createSQL); // tables/<table>.sql should match createSQL, but it can hold notes or edits made
+          // by hand, so only the AUTO_INCREMENT option is applied to it; any other
+          // difference is reported, never overwritten
+          sqlPath = path.join(dir, database, 'tables', "".concat(tableName, ".sql"));
+          _context.next = 43;
+          return fs$1.readFile(sqlPath, 'utf-8')["catch"](function () {
+            return null;
+          });
+        case 43:
+          sqlFile = _context.sent;
+          fixedSqlFile = sqlFile === null ? null : applyAutoIncrementOption(sqlFile, getTableOptions(syncOptions, database, tableName).autoIncrement);
+          sqlCounterChanged = sqlFile !== null && fixedSqlFile !== sqlFile;
+          if (sqlCounterChanged) changes.push("tables/".concat(tableName, ".sql: AUTO_INCREMENT counter changed by the autoIncrement option"));
+          // Notes written after the statement don't count
+          sameSQL = function sameSQL(a, b) {
+            return a.replace(/\r\n/g, '\n').replace(/;?\s*$/, '') === b.replace(/\r\n/g, '\n').replace(/;?\s*$/, '');
+          };
+          sqlFileDrifted = fixedSqlFile !== null && !sameSQL(splitSqlFile(fixedSqlFile).statement, createSQL);
+          if (!(changes.length === 0 && !sqlFileDrifted)) {
+            _context.next = 51;
             break;
           }
-          return _context.abrupt("continue", 57);
-        case 41:
-          report["".concat(database, ".").concat(tableName)] = changes;
+          return _context.abrupt("continue", 63);
+        case 51:
+          if (changes.length > 0) report["".concat(database, ".").concat(tableName)] = changes;
+          if (sqlFileDrifted) {
+            notes["".concat(database, ".").concat(tableName)] = "tables/".concat(tableName, ".sql differs from the createSQL in ").concat(database, ".json (left as is; compare uses the JSON). Pick which to keep in the UI.");
+          }
+          if (!(sqlCounterChanged && write)) {
+            _context.next = 56;
+            break;
+          }
+          _context.next = 56;
+          return fs$1.writeFile(sqlPath, fixedSqlFile, 'utf-8');
+        case 56:
+          if (!(changes.length === 0 || changes.every(function (change) {
+            return change.startsWith('tables/');
+          }))) {
+            _context.next = 58;
+            break;
+          }
+          return _context.abrupt("continue", 63);
+        case 58:
+          // the JSON is already right
+
           changed = true;
           table.columns = rebuilt.columns;
           table.indexes = rebuilt.indexes;
           table.constraints = rebuilt.constraints;
-          if (!(createSQL !== table.createSQL)) {
-            _context.next = 57;
-            break;
-          }
           table.createSQL = createSQL;
-          sqlPath = path.join(dir, database, 'tables', "".concat(tableName, ".sql"));
-          _context.t3 = write;
-          if (!_context.t3) {
-            _context.next = 54;
-            break;
-          }
-          _context.next = 53;
-          return fs$1.stat(sqlPath)["catch"](function () {
-            return false;
-          });
-        case 53:
-          _context.t3 = _context.sent;
-        case 54:
-          if (!_context.t3) {
-            _context.next = 57;
-            break;
-          }
-          _context.next = 57;
-          return fs$1.writeFile(sqlPath, "".concat(createSQL, "\n"), 'utf-8');
-        case 57:
-          _i++;
-          _context.next = 32;
-          break;
-        case 60:
-          if (!(changed && write)) {
-            _context.next = 63;
-            break;
-          }
-          _context.next = 63;
-          return fs$1.writeFile(jsonPath, JSON.stringify(structure, null, 4), 'utf-8');
         case 63:
-          _context.next = 12;
+          _i++;
+          _context.next = 33;
           break;
-        case 65:
-          _context.next = 70;
+        case 66:
+          if (!(changed && write)) {
+            _context.next = 69;
+            break;
+          }
+          _context.next = 69;
+          return fs$1.writeFile(jsonPath, JSON.stringify(structure, null, 4), 'utf-8');
+        case 69:
+          _context.next = 13;
           break;
-        case 67:
-          _context.prev = 67;
-          _context.t4 = _context["catch"](10);
-          _iterator5.e(_context.t4);
-        case 70:
-          _context.prev = 70;
-          _iterator5.f();
-          return _context.finish(70);
+        case 71:
+          _context.next = 76;
+          break;
         case 73:
-          return _context.abrupt("return", report);
-        case 74:
+          _context.prev = 73;
+          _context.t3 = _context["catch"](11);
+          _iterator5.e(_context.t3);
+        case 76:
+          _context.prev = 76;
+          _iterator5.f();
+          return _context.finish(76);
+        case 79:
+          return _context.abrupt("return", {
+            changes: report,
+            notes: notes
+          });
+        case 80:
         case "end":
           return _context.stop();
       }
-    }, _callee, null, [[10, 67, 70, 73], [17, 25]]);
+    }, _callee, null, [[11, 73, 76, 79], [18, 26]]);
   }));
   return function rebuildTemplate(_x) {
     return _ref.apply(this, arguments);
@@ -7318,7 +7687,7 @@ var isMain = function () {
 }();
 if (isMain) {
   _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee9() {
-    var _yield$cli, command, config, argv, problem, PORT, report, _i, _Object$entries, _Object$entries$_i, table, changes, _iterator2, _step2, change, count, checker;
+    var _yield$cli, command, config, argv, problem, PORT, _yield$rebuildTemplat, report, notes, _i, _Object$entries, _Object$entries$_i, table, changes, _iterator2, _step2, change, count, _i2, _Object$entries2, _Object$entries2$_i, _table, note, checker;
     return _regeneratorRuntime().wrap(function _callee9$(_context9) {
       while (1) switch (_context9.prev = _context9.next) {
         case 0:
@@ -7386,11 +7755,11 @@ if (isMain) {
           _context9.next = 35;
           return open("http://localhost:".concat(PORT));
         case 35:
-          _context9.next = 57;
+          _context9.next = 60;
           break;
         case 37:
           if (!(command === 'rebuild')) {
-            _context9.next = 53;
+            _context9.next = 56;
             break;
           }
           _context9.prev = 38;
@@ -7399,7 +7768,9 @@ if (isMain) {
             write: argv.write
           });
         case 41:
-          report = _context9.sent;
+          _yield$rebuildTemplat = _context9.sent;
+          report = _yield$rebuildTemplat.changes;
+          notes = _yield$rebuildTemplat.notes;
           for (_i = 0, _Object$entries = Object.entries(report); _i < _Object$entries.length; _i++) {
             _Object$entries$_i = _slicedToArray(_Object$entries[_i], 2), table = _Object$entries$_i[0], changes = _Object$entries$_i[1];
             console.log("\n".concat(table));
@@ -7417,17 +7788,24 @@ if (isMain) {
           }
           count = Object.keys(report).length;
           console.log("\n".concat(count, " table(s) ").concat(argv.write ? 'rebuilt' : 'would change. Run again with --write to rebuild them'));
-          _context9.next = 51;
+          if (Object.keys(notes).length > 0) {
+            console.log('\nCheck by hand:');
+            for (_i2 = 0, _Object$entries2 = Object.entries(notes); _i2 < _Object$entries2.length; _i2++) {
+              _Object$entries2$_i = _slicedToArray(_Object$entries2[_i2], 2), _table = _Object$entries2$_i[0], note = _Object$entries2$_i[1];
+              console.log("  ".concat(_table, ": ").concat(note));
+            }
+          }
+          _context9.next = 54;
           break;
-        case 47:
-          _context9.prev = 47;
+        case 50:
+          _context9.prev = 50;
           _context9.t1 = _context9["catch"](38);
           console.error(_context9.t1.message);
           process.exitCode = 1;
-        case 51:
-          _context9.next = 57;
+        case 54:
+          _context9.next = 60;
           break;
-        case 53:
+        case 56:
           // Handle other commands (dump, compare, update) as before
           console.log("Connecting to MySQL as ".concat(config.user, "@").concat(config.host, ":").concat(config.port).concat(config.password ? '' : ' with no password'));
           checker = new DBStructureChecker(config, argv.database);
@@ -7541,11 +7919,11 @@ if (isMain) {
               }
             }, _callee8, null, [[4, 48, 51, 55]]);
           })));
-        case 57:
+        case 60:
         case "end":
           return _context9.stop();
       }
-    }, _callee9, null, [[10, 14], [38, 47]]);
+    }, _callee9, null, [[10, 14], [38, 50]]);
   }))();
 }
 

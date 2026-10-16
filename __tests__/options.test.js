@@ -139,7 +139,7 @@ describe('rebuildTemplate', () => {
         const dir = tempDir();
         writeTemplate(dir, oldTable());
         const before = fs.readFileSync(path.join(dir, 'Alerts', 'Alerts.json'), 'utf-8');
-        const report = await rebuildTemplate(dir);
+        const { changes: report } = await rebuildTemplate(dir);
         expect(report['Alerts.AlarmRules']).toEqual([
             'column name: JSON {"Type":"varchar(45)","NotNull":true,"Default":"System"} -> createSQL {"Type":"varchar(45)","NotNull":true,"Default":"System Generated"}'
         ]);
@@ -156,7 +156,7 @@ describe('rebuildTemplate', () => {
         expect(table.createSQL).not.toContain('AUTO_INCREMENT=');
         expect(table.triggers).toEqual([]);
         expect(fs.readFileSync(path.join(dir, 'Alerts', 'tables', 'AlarmRules.sql'), 'utf-8')).not.toContain('AUTO_INCREMENT=');
-        expect(await rebuildTemplate(dir)).toEqual({});
+        expect((await rebuildTemplate(dir)).changes).toEqual({});
     });
 });
 
@@ -222,5 +222,38 @@ describe('trigger comparison', () => {
 
     test('whitespace-only changes are not', () => {
         expect(findDifferences(table(trigger), table(trigger.replace(' FOR EACH', '\n  FOR   EACH')))).toEqual([]);
+    });
+});
+
+describe('rebuildTemplate and tables/*.sql', () => {
+    const setup = (sqlFile) => {
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mysqlsyncr-'));
+        fs.mkdirSync(path.join(dir, 'Alerts', 'tables'), { recursive: true });
+        const clean = createSQL.replace(' AUTO_INCREMENT=400101', '');
+        const parsed = parseCreateTableSQL(clean);
+        fs.writeFileSync(path.join(dir, 'Alerts', 'Alerts.json'), JSON.stringify({ tables: { AlarmRules: { columns: parsed.columns, indexes: parsed.indexes, constraints: [], triggers: [], createSQL: clean } } }));
+        fs.writeFileSync(path.join(dir, OPTIONS_FILE), JSON.stringify({ autoIncrement: false }));
+        fs.writeFileSync(path.join(dir, 'Alerts', 'tables', 'AlarmRules.sql'), sqlFile);
+        return { dir, clean, read: () => fs.readFileSync(path.join(dir, 'Alerts', 'tables', 'AlarmRules.sql'), 'utf-8'), json: () => fs.readFileSync(path.join(dir, 'Alerts', 'Alerts.json'), 'utf-8') };
+    };
+
+    test('only the counter is removed from a .sql file, keeping notes written in it', async () => {
+        const notes = '\n-- Notes about these columns, written by hand\n';
+        const { dir, clean, read, json } = setup(`${createSQL};\n${notes}`);
+        const jsonBefore = json();
+        expect((await rebuildTemplate(dir)).changes).toEqual({ 'Alerts.AlarmRules': ['tables/AlarmRules.sql: AUTO_INCREMENT counter changed by the autoIncrement option'] });
+        await rebuildTemplate(dir, { write: true });
+        expect(read()).toBe(`${clean};\n${notes}`);
+        expect(json()).toBe(jsonBefore);
+        expect(await rebuildTemplate(dir)).toMatchObject({ changes: {} });
+    });
+
+    test('other differences in a .sql file are reported, not overwritten', async () => {
+        const edited = createSQL.replace(' AUTO_INCREMENT=400101', '').replace('  PRIMARY KEY', '  `extra` int DEFAULT NULL,\n  PRIMARY KEY');
+        const { dir, read } = setup(`${edited}\n`);
+        const { changes, notes } = await rebuildTemplate(dir, { write: true });
+        expect(changes).toEqual({});
+        expect(notes['Alerts.AlarmRules']).toContain('differs from the createSQL');
+        expect(read()).toBe(`${edited}\n`);
     });
 });

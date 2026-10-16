@@ -191,13 +191,13 @@ export const findDifferences = (expected, current, getTableOptions = () => ({}))
 
     // Compare stored procedures
     if (!expected.procedures) {
-        console.log('No procedures found in expected');
+        logger('No procedures found in expected');
     } else {
         for (const [position, contents] of Object.entries(expected.procedures)) {
             let procName = contents.Name;
             let currentProc = current.procedures.find(p => p.Name === procName);
             if (!currentProc) {
-                console.log('missing_procedure', contents);
+                logger('missing_procedure', contents);
                 differences.push({ type: 'missing_procedure', ...contents });
                 continue;
             }

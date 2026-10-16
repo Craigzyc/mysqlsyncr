@@ -1,8 +1,8 @@
 <template>
     <div class="definition-diff">
         <div class="row items-center q-gutter-md q-mb-sm">
-            <span class="legend legend-removed">− Template (expected)</span>
-            <span class="legend legend-added">+ Database (current)</span>
+            <span class="legend legend-removed">− {{ expectedLabel }}</span>
+            <span class="legend legend-added">+ {{ currentLabel }}</span>
             <q-space />
             <q-toggle v-model="changesOnly" dense label="Changes only" />
             <q-toggle v-model="ignoreWhitespace" dense label="Ignore whitespace" />
@@ -36,14 +36,16 @@ const withTrailingNewline = (text) => {
 const collapseWhitespace = (line) => line.replace(/\s+/g, ' ').trim()
 
 /**
- * Line-by-line comparison of the template's and the database's version of a
- * procedure, view or trigger definition.
+ * Line-by-line comparison of two versions of a definition: by default the
+ * template's and the database's, or any two given labels.
  */
 export default {
     name: 'DefinitionDiff',
     props: {
         expected: { type: String, default: '' },
         current: { type: String, default: '' },
+        expectedLabel: { type: String, default: 'Template (expected)' },
+        currentLabel: { type: String, default: 'Database (current)' },
     },
     data() {
         return {
