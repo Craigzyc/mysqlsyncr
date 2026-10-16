@@ -4,6 +4,7 @@ import { parseCreateTableSQL } from './parsers.js';
 import { normalizedDefault } from './differences.js';
 import { loadSyncOptions, getTableOptions, applyAutoIncrementOption } from './options.js';
 import { assertOutsidePackage } from './paths.js';
+import { splitSqlFile } from './templateDrift.js';
 
 const describeColumn = (col) => JSON.stringify({ Type: col.Type, NotNull: !!col.NotNull, Default: normalizedDefault(col) });
 const describeIndexes = (indexes) => (indexes || [])
@@ -39,13 +40,15 @@ const tableChanges = (table, rebuilt, createSQL) => {
 /**
  * Rebuild each table's columns/indexes/constraints in a template from its
  * createSQL with the current parser, applying the autoIncrement option to the
- * createSQL. Returns { 'db.table': [change, ...] } for tables that would change;
- * only writes the files when write is true.
+ * createSQL. Returns { changes, notes }: changes is { 'db.table': [change, ...] }
+ * for tables that would change, notes is { 'db.table': note } for things to check
+ * by hand. Only writes the files when write is true.
  */
 export const rebuildTemplate = async (dir, { write = false } = {}) => {
     if (write) assertOutsidePackage(dir);
     const syncOptions = await loadSyncOptions(dir);
     const report = {};
+    const notes = {};
     const entries = await fs.readdir(dir, { withFileTypes: true });
 
     for (const entry of entries.filter(e => e.isDirectory())) {
@@ -65,25 +68,39 @@ export const rebuildTemplate = async (dir, { write = false } = {}) => {
             const createSQL = applyAutoIncrementOption(table.createSQL, getTableOptions(syncOptions, database, tableName).autoIncrement);
             const rebuilt = parseCreateTableSQL(createSQL);
             const changes = tableChanges(table, rebuilt, createSQL);
-            if (changes.length === 0) continue;
 
-            report[`${database}.${tableName}`] = changes;
+            // tables/<table>.sql should match createSQL, but it can hold notes or edits made
+            // by hand, so only the AUTO_INCREMENT option is applied to it; any other
+            // difference is reported, never overwritten
+            const sqlPath = path.join(dir, database, 'tables', `${tableName}.sql`);
+            const sqlFile = await fs.readFile(sqlPath, 'utf-8').catch(() => null);
+            const fixedSqlFile = sqlFile === null ? null : applyAutoIncrementOption(sqlFile, getTableOptions(syncOptions, database, tableName).autoIncrement);
+            const sqlCounterChanged = sqlFile !== null && fixedSqlFile !== sqlFile;
+            if (sqlCounterChanged) changes.push(`tables/${tableName}.sql: AUTO_INCREMENT counter changed by the autoIncrement option`);
+            // Notes written after the statement don't count
+            const sameSQL = (a, b) => a.replace(/\r\n/g, '\n').replace(/;?\s*$/, '') === b.replace(/\r\n/g, '\n').replace(/;?\s*$/, '');
+            const sqlFileDrifted = fixedSqlFile !== null && !sameSQL(splitSqlFile(fixedSqlFile).statement, createSQL);
+            if (changes.length === 0 && !sqlFileDrifted) continue;
+
+            if (changes.length > 0) report[`${database}.${tableName}`] = changes;
+            if (sqlFileDrifted) {
+                notes[`${database}.${tableName}`] = `tables/${tableName}.sql differs from the createSQL in ${database}.json (left as is; compare uses the JSON). Pick which to keep in the UI.`;
+            }
+            if (sqlCounterChanged && write) {
+                await fs.writeFile(sqlPath, fixedSqlFile, 'utf-8');
+            }
+            if (changes.length === 0 || changes.every(change => change.startsWith('tables/'))) continue; // the JSON is already right
+
             changed = true;
             table.columns = rebuilt.columns;
             table.indexes = rebuilt.indexes;
             table.constraints = rebuilt.constraints;
-            if (createSQL !== table.createSQL) {
-                table.createSQL = createSQL;
-                const sqlPath = path.join(dir, database, 'tables', `${tableName}.sql`);
-                if (write && await fs.stat(sqlPath).catch(() => false)) {
-                    await fs.writeFile(sqlPath, `${createSQL}\n`, 'utf-8');
-                }
-            }
+            table.createSQL = createSQL;
         }
 
         if (changed && write) {
             await fs.writeFile(jsonPath, JSON.stringify(structure, null, 4), 'utf-8');
         }
     }
-    return report;
+    return { changes: report, notes };
 }

@@ -5,11 +5,18 @@ import path from 'path';
 import { dumpAllDatabases } from './dump.js';
 import { compareAllDatabases } from './compare.js';
 
+// The config also carries mysqlsyncr's own settings (the template folder); mysql2
+// warns about options it doesn't know, so pass it only the connection's
+const connectionOptions = (config) => {
+    const { output, ...options } = config || {};
+    return options;
+}
+
 export class DBStructureChecker {
     constructor(config, targetDatabase = null) {
         this.config = config;
         this.targetDatabase = targetDatabase;
-        this.connection = mysql.createConnection(this.config)
+        this.connection = mysql.createConnection(connectionOptions(this.config))
         this.dumpAllDatabases = dumpAllDatabases;
         this.compareAllDatabases = compareAllDatabases;
         this.getDatabases = () => {
@@ -25,7 +32,7 @@ export class DBStructureChecker {
     }
 
     async reconnect() {
-        this.connection = mysql.createConnection(this.config);
+        this.connection = mysql.createConnection(connectionOptions(this.config));
         this.connection.query = util.promisify(this.connection.query); // Promisify for async/await
         await this.connection.connect(); // Connect to the database
     }

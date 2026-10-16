@@ -114,7 +114,7 @@ export const logDifferences = (differences, database, dryRun) => {
                     Action: 'Trigger is mismatched',
                 };  
             case 'missing_trigger':
-                console.log('missing_trigger', diff)
+                logger('missing_trigger', diff)
                 return {
                     Type: diff.type,
                     Name: diff.trigger.Name,

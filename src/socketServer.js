@@ -7,6 +7,7 @@ import { applyDifferences } from './apply.js';
 import { packageRoot, assertOutsidePackage } from './paths.js';
 import { acceptCurrentIntoTemplate } from './acceptCurrent.js';
 import { getVersionInfo } from './versions.js';
+import { findTemplateDrift, resolveTemplateDrift } from './templateDrift.js';
 import cors from 'cors';
 import { join } from 'path';
 import { readdir, mkdir } from 'fs/promises';
@@ -154,6 +155,31 @@ export const startApiServer = (port, argv) => {
                 await checker.closeConnection();
             }
         });
+    });
+
+    // API endpoint for tables whose tables/<table>.sql disagrees with the createSQL in the
+    // template's JSON. Reads only the template, so no database connection is needed
+    app.post('/api/templateDrift', async (req, res) => {
+        const config = setConfig(req.body.config || {}, argv);
+        if (!config.output) return res.status(400).json({ message: 'No template folder selected' });
+        try {
+            res.json(await findTemplateDrift(config.output));
+        } catch (err) {
+            res.status(500).json({ message: err.message });
+        }
+    });
+
+    // API endpoint to make one table's JSON createSQL and .sql file agree, keeping 'json' or 'sql'
+    app.post('/api/resolveTemplateDrift', async (req, res) => {
+        const { database, table, keep } = req.body;
+        const config = setConfig(req.body.config || {}, argv);
+        if (!config.output) return res.status(400).json({ message: 'No template folder selected' });
+        try {
+            await resolveTemplateDrift(config.output, database, table, keep);
+            res.json({ message: `${database}.${table}: kept the ${keep === 'json' ? 'JSON' : '.sql file'} version` });
+        } catch (err) {
+            res.status(500).json({ message: err.message });
+        }
     });
 
     // API endpoint for the server's and the template's MySQL versions

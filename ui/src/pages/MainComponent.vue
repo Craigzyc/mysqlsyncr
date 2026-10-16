@@ -107,6 +107,29 @@
                 </div>
             </q-card-section>
 
+            <q-card-section v-if="templateDrift.length > 0" class="q-pb-none">
+                <q-banner dense rounded class="bg-orange-1 text-black">
+                    <template v-slot:avatar>
+                        <q-icon name="difference" color="warning" />
+                    </template>
+                    {{ templateDrift.length }} table(s) in the template have a tables/&lt;table&gt;.sql file that differs
+                    from the createSQL in the database's JSON, which is what comparing uses. Pick which version to keep.
+                    <div class="q-mt-xs">
+                        <q-chip
+                            v-for="drift in templateDrift"
+                            :key="`${drift.database}.${drift.table}`"
+                            dense
+                            clickable
+                            icon="rule"
+                            @click="reviewDrift(drift)"
+                        >
+                            {{ drift.database }}.{{ drift.table }}
+                            <q-tooltip>Review and pick a version</q-tooltip>
+                        </q-chip>
+                    </div>
+                </q-banner>
+            </q-card-section>
+
             <q-card-section>
                 <q-tree
                     ref="tree"
@@ -533,6 +556,50 @@
             </q-card>
         </q-dialog>
 
+        <q-dialog v-model="driftDialog">
+            <q-card v-if="selectedDrift" style="min-width: 800px; width: 90vw; max-width: 1200px">
+                <q-card-section>
+                    <div class="text-h6">{{ selectedDrift.database }}.{{ selectedDrift.table }}</div>
+                    <div class="text-body2 q-mt-sm">
+                        The table's createSQL in {{ selectedDrift.database }}.json (used for comparing and for
+                        creating the table) differs from {{ selectedDrift.file }}. Keeping one copies it over the other;
+                        notes written after the statement in the .sql file are kept either way.
+                    </div>
+                </q-card-section>
+                <q-card-section class="q-pt-none">
+                    <DefinitionDiff
+                        :expected="selectedDrift.json"
+                        :current="selectedDrift.sql"
+                        :expected-label="`${selectedDrift.database}.json (used for comparing)`"
+                        :current-label="selectedDrift.file"
+                    />
+                </q-card-section>
+                <q-card-actions align="right">
+                    <q-btn flat label="Cancel" color="primary" v-close-popup />
+                    <q-btn
+                        outline
+                        color="primary"
+                        :label="`Use ${selectedDrift.file}`"
+                        :loading="resolvingDrift === 'sql'"
+                        :disable="!!resolvingDrift"
+                        @click="resolveDrift('sql')"
+                    >
+                        <q-tooltip>Copy the .sql file's statement into the JSON, so comparing uses it</q-tooltip>
+                    </q-btn>
+                    <q-btn
+                        unelevated
+                        color="primary"
+                        :label="`Use ${selectedDrift.database}.json`"
+                        :loading="resolvingDrift === 'json'"
+                        :disable="!!resolvingDrift"
+                        @click="resolveDrift('json')"
+                    >
+                        <q-tooltip>Copy the JSON's createSQL into the .sql file</q-tooltip>
+                    </q-btn>
+                </q-card-actions>
+            </q-card>
+        </q-dialog>
+
         <FolderBrowser v-if="showFolderBrowser"
             v-model="showFolderBrowser"
             :initial-path="dbFolder"
@@ -601,6 +668,10 @@ export default {
             // { 'host:port|folder': { databases: [db], tables: ['db.table'] } }, kept for this browser session
             ignoredByScope: loadIgnored(),
             versionInfo: null, // { server, template: { version, inferred, reason }, notes } from /api/versions
+            templateDrift: [], // [{ database, table, file, json, sql }]: .sql files that differ from the JSON createSQL
+            driftDialog: false,
+            selectedDrift: null,
+            resolvingDrift: null, // 'json' or 'sql' while saving
             showFolderBrowser: false,
             isFixingAll: false,
             currentFixProgress: 0,
@@ -684,6 +755,7 @@ export default {
                 if (response.data && typeof response.data === 'object') {
                     this.existingDatabases = response.data
                     this.buildDatabaseTree()
+                    this.fetchTemplateDrift()
                 }
             } catch (error) {
                 console.error('Error fetching databases from existing dumps:', error)
@@ -1226,6 +1298,45 @@ export default {
             } finally {
                 this.isNodeFixing[node.id] = false
                 this.isNodeFixing = { ...this.isNodeFixing } // Trigger reactivity
+            }
+        },
+        // Tables whose .sql file disagrees with the JSON createSQL; reads only the template
+        async fetchTemplateDrift() {
+            try {
+                const response = await this.$api.post('/api/templateDrift', { config: { output: this.dbFolder } })
+                this.templateDrift = Array.isArray(response.data) ? response.data : []
+            } catch (error) {
+                console.error('Error checking the template for .sql files that differ:', error)
+                this.templateDrift = []
+            }
+        },
+        reviewDrift(drift) {
+            this.selectedDrift = drift
+            this.driftDialog = true
+        },
+        async resolveDrift(keep) {
+            const { database, table } = this.selectedDrift
+            this.resolvingDrift = keep
+            try {
+                const response = await this.$api.post('/api/resolveTemplateDrift', {
+                    config: { output: this.dbFolder },
+                    database,
+                    table,
+                    keep,
+                })
+                this.$q.notify({ type: 'positive', message: response.data.message, position: 'top' })
+                this.driftDialog = false
+                await this.fetchTemplateDrift()
+                // Keeping the .sql file changes the JSON, which is what comparing uses
+                if (keep === 'sql') await this.refreshKeepingExpanded({ reloadTemplate: true })
+            } catch (error) {
+                this.$q.notify({
+                    type: 'negative',
+                    message: error.response?.data?.message || 'Error updating the template',
+                    position: 'top',
+                })
+            } finally {
+                this.resolvingDrift = null
             }
         },
         // Shown next to the differences; a failure just leaves the versions out
