@@ -7,11 +7,12 @@ const COMMANDS = [
     { name: 'update', description: 'Update the database structure based on JSON dumps' },
     { name: 'dump', description: 'Dump the database structure to files' },
     { name: 'ui', description: 'Open the UI' },
-    { name: 'rebuild', description: "Rebuild the dump's JSON from each table's CREATE TABLE" }
+    { name: 'rebuild', description: "Rebuild the dump's JSON from each table's CREATE TABLE" },
+    { name: 'performance', description: 'Find slow application queries and assess existing indexes (read-only)' }
 ];
 
 // Commands that connect to MySQL from the command line (the UI asks for its own connection)
-export const DATABASE_COMMANDS = ['compare', 'update', 'dump'];
+export const DATABASE_COMMANDS = ['compare', 'update', 'dump', 'performance'];
 
 // Commands that read an existing template, so its folder must already hold one
 const TEMPLATE_COMMANDS = ['compare', 'update', 'rebuild'];
@@ -82,7 +83,7 @@ export const promptForOptions = async (argv, streams) => {
             argv.password = await askHidden(PASSWORD_LABEL);
             argv.database = (await ask('Database (blank for all)', argv.database ?? '')) || null;
         }
-        if (command !== 'ui') {
+        if (command !== 'ui' && command !== 'performance') {
             argv.output = await ask(command === 'dump' ? 'Folder to dump to' : 'Template folder', argv.output);
             for (;;) {
                 let problem = null;

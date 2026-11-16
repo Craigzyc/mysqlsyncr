@@ -6,15 +6,13 @@ import { logDifferences, logger } from './loggers.js';
 import { applyDifferences, describeFailures } from './apply.js';
 import { loadSyncOptions, getTableOptions, applyDefinerOption } from './options.js';
 import { findMissingRows } from './rows.js';
+import { getDatabaseDumpNames } from './dumpFiles.js';
 
 export const compareAllDatabases = async (connection, inputDir, update = false, command, options) => {
     if (connection.state === 'disconnected') {
         await connection.reconnect(); // Ensure the connection is open
     }
-    // Each expected database is a folder in the input directory; files like diffs.json,
-    // dumpInfo.json and syncOptions.json sit alongside them
-    const entries = await fs.readdir(inputDir, { withFileTypes: true });
-    const expectedDatabases = entries.filter(entry => entry.isDirectory()).map(entry => entry.name);
+    const expectedDatabases = await getDatabaseDumpNames(inputDir);
     const syncOptions = await loadSyncOptions(inputDir);
     logger('Expected databases from input directory:', expectedDatabases);
 

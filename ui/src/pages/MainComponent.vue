@@ -40,6 +40,8 @@
             </q-card-section>
         </q-card>
 
+        <PerformanceCheck :config="{ host, port, user, password, database }" :enabled="isDbSetup" />
+
         <!-- Database Structure Card -->
         <q-card v-if="Object.keys(existingDatabases).length > 0" class="q-mb-lg">
             <q-card-section class="bg-primary text-white">
@@ -628,12 +630,14 @@ const saveIgnored = (ignoredByScope) => {
         // Storage unavailable (private window etc.): ignoring still works until the page reloads
     }
 }
+import PerformanceCheck from '../components/PerformanceCheck.vue'
 
 
 export default {
     components: {
         FolderBrowser,
-        DefinitionDiff
+        DefinitionDiff,
+        PerformanceCheck
     },
     data() {
         return {

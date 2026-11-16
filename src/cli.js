@@ -3,7 +3,7 @@ import { hideBin } from 'yargs/helpers';
 import { setVerbose } from './loggers.js';
 import { promptForOptions, promptForPassword, DATABASE_COMMANDS } from './prompt.js';
 
-const COMMANDS = ['dump', 'compare', 'update', 'ui', 'rebuild'];
+const COMMANDS = ['dump', 'compare', 'update', 'ui', 'rebuild', 'performance'];
 
 /**
  * Parse the command line. With no command, asks for the command and its options
@@ -16,6 +16,13 @@ export const cli = async () => {
         .command('update', 'Update the database structure based on JSON dumps')
         .command('ui', 'Open the UI')
         .command('rebuild', "Rebuild the dump's JSON from each table's CREATE TABLE and list what changes (dry run unless --write)")
+        .command('performance', 'Check slow query patterns and potential index issues (read-only)')
+        .option('slowMs', { describe: 'Duration threshold for all performance results in ms (minimum 1000)', type: 'number', default: 2000 })
+        .option('minExecutions', { describe: 'Minimum executions per query digest', type: 'number', default: 6 })
+        .option('minRowsExamined', { describe: 'Minimum total rows examined for index review', type: 'number', default: 1000 })
+        .option('scanRatio', { describe: 'Rows examined / rows sent threshold', type: 'number', default: 1000 })
+        .option('limit', { describe: 'Maximum results per performance category (1-100)', type: 'number', default: 10 })
+        .option('json', { describe: 'Print the performance report as JSON', type: 'boolean', default: false })
         .option('uiPort', { alias: 'U', describe: 'UI port', default: 3600 })
         .option('openUI', { alias: 'O', describe: 'Open UI', default: true })
         .option('host', { alias: 'h', describe: 'Database host', default: 'localhost' })
