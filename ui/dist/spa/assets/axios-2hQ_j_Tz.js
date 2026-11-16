@@ -1,1 +1,0 @@
-import{c as e,f as t}from"./index-Cqrg985P.js";var n=e.create({baseURL:`/`}),r=t(({app:t})=>{t.config.globalProperties.$axios=e,t.config.globalProperties.$api=n});export{n as api,r as default};

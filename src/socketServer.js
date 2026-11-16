@@ -12,6 +12,8 @@ import cors from 'cors';
 import { join } from 'path';
 import { readdir, mkdir } from 'fs/promises';
 import { resolve } from 'path';
+import { checkPerformance } from './performance.js';
+import { analyzePerformanceQuery, getAiStatus } from './aiAnalysis.js';
 
 
 const setConfig = (config, argv) => {
@@ -44,11 +46,41 @@ export const startApiServer = (port, argv) => {
     console.log(`Serving UI from ${join(packageRoot, 'ui/dist/spa')}`);
     app.use(express.static(join(packageRoot, 'ui/dist/spa')));
 
+    app.post('/api/performance/ai/status', async (req, res) => {
+        try { res.json(await getAiStatus(req.body?.model)); }
+        catch (error) { res.status(error.code === 'INVALID_AI_REQUEST' ? 400 : 503).json({ message: error.message }); }
+    });
+
+    app.post('/api/performance/ai', async (req, res) => {
+        try {
+            const { config = {}, database, digest, model } = req.body || {};
+            if (!config || typeof config !== 'object' || Array.isArray(config)) return res.status(400).json({ message: 'config must be an object.' });
+            res.json(await analyzePerformanceQuery(setConfig({ ...config }, argv), { database, digest, model }));
+        } catch (error) {
+            res.status(error.code === 'INVALID_AI_REQUEST' ? 400 : 503).json({ message: error.message });
+        }
+    });
+
+    app.post('/api/performance', async (req, res) => {
+        try {
+            const { config = {}, options = {} } = req.body || {};
+            if (!config || typeof config !== 'object' || Array.isArray(config) || !options || typeof options !== 'object' || Array.isArray(options)) {
+                return res.status(400).json({ message: 'config and options must be objects.' });
+            }
+            res.json(await checkPerformance(setConfig({ ...config }, argv), options));
+        } catch (error) {
+            res.status(error.code === 'INVALID_PERFORMANCE_OPTIONS' ? 400 : 500).json({ message: error.message });
+        }
+    });
+
     app.post('/api/getDatabasesFromExistingDumps', async (req, res) => {
-        let { config } = req.body;
-        config = setConfig(config, argv);
-        const databases = await getDatabasesFromExistingDumps(config);
-        res.json(databases);
+        try {
+            let { config = {} } = req.body || {};
+            config = setConfig(config, argv);
+            res.json(await getDatabasesFromExistingDumps(config));
+        } catch (error) {
+            res.status(500).json({ message: `Unable to read database dumps: ${error.message}` });
+        }
     });
 
     // API endpoint to dump the database
@@ -102,7 +134,6 @@ export const startApiServer = (port, argv) => {
                 res.json(diffs);
             } catch (err) {
                 console.log(err);
-                console.log(req.body);
                 res.status(500).json({ message: err.message });
             } finally {
                 await checker.closeConnection();
@@ -309,4 +340,4 @@ export const startApiServer = (port, argv) => {
     server.listen(port, () => {
         console.log(`Server is running on http://localhost:${port}`);
     });
-}; 
+};

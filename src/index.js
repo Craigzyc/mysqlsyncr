@@ -14,6 +14,8 @@ import open from 'open';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'node:url';
+import { checkPerformance } from './performance.js';
+export { checkPerformance } from './performance.js';
 
 
 const compare = async (config, output) => {
@@ -103,7 +105,7 @@ const isMain = (() => {
     try {
         return !!process.argv[1] && fs.realpathSync(process.argv[1]) === fs.realpathSync(fileURLToPath(import.meta.url));
     } catch (e) {
-        return false;
+        return Boolean(process.argv[1]) && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
     }
 })();
 
@@ -137,7 +139,7 @@ if (isMain) {
             fs.mkdirSync(argv.output, { recursive: true });
             console.log(`Created ${path.resolve(argv.output)}`);
         }
-        console.log("MySQLsyncr started via command line")
+        if (!(command === 'performance' && argv.json)) console.log("MySQLsyncr started via command line")
         if (command === 'ui') {
             const PORT = argv.uiPort
             startApiServer(PORT, argv); // Start the Socket.IO server
@@ -162,6 +164,29 @@ if (isMain) {
                 }
             } catch (err) {
                 console.error(err.message);
+                process.exitCode = 1;
+            }
+        } else if (command === 'performance') {
+            try {
+                const report = await checkPerformance(config, argv);
+                if (argv.json) console.log(JSON.stringify(report, null, 2));
+                else {
+                    console.log(`Performance report: ${report.database || 'all application schemas'}`);
+                    for (const warning of report.warnings) console.warn(warning);
+                    const icons = { ok: 'OK  ', info: 'INFO', warning: 'WARN', critical: 'CRIT', unknown: '??  ' };
+                    console.log('\nHealth summary:');
+                    for (const note of report.notifications || []) console.log(`  [${icons[note.status] || note.status}] ${note.area}: ${note.message}`);
+                    console.log('');
+                    for (const [label, rows] of [['Slow queries', report.slowQueries], ['Index review candidates', report.indexCandidates],
+                        ['Highest total query time', report.highestTotalTime], ['Temporary tables and sorting', report.tempAndSortQueries],
+                        ['Blocking transactions', report.diagnostics?.lockWaits?.rows || []], ['Live queries', report.diagnostics?.liveQueries?.rows || []], ['Duplicate/redundant indexes', report.duplicateIndexes || []]]) {
+                        console.log(`${label}: ${rows.length}`);
+                        console.table(rows);
+                    }
+                }
+                if (!report.available) process.exitCode = 1;
+            } catch (error) {
+                console.error(error.message);
                 process.exitCode = 1;
             }
         } else {

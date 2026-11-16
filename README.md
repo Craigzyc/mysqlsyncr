@@ -23,6 +23,7 @@ MySQLSyncr is a command-line tool for managing and comparing MySQL database stru
 - **Compare**: Compare the current database structure with JSON dumps to identify differences.
 - **Update**: Update the database structure based on the provided JSON definitions.
 - **UI**: Open a web-based database browser interface.
+- **Performance**: Find slow application queries and assess execution plans against existing indexes through the UI, CLI, or module API.
 - **Verbose Logging**: Enable detailed logging for debugging purposes.
 
 ![Database Browser Interface](view.png)
@@ -63,6 +64,7 @@ mysqlsyncr <command> [options]
 - `compare`: Compares the database structure with JSON dumps (dry run).
 - `update`: Updates the database structure based on JSON dumps.
 - `ui`: Opens a web-based database browser in your default system browser.
+- `performance`: Reports slow query patterns and potential index issues without changing data or creating indexes.
 - `rebuild`: Rebuilds each table's columns and indexes in the dump's JSON from its `CREATE TABLE` statement, and lists what changes. Dry run unless `--write` is given. Needs no database connection.
 
 Run `mysqlsyncr` with no command in a terminal and it asks for the command and its options (host, port, user, password, database and folder) instead. The password isn't shown as you type, and `update` asks for confirmation before changing anything.
@@ -160,6 +162,55 @@ When applying a template from 8.0 to a 5.7 server, the `utf8mb4_0900_*` collatio
    mysqlsyncr ui --host localhost --user root --password yourpassword
    ```
 
+### Query performance and index assessment
+
+Configure your connection in the UI's Settings, then use **Query Performance → Check performance**. No database dump or slow-query log is required. Leave the schema field blank to inspect all application schemas. Schema-inspection statements and queries referencing system schemas are excluded before limiting results.
+
+The UI displays average, maximum, and total execution times in seconds, with units beside the values. All result categories respect the configured duration threshold (default `2` seconds, minimum `1`). Cumulative query lists require a recorded maximum execution time strictly greater than the threshold, including highest-total-time and temporary-table/sort categories. Interval results require their interval average above the threshold; live queries use elapsed time, and blocking transactions use wait age. Exactly the threshold does not qualify. The CLI/API retain milliseconds for `slowMs` (default `2000`, minimum `1000`) and the `avg_ms`, `max_ms`, and `total_ms` report fields.
+
+```bash
+mysqlsyncr performance --host localhost --user monitor --password yourpassword --database myapp
+mysqlsyncr performance --database myapp --slowMs 1000 --minExecutions 1 --minRowsExamined 1000 --scanRatio 1000 --limit 10 --json
+```
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `--slowMs` | 2000 | Duration threshold across all categories in milliseconds; minimum 1000 |
+| `--minExecutions` | 6 | Minimum execution count for either category |
+| `--minRowsExamined` | 1000 | Minimum cumulative rows examined for index review |
+| `--scanRatio` | 1000 | Examined/sent row ratio threshold; use 1 as denominator when no rows were sent |
+| `--limit` | 10 | Maximum results per category, from 1 to 100 |
+| `--database` | All application schemas | Filter by the default schema recorded for each digest |
+| `--json` | false | Print a structured report for application monitoring/alerting code |
+
+Every returned slow query and index candidate includes an `indexAssessment`. The checker retrieves a captured sample, reads the referenced base tables' indexes, and runs `EXPLAIN FORMAT=TRADITIONAL`. Expand **Execution plan and existing indexes** to see table names, chosen/possible indexes, estimated rows, access types, and existing index columns in order (including prefix lengths).
+
+| Assessment | Meaning |
+| --- | --- |
+| Index may help | A sample with column conditions scans at least 1,000 estimated rows without a possible lookup index |
+| Review existing indexes | A substantial scan was chosen despite possible indexes; investigate selectivity, statistics, and query shape |
+| Index already used | The plan already uses lookup/range index access; slowness alone does not establish a missing index |
+| Scan without filtering | No recognized indexable column condition; an index alone may not reduce the work |
+| No index issue evident in this plan | No substantial scan was identified in this sample; this does not guarantee optimal indexes |
+| Index assessment inconclusive | Samples are missing, SQL is unsupported, a view is involved, or permissions/planning failed |
+
+Requires MySQL Performance Schema, statement instrumentation, and the `statements_digest` consumer, with SELECT permission on the queried statistics tables. Disabled/empty collection produces warnings rather than claiming healthy performance. Disabled Performance Schema returns an unavailable report (CLI exit status 1). Statistics are cumulative since collection began or was reset, not a recent time window. Schema filtering uses the statement's default database rather than every database referenced by cross-schema SQL.
+
+MySQL 8's `QUERY_SAMPLE_TEXT` supplies actual parameter values when available. Older servers fall back to retained matching statements in `events_statements_history_long`, which requires history collection. Missing samples are inconclusive; normalized placeholders are never filled with invented values. Automatic planning supports a conservative subset of SELECTs over base tables, including explicit joins and nested IN/EXISTS SELECT predicates with distinct table aliases. Predicates are attributed within each query block, including qualified correlated references. MySQL plans the entire query together; semijoin base-table accesses are mapped by alias, while generated materialized-subquery lookup keys are explained separately rather than treated as base-table indexes. Leading-wildcard LIKE values receive a diagnostic note without exposing the sample value. Function calls, scalar/derived-table subqueries, CTEs, repeated aliases across blocks, views, writes, comments, multiple statements, and unsupported syntax remain inconclusive. Up to eight SELECT blocks and eight base-table references are supported. It never uses `EXPLAIN ANALYZE`, executes the sample standalone, enables instrumentation, resets counters, or creates indexes. Literal sample text is not returned; inspection errors expose codes rather than messages that could contain sample values.
+
+Assessments use a current estimated sample plan, which can differ from the historical slow execution. They do not prescribe exact index columns or generate DDL. Plan/index inspection requires appropriate table visibility and EXPLAIN privileges. `checkPerformance` creates and closes its own monitoring connection; planning changes that connection's default schema. The CLI runs once and does not schedule checks or send email.
+
+```javascript
+import { checkPerformance } from 'mysqlsyncr';
+const report = await checkPerformance(config, {
+    database: 'myapp', slowMs: 1000, minExecutions: 1, limit: 10,
+});
+// report.available, report.warnings, report.slowQueries, report.indexCandidates
+// Each query has an indexAssessment containing status, summary, and tables.
+```
+
+The UI uses `POST /api/performance` with `{ config, options }` and the same report format.
+
 ## Using MySQLSync as a Module
 
 If you want to use MySQLSync as a module in your own Node.js application, you can require it in your code:
@@ -227,6 +278,82 @@ async function compareDatabase() {
 ```
 
 Make sure to check the source code for available functions and their usage.
+
+## Additional performance diagnostics
+
+**Query Performance** groups collected statements by database, with categories
+for slow queries, index review, highest total query time, temporary tables/sorting,
+and activity since the previous check. Query details show temporary-table counts,
+disk temporary-table counts, sorted rows, and sort merge passes alongside timings
+in seconds. These counters identify work to investigate, not a proven missing
+index. Disk temporary-table counts do not capture every TempTable overflow path.
+
+Live queries and blocking InnoDB transactions appear in the same database tree.
+These are point-in-time observations filtered by the configured duration threshold. Blocking
+entries show waiting/blocking connection IDs, wait seconds, table/index and locked
+row counts. Live queries show normalized SQL, connection ID, state and elapsed
+seconds when instrumentation provides it. No raw SQL samples, lock values, or
+session-kill actions are exposed. An empty snapshot cannot rule out intermittent
+blocking. Missing permissions or unsupported diagnostics are shown as unavailable.
+
+Run **Check performance** once to capture a baseline. Run it again after your
+workload to see counter differences, interval executions, average and total time
+under **Activity since previous check**. The minimum executions setting applies
+to interval executions, and the interval average must exceed the configured duration threshold. Interval maximum time cannot be derived and is shown as
+unavailable. New, reset, or uncomparable digests are omitted and counted in the
+interval notice; they can be compared on subsequent checks. Snapshots are
+best-effort, not transactionally atomic, and may omit statements in flight.
+
+Baselines stay in backend memory for 15 minutes, with at most 20 retained and a
+5,000-digest scope limit. Restarting mysqlsyncr, changing database/server/account,
+MySQL restarts, expired baselines, or exceeding that limit requires a new baseline.
+No Performance Schema counters are reset. Narrow the schema for larger workloads.
+The CLI `performance` output and `--json` include the additional cumulative and
+live diagnostics; interval comparison is available across UI/API requests to the
+same running backend using the returned `snapshotId` as `options.baselineId`.
+
+Diagnostics require SELECT access to the relevant Performance Schema tables and
+`sys.innodb_lock_waits` plus underlying privileges (including PROCESS where
+required). Current statements require enabled instrumentation and the
+`events_statements_current` consumer. mysqlsyncr does not change instrumentation,
+server settings, indexes or transactions. AI is optional and disabled in the UI
+until enabled in Performance Settings.
+
+## Local AI query analysis
+
+The Query Performance panel supports optional, review-only analysis using a local
+Ollama model. This works alongside a regular MySQL server; MySQL AI or HeatWave is
+not required. Node.js 18 or later is required for this optional feature.
+
+1. Install [Ollama](https://ollama.com/download) on the machine running mysqlsyncr
+   and start it (or run `ollama serve`).
+2. Run `ollama pull llama3.2:3b`. This is Ollama's model tag for Llama 3.2 3B;
+   `llama3.2-3b-instruct-v1` is the MySQL AI/HeatWave identifier.
+3. Restart mysqlsyncr after rebuilding the backend and UI. Refresh the browser.
+4. Open the gear icon in **Query Performance**, enable **optional AI analysis**,
+   then use **Check AI connection** under **Local AI settings**. Run **Check
+   performance**, open a query, and select **Analyze with AI**.
+
+The backend sends normalized digest SQL, schema/table/column names and types,
+existing indexes, cumulative timings in seconds, and an estimated plan when the
+existing conservative planner supports the captured sample. It does not send
+connection credentials, literal query samples, column defaults, or table rows.
+Nested queries can receive metadata-based advice even when automatic EXPLAIN is
+unsupported; the missing plan is explicitly reported. Metadata discovery is
+best-effort and may omit implicit joins and complex syntax.
+
+The default endpoint is `http://127.0.0.1:11434`. For a separately hosted Ollama
+instance, set `MYSQLSYNCR_OLLAMA_URL` in the **backend's environment**, then restart.
+That sends query metadata to the configured host. The browser cannot change the
+endpoint. The model field selects an already installed local model; it does not
+download models. No additional npm package or API key is needed.
+
+Results are displayed as text with possible bottlenecks, index and query
+suggestions, verification steps, and limitations. Suggestions are not executed.
+Validate column order, selectivity, existing index overlap, and write/storage
+costs before making any schema changes. Requests time out after 120 seconds;
+first use may be slower while the model loads. Connection and missing-model
+errors are shown in the UI.
 
 ## Contributing
 

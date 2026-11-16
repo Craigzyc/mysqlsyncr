@@ -75,6 +75,15 @@ describe('promptForOptions', () => {
     test('ui asks nothing else', async () => {
         expect((await run(['ui'])).command).toBe('ui');
     });
+
+    test('performance asks for the connection without requiring a template folder', async () => {
+        const { command, argv, transcript } = await run(['6', 'localhost', '3306', 'monitor', 'test-secret', 'Alerts']);
+        expect(command).toBe('performance');
+        expect(argv).toMatchObject({ user: 'monitor', database: 'Alerts', password: 'test-secret' });
+        expect(transcript).not.toContain('test-secret');
+        expect(transcript).not.toContain('Template folder:');
+        expect(transcript).not.toContain('This will change the structure');
+    });
 });
 
 describe('folder checks', () => {

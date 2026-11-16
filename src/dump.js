@@ -2,9 +2,10 @@ import fs from 'fs/promises';
 import path from 'path';
 import { getDatabases, getDatabaseStructure } from './getters.js';
 import { logger } from './loggers.js';
-import { loadSyncOptions, OPTIONS_FILE } from './options.js';
+import { loadSyncOptions } from './options.js';
 import { assertOutsidePackage } from './paths.js';
 import { getServerVersion } from './versions.js';
+import { getDatabaseDumpNames } from './dumpFiles.js';
 
 // const require = createRequire(import.meta.url);
 // const { version } = require('../package.json');
@@ -46,12 +47,8 @@ export const getDatabasesFromExistingDumps = async (options) => {
 
     //combine all the .jsons into a single object
     let response = {}
-    const databases = await fs.readdir(path.join(options.output));
+    const databases = await getDatabaseDumpNames(options.output);
     for (const database of databases) {
-        if(database.includes('diffs') || database.includes('dumpInfo') || database === OPTIONS_FILE){
-            logger('Skipping diffs folder')
-            continue
-        }
         let dbStructure = await fs.readFile(path.join(options.output, database, `${database}.json`), 'utf8');
         response[database] = JSON.parse(dbStructure);
     }
