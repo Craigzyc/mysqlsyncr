@@ -1,54 +1,46 @@
 <template>
-    <q-page class="q-pa-md">
-        <!-- Top Action Bar -->
-        <div class="row q-col-gutter-md q-mb-lg">
-            <div class="col-auto">
-                <q-btn @click="openSettings" icon="settings" label="Settings" color="primary" />
+    <q-page class="sync-workspace">
+        <header class="workspace-header">
+            <div class="workspace-brand"><q-icon name="sync_alt" size="30px" /><div><h1>MySQLsyncr</h1><p>Compare, restore and inspect your databases.</p></div></div>
+            <q-btn outline no-caps @click="openSettings" :disable="busy" icon="settings" label="Connection settings" color="primary" />
+        </header>
+        <section class="connection-strip" aria-label="Current connection">
+            <div><q-icon name="dns" /><span>{{ isDbSetup ? host + ':' + port : 'No connection configured' }}</span><q-badge v-if="isDbSetup" outline color="primary">{{ database || 'All template databases' }}</q-badge></div>
+            <div class="template-path"><q-icon name="folder_open" /><span>{{ dbFolder || 'Choose a CAM template folder to get started' }}</span></div>
+        </section>
+        <q-banner v-if="!isDbSetup" class="workspace-welcome q-mb-lg">
+            <template #avatar><q-icon name="database" color="primary" /></template>
+            <strong>Start with your server and template.</strong>
+            <div>Choose the database connection and DBTemplate folder. Comparing reads the database; changes are applied separately.</div>
+            <template #action><q-btn no-caps unelevated color="primary" label="Configure connection" @click="openSettings" /></template>
+        </q-banner>
+        <q-tabs v-model="activeTab" align="left" no-caps active-color="primary" indicator-color="primary" class="workspace-tabs">
+            <q-tab name="schema" label="Schema sync" icon="account_tree" />
+            <q-tab name="performance" label="Performance" icon="speed" />
+        </q-tabs>
+        <PerformanceCheck v-show="activeTab === 'performance'" :config="connectionConfig" :enabled="isDbSetup && !busy" />
+        <section v-show="activeTab === 'schema'">
+        <div class="workspace-actions">
+            <div class="comparison-status" role="status" aria-live="polite">
+                <q-spinner v-if="comparisonState === 'loading'" color="primary" size="22px" />
+                <q-icon v-else :name="comparisonState === 'error' ? 'error_outline' : comparisonState === 'ready' ? (totalIssueCount ? 'difference' : 'check_circle') : 'help_outline'" :color="comparisonState === 'error' ? 'negative' : comparisonState === 'ready' && !totalIssueCount ? 'positive' : 'primary'" size="24px" />
+                <div><strong>{{ comparisonStatus }}</strong><div class="text-caption text-grey-7">{{ lastCompared ? 'Last compared ' + lastCompared : 'Compare to check the current database structure.' }}{{ ignoredCount ? ' Ignored differences are excluded.' : '' }}</div></div>
             </div>
-            <div class="col-auto">
-                <q-btn
-                    @click="
-                        Object.keys(existingDatabases).length === 0
-                            ? createNewDump()
-                            : createNewDump(true)
-                    "
-                    :icon="Object.keys(existingDatabases).length === 0 ? 'download' : 'refresh'"
-                    :label="
-                        Object.keys(existingDatabases).length === 0 ? 'Get New Dump' : 'Refresh Dump'
-                    "
-                    color="secondary"
-                />
+            <div class="row q-gutter-sm">
+                <q-btn no-caps outline color="primary" icon="download" label="Export database" :disable="!isDbSetup || busy" @click="createNewDump(Object.keys(existingDatabases).length > 0)" />
+                <q-btn no-caps unelevated color="primary" icon="compare_arrows" label="Compare now" :loading="comparisonState === 'loading'" :disable="!isDbSetup || busy" @click="refreshWorkspace" />
             </div>
         </div>
-
-        <!-- Database Not Set Up Warning -->
-        <q-card v-if="!isDbSetup" class="q-mb-lg bg-warning text-white">
-            <q-card-section>
-                <div class="text-h6">
-                    <q-icon name="warning" class="q-mr-sm" />
-                    Database Not Set Up
-                </div>
-                <div class="q-mt-sm">Please configure your database settings to get started.</div>
-                <q-btn
-                    @click="openSettings"
-                    label="Open Settings"
-                    color="white"
-                    text-color="warning"
-                    class="q-mt-sm"
-                    unelevated
-                />
-            </q-card-section>
-        </q-card>
-
-        <PerformanceCheck :config="{ host, port, user, password, database }" :enabled="isDbSetup" />
+        <q-banner v-if="comparisonError" class="bg-red-1 text-negative q-mb-md" role="alert">{{ comparisonError }}</q-banner>
+        <q-banner v-if="isDbSetup && comparisonState === 'ready' && !Object.keys(existingDatabases).length" class="bg-blue-1 q-mb-md">No database definitions were found in this folder for the selected database. Choose the folder containing the database JSON files, or export this server to create a template.</q-banner>
 
         <!-- Database Structure Card -->
-        <q-card v-if="Object.keys(existingDatabases).length > 0" class="q-mb-lg">
-            <q-card-section class="bg-primary text-white">
+        <q-card v-if="Object.keys(existingDatabases).length > 0" class="schema-card q-mb-lg" flat bordered>
+            <q-card-section class="schema-card-heading">
                 <div class="row items-center justify-between">
                     <div class="row items-center">
                         <q-icon name="account_tree" class="q-mr-sm" />
-                        <div class="text-h6">Database Structure</div>
+                        <h2 class="text-h6 q-ma-none">Database structure</h2>
                         <q-badge
                             v-if="totalIssueCount > 0"
                             color="negative"
@@ -82,7 +74,7 @@
                         flat
                         dense
                         no-caps
-                        color="white"
+                        color="primary"
                         icon="visibility"
                         :label="`${ignoredCount} ignored`"
                         @click="showAllIgnored"
@@ -93,10 +85,12 @@
                         v-if="totalIssueCount > 0"
                         flat
                         dense
-                        color="white"
+                        color="primary"
                         :loading="isFixingAll"
                         @click="fixAllIssues"
-                        icon="build"
+                        label="Apply all"
+                        no-caps
+                        icon="build" aria-label="Apply template changes" :disable="!canApply"
                         class="q-ml-md"
                     >
                         <q-tooltip>Fix All Issues ({{ totalIssueCount }})</q-tooltip>
@@ -145,13 +139,10 @@
                         <div class="row items-center full-width">
                             <div
                                 class="row items-center flex-grow-1 cursor-pointer"
-                                @click.stop="
-                                    !['category', 'database', 'subcategory'].includes(
-                                        prop.node.type,
-                                    ) &&
-                                    prop.node.diffCount &&
-                                    showIssueDetails(prop.node.issueData, prop.node)
-                                "
+                                :tabindex="prop.node.issueData && prop.node.diffCount ? 0 : undefined"
+                                :role="prop.node.issueData && prop.node.diffCount ? 'button' : undefined"
+                                @keydown.enter.stop="prop.node.issueData && prop.node.diffCount && showIssueDetails(prop.node.issueData, prop.node)"
+                                @click="openNode($event, prop.node)"
                             >
                                 <q-icon
                                     v-if="prop.node.icon"
@@ -187,6 +178,7 @@
                                 dense
                                 color="grey-7"
                                 :icon="isNodeIgnored(prop.node) ? 'visibility' : 'visibility_off'"
+                                :aria-label="(isNodeIgnored(prop.node) ? 'Show differences for ' : 'Ignore differences for ') + prop.node.label"
                                 size="sm"
                                 class="q-ml-md"
                                 @click.stop="toggleIgnored(prop.node)"
@@ -207,7 +199,7 @@
                                 color="primary"
                                 :loading="isNodeFixing[prop.node.id]"
                                 @click.stop="fixNodeIssues(prop.node)"
-                                icon="build"
+                                icon="build" aria-label="Apply template changes" :disable="!canApply"
                                 size="sm"
                                 class="q-ml-md"
                             >
@@ -219,11 +211,13 @@
             </q-card-section>
         </q-card>
 
+        </section>
+
         <q-dialog v-model="settingsDialog" persistent>
-            <q-card style="width: 90vw; max-width: 1200px">
+            <q-card class="settings-card">
                 <q-card-section class="bg-primary text-white">
-                    <div class="text-h5">Database Settings</div>
-                    <div class="text-subtitle2">Configure your database connection parameters</div>
+                    <div class="text-h5">Connection settings</div>
+                    <div class="text-subtitle2">Set the server to inspect and the template to compare against.</div>
                 </q-card-section>
 
                 <q-card-section class="q-pa-lg col scroll">
@@ -232,7 +226,7 @@
                             <div class="row q-col-gutter-md">
                                 <div class="col-12 col-sm-6">
                                     <q-input
-                                        v-model="host"
+                                        v-model="settingsDraft.host"
                                         label="Database Host"
 
                                         default="127.0.0.1"
@@ -248,7 +242,7 @@
 
                                 <div class="col-12 col-sm-6">
                                     <q-input
-                                        v-model="port"
+                                        v-model="settingsDraft.port"
                                         label="Database Port"
                                         default="3306"
                                         type="number"
@@ -264,7 +258,7 @@
 
                                 <div class="col-12 col-sm-6">
                                     <q-input
-                                        v-model="user"
+                                        v-model="settingsDraft.user"
                                         label="Database User"
                                         default="root"
                                         filled
@@ -279,8 +273,8 @@
 
                                 <div class="col-12 col-sm-6">
                                     <q-input
-                                        v-model="password"
-                                        label="Database Password"
+                                        v-model="settingsDraft.password"
+                                        label="Database password" hint="Kept only until this page is closed or reloaded."
                                         type="password"
                                         filled
                                         class="q-mb-md"
@@ -295,8 +289,8 @@
 
                                 <div class="col-12 col-sm-6">
                                     <q-input
-                                        v-model="database"
-                                        label="Database Name"
+                                        v-model="settingsDraft.database"
+                                        label="Database (optional)" hint="Leave blank for all databases in the template."
                                         filled
                                         class="q-mb-md"
                                         required
@@ -309,8 +303,8 @@
 
                                 <div class="col-12 col-sm-6">
                                     <q-input
-                                        v-model="dbFolder"
-                                        label="Database Folder"
+                                        v-model="settingsDraft.output"
+                                        label="Template folder"
                                         default=""
                                         filled
                                         class="q-mb-md"
@@ -336,6 +330,7 @@
                     </div>
                 </q-card-section>
 
+                <q-banner v-if="settingsError" class="bg-red-1 text-negative q-mx-lg" role="alert">{{ settingsError }}</q-banner>
                 <q-card-actions align="right" class="bg-white q-pa-md">
                     <q-btn
                         @click="closeSettings"
@@ -346,7 +341,7 @@
                     />
                     <q-btn
                         @click="saveSettings"
-                        label="Save Settings"
+                        label="Save and compare"
                         color="primary"
                         unelevated
                         class="q-px-md q-ml-sm"
@@ -357,7 +352,7 @@
 
         <!-- Issue Details Dialog -->
         <q-dialog v-model="issueDialog">
-            <q-card style="min-width: 800px; width: 90vw; max-width: 1200px">
+            <q-card class="review-dialog">
                 <q-card-section>
                     <div class="text-h6">Issue Details</div>
                 </q-card-section>
@@ -450,12 +445,14 @@
                             <q-btn
                                 @click="fixSingleIssue()"
                                 :loading="isNodeFixing['single-issue']"
+                                :disable="!canApply"
                                 color="primary"
                                 label="Fix Issue"
                             />
                             <q-btn
                                 v-if="canKeepCurrent(selectedIssues[0])"
                                 @click="keepCurrentInTemplate({ type: 'issue', id: 'single-issue', dbName: selectedIssueDbName, issueData: selectedIssues[0] })"
+                                :disable="!canApply"
                                 :loading="isNodeKeeping['single-issue']"
                                 color="secondary"
                                 outline
@@ -483,7 +480,7 @@
                                 { name: 'item', label: 'Item', field: (row) => issueName(row) },
                                 { name: 'actions', label: 'Actions', field: 'actions' },
                             ]"
-                            row-key="id"
+                            :row-key="issueKey"
                             dense
                         >
                             <template v-slot:body="props">
@@ -506,7 +503,7 @@
                                             flat
                                             dense
                                             color="positive"
-                                            icon="build"
+                                            icon="build" aria-label="Apply template changes" :disable="!canApply"
                                             :loading="isNodeFixing[`issue-${props.rowIndex}`]"
                                             @click="
                                                 fixNodeIssues({
@@ -525,7 +522,8 @@
                                             dense
                                             color="secondary"
                                             icon="save_as"
-                                            :loading="isNodeKeeping[`issue-${props.rowIndex}`]"
+                                            :disable="!canApply"
+                                :loading="isNodeKeeping[`issue-${props.rowIndex}`]"
                                             @click="
                                                 keepCurrentInTemplate({
                                                     type: 'issue',
@@ -545,6 +543,7 @@
                         <q-btn
                             @click="fixNodeIssues(this.selectedNode)"
                             :loading="isNodeFixing[selectedNode?.id]"
+                            :disable="!canApply"
                             color="primary"
                             class="q-mt-md"
                             label="Fix All Issues"
@@ -559,7 +558,7 @@
         </q-dialog>
 
         <q-dialog v-model="driftDialog">
-            <q-card v-if="selectedDrift" style="min-width: 800px; width: 90vw; max-width: 1200px">
+            <q-card v-if="selectedDrift" class="review-dialog">
                 <q-card-section>
                     <div class="text-h6">{{ selectedDrift.database }}.{{ selectedDrift.table }}</div>
                     <div class="text-body2 q-mt-sm">
@@ -604,7 +603,7 @@
 
         <FolderBrowser v-if="showFolderBrowser"
             v-model="showFolderBrowser"
-            :initial-path="dbFolder"
+            :initial-path="settingsDraft.output"
             @folder-selected="onFolderSelected"
         />
     </q-page>
@@ -612,6 +611,7 @@
 
 <script>
 import FolderBrowser from '../components/FolderBrowser.vue'
+import { defaultConfig, normalizeConfig, saveConnection, loadConnection, databaseForNode } from '../workspaceState'
 import DefinitionDiff from '../components/DefinitionDiff.vue'
 
 // Ignored databases/tables last for the browser tab, so they survive a reload but not a new session
@@ -642,6 +642,14 @@ export default {
     data() {
         return {
             isDbSetup: false,
+            activeTab: 'schema',
+            settingsDraft: defaultConfig(),
+            settingsError: '',
+            comparisonState: 'idle',
+            comparisonError: '',
+            lastCompared: '',
+            activeOperation: '',
+            isApplying: false,
             differences: {},
             columns: [
                 { name: 'table', label: 'Table', align: 'left', field: 'table' },
@@ -682,6 +690,17 @@ export default {
         }
     },
     computed: {
+        connectionConfig() {
+            return { host: this.host, port: this.port, user: this.user, password: this.password, database: this.database, output: this.dbFolder }
+        },
+        busy() { return !!this.activeOperation || this.isFixingAll || this.comparisonState === 'loading' },
+        canApply() { return this.isDbSetup && this.comparisonState === 'ready' && !this.busy },
+        comparisonStatus() {
+            if (this.comparisonState === 'loading') return 'Comparing database and template…'
+            if (this.comparisonState === 'error') return 'Comparison failed'
+            if (this.comparisonState !== 'ready') return 'Not compared yet'
+            return this.totalIssueCount ? this.totalIssueCount + ' differences to review' : 'No differences found'
+        },
         // What's ignored for the current server and template folder
         ignored() {
             return this.ignoredByScope[this.ignoredScope] || { databases: [], tables: [] }
@@ -703,77 +722,79 @@ export default {
         },
     },
     methods: {
+        issueKey(issue) { return JSON.stringify(issue) },
+        openNode(event, node) {
+            if (node.issueData && node.diffCount) {
+                event.stopPropagation()
+                this.showIssueDetails(node.issueData, node)
+            }
+        },
         openSettings() {
+            if (this.busy) return
+            this.settingsDraft = { ...this.connectionConfig }
+            this.settingsError = ''
             this.settingsDialog = true
         },
         closeSettings() {
             this.settingsDialog = false
+            this.showFolderBrowser = false
         },
-        saveSettings() {
-            const dbConfig = {
-                host: this.host,
-                port: this.port,
-                user: this.user,
-                password: this.password,
-                database: this.database,
-                output: this.dbFolder,
-            }
-            localStorage.setItem('dbConfig', JSON.stringify(dbConfig))
+        async saveSettings() {
+            if (this.busy) return
+            let config
+            try { config = normalizeConfig(this.settingsDraft) }
+            catch (error) { this.settingsError = error.message; return }
+            Object.assign(this, { host: config.host, port: config.port, user: config.user, password: config.password, database: config.database, dbFolder: config.output })
+            try { saveConnection(localStorage, config) } catch { /* Storage may be unavailable. */ }
             this.isDbSetup = true
+            this.issueDialog = false
+            this.driftDialog = false
+            this.selectedIssues = []
+            this.existingDatabases = {}
+            this.databaseTree = []
+            this.rawDifferences = {}
+            this.differences = {}
+            this.versionInfo = null
+            this.templateDrift = []
+            this.lastCompared = ''
             this.closeSettings()
-            this.getDatabasesFromExistingDumps()
-            this.fetchAllDifferences()
+            await this.refreshWorkspace()
         },
-        async refreshDifferences() {
-            if (!this.isDbSetup) return
+        async refreshWorkspace() {
+            if (!this.isDbSetup || this.busy) return
+            this.comparisonState = 'loading'
+            this.comparisonError = ''
             try {
-                const response = await this.$api.post('/api/compare', {
-                    config: {
-                        host: this.host,
-                        port: this.port,
-                        user: this.user,
-                        password: this.password,
-                        output: this.dbFolder,
-                        database: this.database,
-                    },
-                })
-                this.setDifferences(response.data)
+                await this.getDatabasesFromExistingDumps()
+                await this.refreshKeepingExpanded()
+                await this.fetchTemplateDrift()
             } catch (error) {
-                console.error('Error fetching differences:', error)
+                this.comparisonState = 'error'
+                this.comparisonError = error.response?.data?.message || error.message || 'Could not compare the database.'
+                this.setDifferences({})
+                this.databaseTree = []
             }
         },
+        async refreshDifferences() { await this.refreshWorkspace() },
         async getDatabasesFromExistingDumps() {
-            try {
                 const response = await this.$api.post(
                     `/api/getDatabasesFromExistingDumps`,
                     {
-                        config: {
-                            host: this.host,
-                            port: this.port,
-                            user: this.user,
-                            password: this.password,
-                            output: this.dbFolder,
-                        },
+                        config: { ...this.connectionConfig },
                     },
                 )
                 if (response.data && typeof response.data === 'object') {
-                    this.existingDatabases = response.data
-                    this.buildDatabaseTree()
-                    this.fetchTemplateDrift()
+                    this.existingDatabases = this.database
+                        ? Object.fromEntries(Object.entries(response.data).filter(([name]) => name === this.database))
+                        : response.data
                 }
-            } catch (error) {
-                console.error('Error fetching databases from existing dumps:', error)
-            }
         },
         async buildDatabaseTree() {
-            if (Object.keys(this.differences).length === 0) {
-                await this.fetchAllDifferences()
-            }
             this.databaseTree = Object.entries(this.existingDatabases).map(([dbName, db]) => {
-                console.log('Building database tree for:', dbName, this.differences)
+
                 const dbDiffs = this.differences[dbName] || []
                 const totalIssues = dbDiffs.length
-                console.log(`Database ${dbName} differences ${totalIssues}:`, dbDiffs)
+
                 const ignored = this.isDatabaseIgnored(dbName)
                 return {
                     id: `db-${dbName}`,
@@ -789,20 +810,18 @@ export default {
                 }
             })
 
-            console.log('Database tree:', this.databaseTree)
             this.expandedNodes = []
         },
         onLazyLoad({ node, done, fail }) {
-            console.log('Lazy loading node:', node)
+
             try {
                 if (node.type === 'database') {
-                    console.log('Loading database children for:', node.dbName)
+
                     const db = node.dbData
                     const dbDiffs = this.differences[node.dbName] || []
 
                     // Count issues by main category
                     const tableIssues = dbDiffs.filter((d) => this.issueCategory(d) === 'tables')
-                    console.log('Table issues:', tableIssues)
 
                     const procedureIssues = dbDiffs.filter((d) => this.issueCategory(d) === 'procedures')
                     const viewIssues = dbDiffs.filter((d) => this.issueCategory(d) === 'views')
@@ -818,7 +837,7 @@ export default {
                             iconColor: tableIssues.length > 0 ? 'negative' : 'positive',
                             diffCount: tableIssues.length || null,
                         },
-                        db.procedures && {
+                        (db.procedures?.length || procedureIssues.length) && {
                             id: `${node.dbName}-procedures`,
                             label: 'Procedures',
                             type: 'category',
@@ -859,16 +878,14 @@ export default {
                         },
                     ].filter(Boolean)
 
-                    console.log('Database children:', children)
-                    done(children)
+                    done(children.map(child => ({ ...child, dbName: child.dbName || node.dbName || this.getDbNameFromNode(node) })))
                 } else if (node.type === 'category') {
-                    console.log('Loading category children for:', node.id)
-                    const dbName = node.id.split('-')[0]
+
+                    const dbName = this.getDbNameFromNode(node)
                     const dbDiffs = this.differences[dbName] || []
 
                     if (node.id.includes('-tables')) {
                         const tableIssues = dbDiffs.filter((d) => this.issueCategory(d) === 'tables')
-                        console.log('Table category issues:', tableIssues)
 
                         const children = []
 
@@ -894,14 +911,13 @@ export default {
                                 onlyInDatabase.add(issue.tableName)
                             }
                         }
-                        console.log('Tables:', tables)
 
                         children.push(
                             ...Object.entries(tables).map(([tableName, table]) => {
                                 const specificTableIssues = tableIssues.filter(
                                     (d) => d.tableName === tableName,
                                 )
-                                console.log(`Issues for table ${tableName}:`, specificTableIssues)
+
                                 const hasIssues = specificTableIssues.length > 0
 
                                 const ignored = this.isTableIgnored(dbName, tableName) || this.isDatabaseIgnored(dbName)
@@ -923,11 +939,13 @@ export default {
                             }),
                         )
 
-                        console.log('Category children:', children)
-                        done(children)
+                        done(children.map(child => ({ ...child, dbName: child.dbName || node.dbName || this.getDbNameFromNode(node) })))
                     } else if (node.id.includes('-procedures')) {
                         const children = []
-                        const procedures = this.existingDatabases[dbName].procedures
+                        const procedures = [...(this.existingDatabases[dbName].procedures || [])]
+                        for (const issue of dbDiffs.filter(diff => this.issueCategory(diff) === 'procedures')) {
+                            if (!procedures.some(procedure => procedure.Name === issue.Name)) procedures.push({ Name: issue.Name })
+                        }
                         children.push(
                             ...Object.entries(procedures).map(([index, procedure]) => {
                                 const procedureName = procedure.Name
@@ -953,7 +971,7 @@ export default {
                                 }
                             }),
                         )
-                        done(children)
+                        done(children.map(child => ({ ...child, dbName: child.dbName || node.dbName || this.getDbNameFromNode(node) })))
                     } else if (node.id.includes('-views')) {
                         const children = []
                         const views = { ...(this.existingDatabases[dbName].views || {}) }
@@ -965,7 +983,7 @@ export default {
                                 onlyInDatabase.add(issue.viewName)
                             }
                         }
-                        console.log('Views:', views)
+
                         children.push(
                             ...Object.entries(views).map(([name, view]) => {
                                 const specificViewIssues = viewIssues.filter((d) => d.viewName === name)
@@ -983,12 +1001,11 @@ export default {
                                 }
                             }),
                         )
-                        done(children)
+                        done(children.map(child => ({ ...child, dbName: child.dbName || node.dbName || this.getDbNameFromNode(node) })))
                     }
                 } else if (node.type === 'table') {
-                    console.log('Loading table children for:', node.id)
+
                     const table = node.tableData
-                    console.log('Table data:', table)
 
                     if (!table) {
                         console.error('No table data found for node:', node)
@@ -1037,8 +1054,7 @@ export default {
                         })
                     }
 
-                    console.log('Table children:', children)
-                    done(children)
+                    done(children.map(child => ({ ...child, dbName: child.dbName || node.dbName || this.getDbNameFromNode(node) })))
                 }
             } catch (error) {
                 console.error('Error in lazy loading:', error)
@@ -1076,21 +1092,20 @@ export default {
             }))
         },
         async fetchAllDifferences() {
+            this.comparisonState = 'loading'
+            this.comparisonError = ''
             try {
                 const response = await this.$api.post('/api/compare', {
-                    config: {
-                        host: this.host,
-                        port: this.port,
-                        user: this.user,
-                        password: this.password,
-                        output: this.dbFolder,
-                },
+                    config: { ...this.connectionConfig },
                 })
                 this.setDifferences(response.data)
-                console.log('Differences in fetchAllDifferences:', this.differences)
-                this.fetchVersions()
+                this.comparisonState = 'ready'
+                this.lastCompared = new Date().toLocaleTimeString()
+                await this.fetchVersions()
             } catch (error) {
-                console.error('Error fetching all differences:', error)
+                this.comparisonState = 'error'
+                this.comparisonError = error.response?.data?.message || error.message
+                this.setDifferences({})
                 this.$q.notify({
                     type: 'negative',
                     message: error.response?.data?.message || 'Error fetching all differences',
@@ -1120,24 +1135,22 @@ export default {
             }
         },
         async createNewDump(overwrite = false) {
-            console.log('Creating a new dump...')
+            if (!this.isDbSetup || this.busy) return
             if(overwrite){
                 this.$q.dialog({
-                    title: 'Overwrite',
-                    message: 'Are you sure you want to overwrite the existing dump?',
+                    title: 'Replace the template with this database?',
+                    message: 'Exporting saves the current database structure to ' + this.dbFolder + '. Existing template definitions there will be replaced.',
                     ok: 'Overwrite',
                     cancel: 'Cancel',
                 }).onOk(async () => {
-                    console.log('Overwriting existing dump')
                     await this.createNewDump(false)
-                    await this.getDatabasesFromExistingDumps()
-                    await this.fetchAllDifferences()
                 })
                 return
             }
 
+            this.activeOperation = 'export'
             this.$q.loading.show({
-                message: 'Creating new dump...',
+                message: 'Exporting database structure...',
                 spinnerColor: 'primary',
                 backgroundColor: 'grey-1',
                 spinnerSize: 80,
@@ -1148,13 +1161,7 @@ export default {
             try {
 
                 let response = await this.$api.post('/api/dump', {
-                    config: {
-                        host: this.host,
-                        port: this.port,
-                        user: this.user,
-                        password: this.password,
-                        output: this.dbFolder,
-                    },
+                    config: { ...this.connectionConfig },
                 })
 
                 if (response.data.message) {
@@ -1184,7 +1191,8 @@ export default {
                     messageColor: 'primary',
                     customClass: 'custom-loading',
                 })
-                await this.fetchAllDifferences()
+                await this.refreshKeepingExpanded()
+                await this.fetchTemplateDrift()
 
             } catch (error) {
                 this.$q.loading.hide()
@@ -1195,11 +1203,12 @@ export default {
                 })
                 console.error('Error creating new dump:', error)
             } finally {
+                this.activeOperation = ''
                 this.$q.loading.hide()
             }
         },
         showIssueDetails(issue, node) {
-            console.log('Showing issue details:', issue, "from node:", node)
+
             this.issueListBeforeDetails = null
             this.selectedIssues = Array.isArray(issue) ? issue : [issue]
             this.selectedNode = node;
@@ -1236,72 +1245,42 @@ export default {
                 issueData: issue,
             })
         },
+        async confirmChanges(message) {
+            return new Promise(resolve => {
+                this.$q.dialog({ title: 'Apply template changes?', message, cancel: true, persistent: true, ok: { label: 'Apply changes', color: 'primary' } })
+                    .onOk(() => resolve(true)).onCancel(() => resolve(false)).onDismiss(() => resolve(false))
+            })
+        },
         async fixNodeIssues(node) {
-            if (!node) return
+            if (!node || !this.canApply) return false
+            this.activeOperation = 'apply'
+            this.isNodeFixing = { ...this.isNodeFixing, [node.id]: true }
             try {
-                let issues = []
-                let dbName = null;
-                // Set loading state for this node
-                this.isNodeFixing[node.id] = true
-                this.isNodeFixing = { ...this.isNodeFixing } // Trigger reactivity
-
-                if(node.issueData){
-                    issues = Array.isArray(node.issueData) ? node.issueData : [node.issueData];
-                }else{
-                    issues = await this.collectIssuesForNode(node)
-                }
-                dbName = node.dbName || this.getDbNameFromNode(node)
-
-                if (!issues.length){
-                    console.error('No issues found to fix', node);
-                    return;
-                }
-
-
+                const issues = node.issueData ? (Array.isArray(node.issueData) ? node.issueData : [node.issueData]) : await this.collectIssuesForNode(node)
+                const dbName = this.getDbNameFromNode(node)
+                if (!dbName || !issues.length) return false
+                if (!await this.confirmChanges('Apply ' + issues.length + ' change(s) to ' + dbName + ' on ' + this.host + ':' + this.port + '? Extra objects are removed; column changes may affect stored data.')) return false
                 const response = await this.$api.post('/api/apply', {
-                    config: {
-                        host: this.host,
-                        port: this.port,
-                        user: this.user,
-                        password: this.password,
-                        output: this.dbFolder,
-                    },
-                    database: dbName,
-                    diffs: issues,
+                    config: { ...this.connectionConfig }, database: dbName, diffs: issues,
                 })
-
-                if (response.data.message) {
-                    // The server reports differences it could only apply with a change
-                    // (an unsupported collation dropped, say). Those are not clean
-                    // successes, so say what happened rather than a bare count.
-                    const warnings = response.data.warnings || []
-                    this.$q.notify({
-                        type: warnings.length ? 'warning' : 'positive',
-                        message: warnings.length
-                            ? response.data.message
-                            : `Fixed ${issues.length} issue(s) successfully`,
-                        position: 'top',
-                        timeout: warnings.length ? 10000 : undefined,
-                    })
-                    this.afterIssuesResolved(issues)
-                    // Refresh the differences, keeping the tree as it was
-                    await this.refreshKeepingExpanded()
-                }
-            } catch (error) {
-                console.error('Error fixing issues:', error)
+                await this.refreshKeepingExpanded()
+                const remaining = new Set((this.rawDifferences[dbName] || []).map(issue => JSON.stringify(issue)))
+                this.afterIssuesResolved(issues.filter(issue => !remaining.has(JSON.stringify(issue))))
+                const warnings = response.data.warnings || []
                 this.$q.notify({
-                    type: 'negative',
-                    message: error.response?.data?.message || 'Error fixing issues',
-                    position: 'top',
+                    type: warnings.length ? 'warning' : 'positive',
+                    message: response.data.message || 'Changes applied. Comparison refreshed.',
+                    position: 'top', timeout: warnings.length ? 10000 : 5000,
                 })
-                // The server tries every difference and saves the ones that work, so refresh
-                // to drop those that were applied; the dialog keeps the rest
-                if (error.response) {
-                    await this.refreshKeepingExpanded().catch((refreshError) => console.error('Error refreshing:', refreshError))
-                }
+                return true
+            } catch (error) {
+                this.$q.notify({ type: 'negative', message: error.response?.data?.message || error.message || 'Could not apply changes.', position: 'top', timeout: 10000 })
+                // A failed batch may have applied some changes; always re-read the database.
+                await this.refreshKeepingExpanded().catch(() => {})
+                return false
             } finally {
-                this.isNodeFixing[node.id] = false
-                this.isNodeFixing = { ...this.isNodeFixing } // Trigger reactivity
+                this.activeOperation = ''
+                this.isNodeFixing = { ...this.isNodeFixing, [node.id]: false }
             }
         },
         // Tables whose .sql file disagrees with the JSON createSQL; reads only the template
@@ -1319,6 +1298,8 @@ export default {
             this.driftDialog = true
         },
         async resolveDrift(keep) {
+            if (this.busy) return
+            this.activeOperation = 'template'
             const { database, table } = this.selectedDrift
             this.resolvingDrift = keep
             try {
@@ -1341,19 +1322,14 @@ export default {
                 })
             } finally {
                 this.resolvingDrift = null
+                this.activeOperation = ''
             }
         },
         // Shown next to the differences; a failure just leaves the versions out
         async fetchVersions() {
             try {
                 const response = await this.$api.post('/api/versions', {
-                    config: {
-                        host: this.host,
-                        port: this.port,
-                        user: this.user,
-                        password: this.password,
-                        output: this.dbFolder,
-                    },
+                    config: { ...this.connectionConfig },
                 })
                 this.versionInfo = response.data
             } catch (error) {
@@ -1405,6 +1381,7 @@ export default {
         },
         // Hide a database's or table's differences for this session, or show them again
         async toggleIgnored(node) {
+            if (this.busy) return
             const { databases, tables } = this.ignored
             if (node.type === 'database') {
                 const dbName = node.dbName
@@ -1421,6 +1398,7 @@ export default {
             }
         },
         async showAllIgnored() {
+            if (this.busy) return
             await this.setIgnored({ databases: [], tables: [] })
         },
         async rebuildTreeKeepingExpanded() {
@@ -1464,6 +1442,7 @@ export default {
         issueName(issue) {
             if (!issue) return ''
             if (issue.field?.Field) return issue.field.Field
+            if (issue.constraintName || issue.constraint?.Name) return issue.constraintName || issue.constraint.Name
             if (issue.indexName || issue.index?.Name) return issue.indexName || issue.index.Name
             if (issue.trigger?.Name) return issue.trigger.Name
             if (issue.key) return Object.entries(issue.key).map(([k, v]) => `${k} = ${v}`).join(', ')
@@ -1471,7 +1450,7 @@ export default {
         },
         issueNameLabel(issue) {
             const kind = issue?.type?.split('_').slice(1).join('_')
-            return { field: 'Column', index: 'Index', trigger: 'Trigger', procedure: 'Procedure', view: 'View', row: 'Row', database: 'Database' }[kind] || 'Name'
+            return { field: 'Column', index: 'Index', trigger: 'Trigger', procedure: 'Procedure', view: 'View', row: 'Row', database: 'Database', constraint: 'Foreign key', table_options: 'Table options' }[kind] || 'Name'
         },
         issueSummary(issue) {
             if (!issue?.type) return ''
@@ -1493,6 +1472,11 @@ export default {
                 missing_field: [undefined, issue?.field],
                 mismatched_field: [issue?.currentField, issue?.field],
                 extra_index: [issue?.index, undefined],
+                mismatched_index: [issue?.currentIndex, issue?.index],
+                missing_constraint: [undefined, issue?.constraint],
+                extra_constraint: [issue?.constraint, undefined],
+                mismatched_constraint: [issue?.currentConstraint, issue?.constraint],
+                mismatched_table_options: [issue?.currentOptions, issue?.options],
                 missing_index: [undefined, issue?.index],
                 missing_row: [undefined, issue?.row],
             }[issue?.type]
@@ -1534,6 +1518,7 @@ export default {
             if (value === undefined || value === null) return '—'
             if (Array.isArray(value)) return value.join(', ')
             if (typeof value === 'boolean') return value ? 'yes' : 'no'
+            if (typeof value === 'object') return JSON.stringify(value)
             return String(value)
         },
         // Drop resolved issues from the dialog: back to the list when the details view
@@ -1553,11 +1538,11 @@ export default {
         },
         // Every difference except these can be kept by changing the template
         canKeepCurrent(issue) {
-            return !!issue && !['missing_database', 'missing_row'].includes(issue.type)
+            return !!issue && !['missing_database', 'missing_row', 'missing_constraint', 'mismatched_constraint', 'extra_constraint', 'mismatched_table_options'].includes(issue.type)
         },
         // The opposite of fixNodeIssues: change the template to match the database
         async keepCurrentInTemplate(node, loadingKey = node?.id) {
-            if (!node) return
+            if (!node || !this.canApply) return
             const issues = node.issueData
                 ? (Array.isArray(node.issueData) ? node.issueData : [node.issueData])
                 : await this.collectIssuesForNode(node)
@@ -1580,16 +1565,12 @@ export default {
             })
             if (!confirmed) return
 
+            if (!this.canApply) return
+            this.activeOperation = 'keep-current'
             this.isNodeKeeping = { ...this.isNodeKeeping, [loadingKey]: true }
             try {
                 await this.$api.post('/api/acceptCurrent', {
-                    config: {
-                        host: this.host,
-                        port: this.port,
-                        user: this.user,
-                        password: this.password,
-                        output: this.dbFolder,
-                    },
+                    config: { ...this.connectionConfig },
                     database: node.dbName || this.getDbNameFromNode(node),
                     diffs: keepable,
                 })
@@ -1610,30 +1591,21 @@ export default {
                 this.isNodeKeeping = { ...this.isNodeKeeping, [loadingKey]: false }
                 // Refresh even after a partial failure: the differences that succeeded were saved.
                 // The template changed too, so reload it
-                await this.refreshKeepingExpanded({ reloadTemplate: true })
+                try { await this.refreshKeepingExpanded({ reloadTemplate: true }) } catch { /* Comparison error is shown in the workspace. */ }
+                this.activeOperation = ''
             }
         },
         getDbNameFromNode(node) {
-            // Extract database name from node ID (assumes format: "dbName-something-etc")
-            if(!node || !node.id) node = this.selectedNode
-            if (!node || !node.id) {
-                console.error('Node ID is required to get db name', node)
-                return null
-            }
-            if(node.id.startsWith('db-')){
-                return node.id.split('-')[1]
-            }
-            console.log('Node ID:', node.id)
-            return node.id.split('-')[0]
+            return databaseForNode(node || this.selectedNode, [...new Set([...Object.keys(this.existingDatabases), ...Object.keys(this.differences)])])
         },
         async collectIssuesForNode(node) {
             const issues = []
-            console.log('Collecting issues for node:', node)
+
             switch (node.type) {
                 case 'database':
                     //collect issues from the differences for the selected db
-                    console.log('Collecting issues for database:', this.getDbNameFromNode(node))
-                    issues.push(...this.differences[this.getDbNameFromNode(node)])
+
+                    issues.push(...(this.differences[this.getDbNameFromNode(node)] || []))
                     break
                 case 'issue':
                     if (node.issueData) issues.push(node.issueData)
@@ -1676,19 +1648,19 @@ export default {
                     }else{
                         //need to collect issues from the differences for the selected db and type
                         const selectedDbName = this.getDbNameFromNode(node)
-                        console.log('Selected DB Name:', selectedDbName)
-                        let type = node.id.split('-')[1]
-                      const dbDifferences = this.differences[selectedDbName]
-                      console.log('DB Differences:', dbDifferences)
+
+                        let type = node.id.slice(selectedDbName.length + 1)
+                      const dbDifferences = this.differences[selectedDbName] || []
+
                       if(type === 'tables'){
-                          console.log('Collecting table issues')
-                          console.log('DB Differences:', dbDifferences)
+
+
                           issues.push(...dbDifferences.filter(diff => diff.type.includes('table') || diff.tableName))
                       }else if(type === 'views'){
-                          console.log('Collecting view issues')
+
                           issues.push(...dbDifferences.filter(diff => diff.type.includes('view')))
                       }else if(type === 'procedures'){
-                          console.log('Collecting procedure issues')
+
                           issues.push(...dbDifferences.filter(diff => diff.type.includes('procedure')))
                       }else{
                           console.error('Unknown type:', type)
@@ -1712,181 +1684,90 @@ export default {
             }
         },
         onFolderSelected(path) {
-            this.dbFolder = path;
-            // If you want to save the setting immediately
-            const dbConfig = {
-                host: this.host,
-                port: this.port,
-                user: this.user,
-                password: this.password,
-                database: this.database,
-                output: this.dbFolder,
-            }
-            localStorage.setItem('dbConfig', JSON.stringify(dbConfig));
+            this.settingsDraft.output = path
         },
         async fixAllIssues() {
-            if (this.isFixingAll) return;
-
+            if (!this.canApply || !this.totalIssueCount) return
+            this.isFixingAll = true
+            let dialog
             try {
-                this.isFixingAll = true;
-                this.currentFixProgress = 0;
-
-                let iterationCount = 0;
-
-                // Create the initial dialog
-                const dialog = this.$q.dialog({
-                    title: 'Fixing Database Issues',
-                    message: `<div class="text-h6">Iteration: 1/6</div>
-                             <div class="text-subtitle2">Remaining issues: ${this.totalIssueCount}</div>
-                             <div class="text-caption">Preparing...</div>`,
-                    html: true,
-                    progress: {
-                        spinner: true,
-                        color: 'primary'
-                    },
-                    persistent: true,
-                    ok: false
-                });
-
-                while (iterationCount < 6 && this.totalIssueCount > 0) {
-                    iterationCount++;
-
-                    // Update dialog for new iteration
-                    dialog.update({
-                        message: `<div class="text-h6">Iteration: ${iterationCount}/6</div>
-                                 <div class="text-subtitle2">Remaining issues: ${this.totalIssueCount}</div>
-                                 <div class="text-caption">Starting fixes...</div>`,
-                        html: true
-                    });
-
-                    // Fix issues for each database
-                    for (const dbName of Object.keys(this.differences)) {
-                        if (this.differences[dbName].length > 0) {
-                            const node = {
-                                id: `db-${dbName}`,
-                                type: 'database'
-                            };
-
-                            // Update progress before fixing
-                            dialog.update({
-                                message: `<div class="text-h6">Iteration: ${iterationCount}/6</div>
-                                         <div class="text-subtitle2">Remaining issues: ${this.totalIssueCount}</div>
-                                         <div class="text-caption q-mt-sm">Currently fixing: <span class="text-weight-bold">${dbName}</span></div>`,
-                                html: true
-                            });
-
-                            await this.fixNodeIssues(node);
-                        }
+                if (!await this.confirmChanges('Apply all ' + this.totalIssueCount + ' visible change(s) to ' + this.host + ':' + this.port + '? Ignored items are excluded. Extra objects are removed; column changes may affect stored data.')) return
+                dialog = this.$q.dialog({ title: 'Applying template', message: 'Preparing changes…', progress: true, persistent: true, ok: false })
+                const warnings = []
+                for (let pass = 1; pass <= 6 && this.totalIssueCount > 0; pass++) {
+                    const before = JSON.stringify(this.differences)
+                    dialog.update({ message: 'Pass ' + pass + ' of 6. Applying ' + this.totalIssueCount + ' changes across the selected databases.' })
+                    try {
+                        const response = await this.$api.post('/api/applyAll', { config: { ...this.connectionConfig }, differences: this.differences })
+                        warnings.push(...(response.data.warnings || []))
+                    } catch (error) {
+                        this.$q.notify({ type: 'negative', message: error.response?.data?.message || error.message || 'Could not apply changes.', timeout: 10000 })
+                        await this.refreshKeepingExpanded().catch(() => {})
+                        return
                     }
-
-                    // Refresh differences after all databases are processed
-                    await this.fetchAllDifferences();
-
-                    // If all issues are fixed, show success
-                    if (this.totalIssueCount === 0) {
-                        await dialog.hide();
-                        this.$q.dialog({
-                            title: 'Success!',
-                            message: `<div class="text-h6 text-positive">All issues have been fixed!</div>
-                                     <div class="text-subtitle2">Completed in ${iterationCount} iterations</div>`,
-                            html: true,
-                            ok: true,
-                            persistent: false
-                        });
-                        break;
-                    }
-
+                    await this.refreshKeepingExpanded()
+                    this.issueDialog = false
+                    if (this.comparisonState !== 'ready' || before === JSON.stringify(this.differences)) break
                 }
-
-                // If we hit the iteration limit
-                if (iterationCount >= 6 && this.totalIssueCount > 0) {
-                    await dialog.hide();
-                    this.$q.dialog({
-                        title: 'Process Complete',
-                        message: `<div class="text-h6 text-warning">Maximum iterations reached</div>
-                                 <div class="text-subtitle2">${this.totalIssueCount} issues remaining</div>
-                                 <div class="text-caption">Completed all 6 iterations</div>`,
-                        html: true,
-                        ok: true,
-                        persistent: false
-                    });
-                }
-
+                this.$q.notify({
+                    type: this.comparisonState === 'ready' && !this.totalIssueCount && !warnings.length ? 'positive' : 'warning',
+                    message: this.comparisonState !== 'ready' ? 'Changes stopped because comparison failed.' : this.totalIssueCount ? this.totalIssueCount + ' differences remain. Review the findings before applying again.' : warnings.length ? 'Changes applied with ' + warnings.length + ' compatibility warning(s).' : 'Database matches the template for all non-ignored objects.',
+                    caption: warnings.map(warning => warning.message).join('; '),
+                    timeout: 10000,
+                })
             } catch (error) {
-                console.error('Error fixing all issues:', error);
-                this.$q.dialog({
-                    title: 'Error',
-                    message: `<div class="text-negative">An error occurred while fixing issues</div>
-                             <div class="text-caption">${error.message}</div>`,
-                    html: true,
-                    ok: true,
-                    persistent: false
-                });
+                this.$q.notify({ type: 'negative', message: error.response?.data?.message || error.message, timeout: 10000 })
             } finally {
-                this.isFixingAll = false;
-                this.currentFixProgress = 0;
+                dialog?.hide()
+                this.isFixingAll = false
             }
         },
     },
     mounted() {
-        const dbConfig = localStorage.getItem('dbConfig')
-        if (dbConfig) {
-            const config = JSON.parse(dbConfig)
-            this.host = config.host
-            this.port = config.port
-            this.user = config.user
-            this.password = config.password
-            this.database = config.database
-            this.dbFolder = config.output
-            this.isDbSetup = true
-            this.getDatabasesFromExistingDumps()
-            this.fetchAllDifferences()
+        const config = loadConnection(localStorage)
+        if (config) {
+            this.settingsDraft = config
+            this.settingsDialog = true
         }
     },
 }
 </script>
 
 <style lang="scss">
-.database-tree {
-    .q-tree__node-header {
-        padding: 8px;
-        border-radius: 4px;
-        transition: background-color 0.3s;
-
-        &:hover {
-            background-color: #f5f5f5;
-        }
-    }
-
-    .q-tree__node--selected > .q-tree__node-header {
-        background-color: #e3f2fd;
-    }
-
-    .q-tree__node--child {
-        padding-left: 24px;
-    }
-
-    .q-icon {
-        font-size: 20px;
-    }
-}
-
-.q-card {
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
-    border-radius: 8px;
-}
-
-.q-btn {
-    border-radius: 8px;
-}
-
-.text-h6 {
-    font-weight: 500;
-    letter-spacing: 0.25px;
-}
-
-.q-page {
-    max-width: 1400px;
-    margin: 0 auto;
+.sync-workspace { max-width: 1440px; margin: 0 auto; padding: 28px 32px 48px; }
+.workspace-header { display: flex; align-items: center; justify-content: space-between; gap: 20px; margin-bottom: 22px; }
+.workspace-brand { display: flex; align-items: center; gap: 14px; color: #14545b; }
+.workspace-brand h1 { font-size: 27px; line-height: 1.25; letter-spacing: -.7px; font-weight: 650; margin: 0; }
+.workspace-brand p { color: #617179; font-size: 14px; margin: 5px 0 0; }
+.connection-strip { background: #eaf0f2; border-radius: 6px; padding: 13px 16px; margin-bottom: 22px; display: grid; gap: 8px; }
+.connection-strip > div { display: flex; align-items: center; flex-wrap: wrap; gap: 9px; }
+.template-path { color: #4c606a; font-size: 13px; overflow-wrap: anywhere; }
+.template-path span { min-width: 0; }
+.workspace-welcome { background: #eaf4f3; color: #254d52; border: 1px solid #c9dfdc; border-radius: 6px; }
+.workspace-tabs { border-bottom: 1px solid #ced9dd; margin-bottom: 22px; }
+.workspace-actions { display: flex; justify-content: space-between; align-items: center; gap: 20px; margin: 0 0 22px; }
+.comparison-status { display: flex; align-items: center; gap: 12px; }
+.schema-card { border-color: #ced9dd; border-radius: 8px; }
+.schema-card-heading { background: #f3f7f8; border-bottom: 1px solid #dce4e7; color: #203b47; }
+.schema-card-heading > .row > .row { min-width: 0; max-width: 100%; }
+.schema-card-heading .q-chip { max-width: 100%; height: auto; min-height: 24px; }
+.schema-card-heading .q-chip__content { white-space: normal; overflow-wrap: anywhere; }
+.database-tree .q-tree__node-header { padding: 8px; border-radius: 4px; }
+.database-tree .q-tree__node-header:hover { background: #edf4f4; }
+.database-tree .q-tree__node--child { padding-left: 20px; }
+.database-tree .q-icon { font-size: 20px; }
+.settings-card { width: 900px; max-width: 95vw; }
+.review-dialog { width: 1100px; max-width: 95vw; }
+.sql-code { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; max-height: 50vh; overflow-y: auto; }
+.flex-grow-1 { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.q-btn { border-radius: 5px; }
+.q-btn:focus-visible, button:focus-visible { outline: 2px solid #176b74; outline-offset: 3px; }
+@media (max-width: 700px) {
+    .sync-workspace { padding: 18px 12px 32px; }
+    .workspace-header, .workspace-actions { align-items: flex-start; flex-direction: column; }
+    .workspace-brand h1 { font-size: 24px; }
+    .schema-card-heading > .row { gap: 8px; }
+    .schema-card-heading .q-chip { margin-left: 0; }
+    .database-tree .q-tree__node--child { padding-left: 10px; }
 }
 </style>

@@ -198,3 +198,15 @@ test('does not speculate when an unqualified nested column could be a correlated
     expect(result.summary).toMatch(/unqualified predicate/);
     expect(connection.query.mock.calls.some(([sql]) => sql.startsWith('EXPLAIN'))).toBe(false);
 });
+
+test('skips backslash-escaped strings whose parsing depends on the sample session SQL mode', () => {
+    const sql = "SELECT * FROM readings WHERE name = 'a" + String.fromCharCode(92) + "b'";
+    expect(inspectSample(sql, 'app')).toBeNull();
+});
+
+test('validates SQL under NO_BACKSLASH_ESCAPES ambiguity before any metadata or EXPLAIN calls', async () => {
+    const connection = db();
+    const sql = "SELECT * FROM readings WHERE name = 'a" + String.fromCharCode(92) + "b'";
+    expect((await assessQueryIndexes(connection, row, sql)).status).toBe('inconclusive');
+    expect(connection.query).not.toHaveBeenCalled();
+});

@@ -1,0 +1,40 @@
+[
+  {
+    "tag": "57",
+    "version": "5.7.44",
+    "status": "passed",
+    "tests": [
+      {
+        "name": "extra table FK cycles and references from retained tables are removed safely",
+        "durationMs": 578
+      },
+      {
+        "name": "reverse-ordered view chains converge while unresolved dependencies remain failures",
+        "durationMs": 26
+      },
+      {
+        "name": "global apply schedules dependent views across schemas before reporting success",
+        "durationMs": 20
+      }
+    ]
+  },
+  {
+    "tag": "80",
+    "version": "8.0.46",
+    "status": "passed",
+    "tests": [
+      {
+        "name": "extra table FK cycles and references from retained tables are removed safely",
+        "durationMs": 1019
+      },
+      {
+        "name": "reverse-ordered view chains converge while unresolved dependencies remain failures",
+        "durationMs": 70
+      },
+      {
+        "name": "global apply schedules dependent views across schemas before reporting success",
+        "durationMs": 96
+      }
+    ]
+  }
+]

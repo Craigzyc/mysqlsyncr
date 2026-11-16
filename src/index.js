@@ -19,68 +19,38 @@ export { checkPerformance } from './performance.js';
 
 
 const compare = async (config, output) => {
-    return new Promise(async (resolve, reject) => {
-        let checker
-        try {
-            checker = new DBStructureChecker(config);
-            // Without this a refused connection is an unhandled 'error' event and the promise never settles
-            checker.connection.on('error', (err) => {
-                reject({ type: 'error', error: err.message });
-            });
-            checker.connection.on('connect', async () => {
-                try {
-                    const diffs = await compareAllDatabases(checker.connection, output, false, 'compare', { output: output });
-                    resolve({ type: 'success', diffs });
-                } catch (e) {
-                    // e.g. an invalid syncOptions.json
-                    reject({ type: 'error', error: e.message });
-                } finally {
-                    await checker.closeConnection();
-                }
-            });
-        } catch (e) {
-            reject({ type: 'error', error: e.message });
-            if (checker) await checker.closeConnection();
-        }
-    });
+    let checker;
+    let failure;
+    try {
+        checker = new DBStructureChecker(config);
+        await checker.ready();
+        const diffs = await compareAllDatabases(checker.connection, output, false, 'compare', { output, database: config.database });
+        return { type: 'success', diffs };
+    } catch (error) {
+        failure = { type: 'error', error: error.message };
+        throw failure;
+    } finally {
+        try { await checker?.closeConnection(); }
+        catch (error) { if (!failure) throw { type: 'error', error: error.message }; failure.closeError = error.message; }
+    }
 }
 
 const apply = async (config, database, diffs) => {
-    return new Promise((resolve, reject) => {
-        let checker;
-        try {
-            checker = new DBStructureChecker(config, database);
-
-            checker.connection.on('error', async (err) => {
-                console.error('Database connection error in route apply:', err);
-                reject({ type: 'error', error: err.message });
-                await checker.closeConnection();
-            });
-
-            checker.connection.on('connect', async () => {
-                console.log('Connected to the database');
-                checker.targetDatabase = database;
-                checker.command = 'apply';
-                checker.options = { config, database, diffs };
-                try {
-                    console.log('Applying the database structure based on JSON dumps');
-                    const result = await applyDifferences(checker.connection, database, diffs);
-                    if (result.failures.length > 0) {
-                        // Callers treat a resolved apply as done, so anything that failed rejects
-                        reject({ type: 'error', error: describeFailures(result), failures: result.failures, warnings: result.warnings });
-                    } else {
-                        resolve({ type: 'success', message: `Applied ${result.attempted} of ${result.attempted}`, warnings: result.warnings });
-                    }
-                    await checker.closeConnection();
-                } catch (err) {
-                    reject({ type: 'error', error: err.message });
-                    await checker.closeConnection();
-                }
-            });
-        } catch (e) {
-            reject({ type: 'error', error: e.message });
-        }
-    });
+    let checker;
+    let failure;
+    try {
+        checker = new DBStructureChecker(config, database);
+        await checker.ready();
+        const result = await applyDifferences(checker.connection, database, diffs);
+        if (result.failures.length) throw Object.assign(new Error(describeFailures(result)), result);
+        return { type: 'success', message: `Applied ${result.attempted} of ${result.attempted}`, warnings: result.warnings };
+    } catch (error) {
+        failure = { type: 'error', error: error.message, failures: error.failures, warnings: error.warnings };
+        throw failure;
+    } finally {
+        try { await checker?.closeConnection(); }
+        catch (error) { if (!failure) throw { type: 'error', error: error.message }; failure.closeError = error.message; }
+    }
 }
 
 export { DBStructureChecker, dumpAllDatabases, compare, startApiServer, apply, getDatabasesFromExistingDumps, rebuildTemplate, acceptCurrentIntoTemplate };
@@ -193,20 +163,12 @@ if (isMain) {
             // Handle other commands (dump, compare, update) as before
             console.log(`Connecting to MySQL as ${config.user}@${config.host}:${config.port}${config.password ? '' : ' with no password'}`);
             const checker = new DBStructureChecker(config, argv.database);
-            checker.connection.on('error', (err) => {
-                console.error(`MySQL connection error (${config.user}@${config.host}:${config.port}): ${err.message}`);
-                if (err.code === 'ER_ACCESS_DENIED_ERROR') {
-                    // e.g. 'root'@'172.17.0.1' when MySQL runs in Docker
-                    console.error(`The user and password were rejected. The address in MySQL's message is where the server saw the connection come from, not the host connected to.`);
-                }
-                process.exitCode = 1;
-            });
-            checker.connection.on('connect', async () => {
+            try {
+                await checker.ready();
                 console.log('Connected to the database');
                 checker.targetDatabase = argv.database;
                 checker.command = command;
                 checker.options = argv;
-                try {
                     if (command === 'dump') {
                         console.log('Dumping the database structure to files');
                         await dumpAllDatabases(checker.connection, command, argv);
@@ -220,29 +182,26 @@ if (isMain) {
                     } else if (command === 'update') {
                         await printVersions(checker.connection, argv.output);
                         console.log('Updating the database structure based on JSON dumps');
-                        let totalDiffs = Infinity; // Initialize with a large number
-                        let previousDiffs = totalDiffs; // Store previous differences
-                        let runCount = 0; // Counter for the number of runs
-                        let maxRuns = 6;
-                        while (runCount < maxRuns && totalDiffs > 0 && (totalDiffs < previousDiffs || previousDiffs === Infinity)) {
-                            console.log('Running update command. Run count:', runCount);
-                            let diffs = await compareAllDatabases(checker.connection, argv.output, true, command, argv); // Apply updates
-                            previousDiffs = totalDiffs; // Update previous differences
-                            totalDiffs = Object.values(diffs).reduce((acc, arr) => acc + arr.length, 0);
-                            console.log('Total differences count:', totalDiffs);
-                            runCount++;
-                            if (totalDiffs > 0 && runCount < maxRuns) {
-                                console.log('Total differences count is still greater than 0. Waiting 1 second before next run. Run count:', runCount);
-                                await new Promise(resolve => setTimeout(resolve, 1000));
+                        const seen = new Set();
+                        for (let run = 0; run < 6; run++) {
+                            const before = await compareAllDatabases(checker.connection, argv.output, true, command, argv);
+                            const remaining = await compareAllDatabases(checker.connection, argv.output, false, 'compare', { ...argv, quiet: true });
+                            const total = Object.values(remaining).reduce((n, diffs) => n + diffs.length, 0);
+                            console.log('Remaining differences after verification:', total);
+                            if (!total) break;
+                            const signature = JSON.stringify(remaining);
+                            if (signature === JSON.stringify(before) || seen.has(signature) || run === 5) {
+                                throw new Error(`Update incomplete: ${total} difference(s) remain after verification. Review the reported differences before retrying.`);
                             }
+                            seen.add(signature);
                         }
                     }
-                } catch (err) {
-                    console.error(err.message);
-                } finally {
-                    await checker.closeConnection();
-                }
-            });
+            } catch (err) {
+                console.error(err.message);
+                process.exitCode = 1;
+            } finally {
+                await checker.closeConnection();
+            }
         }
-    })();
+    })().catch(error => { console.error(error.message); process.exitCode = 1; });
 }

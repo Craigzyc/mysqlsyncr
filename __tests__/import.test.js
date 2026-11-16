@@ -1,27 +1,12 @@
-const { DBStructureChecker, compareAllDatabases } = import('../src/index.js');
-const dotenv = require('dotenv');
-dotenv.config();
-const config ={
-    host: "127.0.0.1",
-    user: 'root',
-    password: process.env.DB_PASSWORD,
-    port: 3306
-};
+import { execFileSync } from 'node:child_process';
 
-describe('Connect to database', () => {
-
-    test('should run a comparison of the DB structure', async () => {
-        const checker = new DBStructureChecker(config);
-        
-        const diffs = await compareAllDatabases(
-            checker.connection, 
-            process.env.DB_STRUCTURE_PATH, 
-            false, 
-            'compare'
-        );
-        
-        expect(Array.isArray(diffs)).toBe(true);
-    });
-
-
-}); 
+test('module imports without running the CLI or connecting to a database', () => {
+    const output = execFileSync(process.execPath, ['--input-type=module', '-e', `
+        const api = await import('./src/index.js');
+        for (const name of ['DBStructureChecker', 'compare', 'apply', 'dumpAllDatabases', 'startApiServer']) {
+            if (typeof api[name] !== 'function') throw new Error(name + ' export missing');
+        }
+        console.log('imported');
+    `], { cwd: process.cwd(), encoding: 'utf8', timeout: 15000 });
+    expect(output.trim()).toBe('imported');
+});

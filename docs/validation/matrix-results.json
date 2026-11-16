@@ -1,0 +1,276 @@
+{
+  "startedAt": "2026-11-16T16:07:04.491Z",
+  "template": "DBTemplate",
+  "sourceHash": "3c463de1e50d8d59545b3738392bef4b669516b223c517528dae1ff074ad5e92",
+  "expectedCounts": {
+    "databases": 11,
+    "tables": 626,
+    "procedures": 221,
+    "views": 2,
+    "triggers": 38,
+    "foreignKeys": 26
+  },
+  "versions": [
+    {
+      "tag": "57",
+      "tests": [
+        {
+          "name": "full CAM restore, independent inventory and zero-diff verification",
+          "differences": 924
+        },
+        {
+          "name": "idempotent second update"
+        },
+        {
+          "name": "column type, default, comment, order, missing and extra columns",
+          "detectedDifferences": 6
+        },
+        {
+          "name": "reversed composite index",
+          "detectedDifferences": 1
+        },
+        {
+          "name": "missing AUTO_INCREMENT and primary key",
+          "detectedDifferences": 2
+        },
+        {
+          "name": "missing table",
+          "detectedDifferences": 1
+        },
+        {
+          "name": "extra table",
+          "detectedDifferences": 1
+        },
+        {
+          "name": "missing foreign key",
+          "detectedDifferences": 1
+        },
+        {
+          "name": "missing procedure",
+          "detectedDifferences": 1
+        },
+        {
+          "name": "changed view",
+          "detectedDifferences": 1
+        },
+        {
+          "name": "missing trigger",
+          "detectedDifferences": 1
+        },
+        {
+          "name": "missing database",
+          "detectedDifferences": 5
+        },
+        {
+          "name": "seed insertion is idempotent and preserves existing keyed rows"
+        },
+        {
+          "name": "database-scoped dump excludes other schemas"
+        },
+        {
+          "name": "source and packaged CLI success, unknown scope and failed authentication exit codes"
+        },
+        {
+          "name": "live API versions, scoped comparison, bulk repair, partial failure and authentication recovery"
+        },
+        {
+          "name": "dump round trip with all CAM objects"
+        }
+      ],
+      "status": "passed",
+      "container": "mysqlsyncr-validation-57",
+      "image": "sha256:4bc6bc963e6d8443453676cae56536f4b8156d78bae03c0145cbe47c2aad73bb",
+      "version": "5.7.44",
+      "sqlMode": "IGNORE_SPACE,ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_AUTO_CREATE_USER,NO_ENGINE_SUBSTITUTION",
+      "restoreMs": 47332,
+      "inventory": {
+        "databases": 11,
+        "tables": 626,
+        "views": 2,
+        "procedures": 221,
+        "triggers": 38,
+        "foreignKeys": 26
+      },
+      "dump": "dump-57",
+      "performance": {
+        "version": "5.7.44",
+        "cases": [
+          {
+            "name": "create isolated workload fixtures",
+            "milliseconds": 139
+          },
+          {
+            "name": "distinguish a missing lookup index from an indexed plan",
+            "milliseconds": 105
+          },
+          {
+            "name": "duplicate indexes respect uniqueness, prefix lengths, direction and visibility",
+            "milliseconds": 66
+          },
+          {
+            "name": "cumulative slow queries and scans use actual workload counters",
+            "milliseconds": 2490
+          },
+          {
+            "name": "interval snapshots subtract lifetime counters",
+            "milliseconds": 2376
+          },
+          {
+            "name": "empty or disabled digest coverage never reports clean query health",
+            "milliseconds": 146
+          },
+          {
+            "name": "blocking transactions appear on both MySQL lock-table implementations",
+            "milliseconds": 2958
+          },
+          {
+            "name": "live queries include elapsed time without exposing literal SQL",
+            "milliseconds": 4164
+          },
+          {
+            "name": "AI context redacts sample literals and uses a mock provider only",
+            "milliseconds": 22
+          }
+        ],
+        "elapsedMs": 12471
+      }
+    },
+    {
+      "tag": "80",
+      "tests": [
+        {
+          "name": "full CAM restore, independent inventory and zero-diff verification",
+          "differences": 924
+        },
+        {
+          "name": "idempotent second update"
+        },
+        {
+          "name": "column type, default, comment, order, missing and extra columns",
+          "detectedDifferences": 6
+        },
+        {
+          "name": "reversed composite index",
+          "detectedDifferences": 1
+        },
+        {
+          "name": "missing AUTO_INCREMENT and primary key",
+          "detectedDifferences": 2
+        },
+        {
+          "name": "missing table",
+          "detectedDifferences": 1
+        },
+        {
+          "name": "extra table",
+          "detectedDifferences": 1
+        },
+        {
+          "name": "missing foreign key",
+          "detectedDifferences": 1
+        },
+        {
+          "name": "missing procedure",
+          "detectedDifferences": 1
+        },
+        {
+          "name": "changed view",
+          "detectedDifferences": 1
+        },
+        {
+          "name": "missing trigger",
+          "detectedDifferences": 1
+        },
+        {
+          "name": "missing database",
+          "detectedDifferences": 5
+        },
+        {
+          "name": "seed insertion is idempotent and preserves existing keyed rows"
+        },
+        {
+          "name": "database-scoped dump excludes other schemas"
+        },
+        {
+          "name": "source and packaged CLI success, unknown scope and failed authentication exit codes"
+        },
+        {
+          "name": "live API versions, scoped comparison, bulk repair, partial failure and authentication recovery"
+        },
+        {
+          "name": "dump round trip with all CAM objects"
+        }
+      ],
+      "status": "passed",
+      "container": "mysqlsyncr-validation-80",
+      "image": "sha256:7dcddc01f13bab2f15cde676d44d01f61fc9f99fe7785e86196dfc07d358ae2b",
+      "version": "8.0.46",
+      "sqlMode": "IGNORE_SPACE,ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION",
+      "restoreMs": 150692,
+      "inventory": {
+        "databases": 11,
+        "tables": 626,
+        "views": 2,
+        "procedures": 221,
+        "triggers": 38,
+        "foreignKeys": 26
+      },
+      "dump": "dump-80",
+      "performance": {
+        "version": "8.0.46",
+        "cases": [
+          {
+            "name": "create isolated workload fixtures",
+            "milliseconds": 388
+          },
+          {
+            "name": "distinguish a missing lookup index from an indexed plan",
+            "milliseconds": 177
+          },
+          {
+            "name": "duplicate indexes respect uniqueness, prefix lengths, direction and visibility",
+            "milliseconds": 352
+          },
+          {
+            "name": "cumulative slow queries and scans use actual workload counters",
+            "milliseconds": 2346
+          },
+          {
+            "name": "interval snapshots subtract lifetime counters",
+            "milliseconds": 2309
+          },
+          {
+            "name": "empty or disabled digest coverage never reports clean query health",
+            "milliseconds": 25
+          },
+          {
+            "name": "blocking transactions appear on both MySQL lock-table implementations",
+            "milliseconds": 2263
+          },
+          {
+            "name": "live queries include elapsed time without exposing literal SQL",
+            "milliseconds": 2948
+          },
+          {
+            "name": "AI context redacts sample literals and uses a mock provider only",
+            "milliseconds": 932
+          }
+        ],
+        "elapsedMs": 11744
+      }
+    }
+  ],
+  "crossVersion": [
+    {
+      "from": "8.0.46",
+      "to": "5.7.44",
+      "status": "passed"
+    },
+    {
+      "from": "5.7.44",
+      "to": "8.0.46",
+      "status": "passed"
+    }
+  ],
+  "finishedAt": "2026-11-16T16:15:52.528Z"
+}

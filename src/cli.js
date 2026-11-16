@@ -24,6 +24,7 @@ export const cli = async () => {
         .option('limit', { describe: 'Maximum results per performance category (1-100)', type: 'number', default: 10 })
         .option('json', { describe: 'Print the performance report as JSON', type: 'boolean', default: false })
         .option('uiPort', { alias: 'U', describe: 'UI port', default: 3600 })
+        .option('uiHost', { describe: 'UI listen address; set explicitly to expose the UI beyond this computer', type: 'string', default: '127.0.0.1' })
         .option('openUI', { alias: 'O', describe: 'Open UI', default: true })
         .option('host', { alias: 'h', describe: 'Database host', default: 'localhost' })
         .option('port', { alias: 'P', describe: 'Database port', default: 3306 })

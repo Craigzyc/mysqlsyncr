@@ -13,7 +13,9 @@ import { getDatabaseDumpNames } from './dumpFiles.js';
 export const dumpAllDatabases = async (connection, command, options) => {
     let response = {}
     assertOutsidePackage(options.output);
-    const databases = await getDatabases(connection);
+    const available = await getDatabases(connection);
+    const databases = available.filter(database => !options.database || database === options.database);
+    if (options.database && !databases.length) throw new Error(`Database ${options.database} does not exist.`);
     const syncOptions = await loadSyncOptions(options.output);
     for (const database of databases) {
         let dbStructure = await getDatabaseStructure(connection, database, command, options, syncOptions);
@@ -49,6 +51,7 @@ export const getDatabasesFromExistingDumps = async (options) => {
     let response = {}
     const databases = await getDatabaseDumpNames(options.output);
     for (const database of databases) {
+        if (options.database && options.database !== database) continue;
         let dbStructure = await fs.readFile(path.join(options.output, database, `${database}.json`), 'utf8');
         response[database] = JSON.parse(dbStructure);
     }

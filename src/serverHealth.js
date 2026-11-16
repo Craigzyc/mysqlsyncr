@@ -3,11 +3,15 @@
 // "current"/"pending" gauges describe right now.
 
 const num = (map, key) => {
-    const value = Number(map[key.toLowerCase()]);
+    const raw = map[key.toLowerCase()];
+    if (raw === undefined || raw === null || raw === '') return null;
+    const value = Number(raw);
     return Number.isFinite(value) ? value : null;
 };
 const pct = value => `${(value * 100).toFixed(1)}%`;
-const worst = checks => checks.some(c => c.status === 'critical') ? 'critical' : checks.some(c => c.status === 'warning') ? 'warning' : 'ok';
+const worst = checks => checks.some(c => c.status === 'critical') ? 'critical'
+    : checks.some(c => c.status === 'warning') ? 'warning'
+        : !checks.length || checks.some(c => c.status === 'unknown') || !checks.some(c => c.status === 'ok') ? 'unknown' : 'ok';
 
 function toMap(rows) {
     const map = {};
@@ -22,7 +26,7 @@ export function evaluateLockContention(status, lockWaitRows = []) {
     const avg = num(status, 'Innodb_row_lock_time_avg');
     if (avg !== null) checks.push({ status: avg > 1000 ? 'critical' : avg > 100 ? 'warning' : 'ok', message: `Average InnoDB row lock wait: ${avg} ms (${num(status, 'Innodb_row_lock_waits') ?? 0} waits since start).` });
     const waited = num(status, 'Table_locks_waited'), immediate = num(status, 'Table_locks_immediate');
-    if (waited !== null && immediate) {
+    if (waited !== null && immediate !== null && waited + immediate > 0) {
         const ratio = waited / (waited + immediate);
         checks.push({ status: ratio > 0.05 ? 'critical' : ratio > 0.01 ? 'warning' : 'ok', message: `${pct(ratio)} of table lock requests had to wait (MyISAM/table-level locks).` });
     }
@@ -32,9 +36,11 @@ export function evaluateLockContention(status, lockWaitRows = []) {
 
 export function evaluateDiskIo(status) {
     const checks = [];
-    const pending = ['Innodb_data_pending_reads', 'Innodb_data_pending_writes', 'Innodb_data_pending_fsyncs', 'Innodb_os_log_pending_fsyncs']
-        .reduce((sum, key) => sum + (num(status, key) ?? 0), 0);
-    checks.push({ status: pending > 10 ? 'critical' : pending > 0 ? 'warning' : 'ok', message: `${pending} InnoDB read/write/fsync operation(s) pending right now.` });
+    const pendingValues = ['Innodb_data_pending_reads', 'Innodb_data_pending_writes', 'Innodb_data_pending_fsyncs', 'Innodb_os_log_pending_fsyncs']
+        .map(key => num(status, key)).filter(value => value !== null);
+    const pending = pendingValues.reduce((sum, value) => sum + value, 0);
+    if (pendingValues.length) checks.push({ status: pending > 10 ? 'critical' : pending > 0 ? 'warning' : pendingValues.length < 4 ? 'unknown' : 'ok',
+        message: `${pending} InnoDB read/write/fsync operation(s) reported pending right now.${pendingValues.length < 4 ? ' Some pending-I/O counters are unavailable.' : ''}` });
     const logWaits = num(status, 'Innodb_log_waits');
     if (logWaits !== null) checks.push({ status: logWaits > 0 ? 'warning' : 'ok', message: `${logWaits} redo log wait(s) since start${logWaits > 0 ? '; consider a larger innodb_log_buffer_size' : ''}.` });
     const tmp = num(status, 'Created_tmp_tables'), disk = num(status, 'Created_tmp_disk_tables');
@@ -48,8 +54,8 @@ export function evaluateDiskIo(status) {
 export function evaluateMemory(status, variables) {
     const checks = [];
     const requests = num(status, 'Innodb_buffer_pool_read_requests'), reads = num(status, 'Innodb_buffer_pool_reads');
-    if (requests) {
-        const hit = 1 - (reads ?? 0) / requests;
+    if (requests && reads !== null) {
+        const hit = 1 - reads / requests;
         checks.push({ status: hit < 0.95 ? 'critical' : hit < 0.99 ? 'warning' : 'ok', message: `Buffer pool hit ratio ${pct(hit)} (reads served from memory).` });
     }
     const waitFree = num(status, 'Innodb_buffer_pool_wait_free');
@@ -60,7 +66,7 @@ export function evaluateMemory(status, variables) {
         checks.push({ status: ratio > 0.9 ? 'critical' : ratio > 0.75 ? 'warning' : 'ok', message: `${pct(ratio)} of buffer pool pages are dirty (awaiting flush).` });
     }
     const size = num(variables, 'innodb_buffer_pool_size');
-    if (size !== null) checks.push({ status: 'ok', message: `innodb_buffer_pool_size is ${(size / 1024 ** 3).toFixed(2)} GiB.` });
+    if (size !== null) checks.push({ status: 'info', message: `innodb_buffer_pool_size is ${(size / 1024 ** 3).toFixed(2)} GiB.` });
     return checks;
 }
 
@@ -115,18 +121,22 @@ export function buildNotifications(report) {
     const notes = [];
     const add = (area, status, message) => notes.push({ area, status, message });
     const dups = report.duplicateIndexes || [];
-    add('Duplicate indexes', dups.length ? 'warning' : 'ok', dups.length
-        ? `${dups.length} duplicate or redundant index(es) found; they slow writes and waste memory.`
+    add('Duplicate indexes', report.duplicateIndexesAvailable === false ? 'unknown' : dups.length ? 'warning' : 'ok', report.duplicateIndexesAvailable === false
+        ? 'Unavailable: index metadata could not be read.' : dups.length
+        ? `${dups.length} duplicate or potentially redundant index(es) found; review plans, index hints and foreign keys before removing them.`
         : 'No duplicate or redundant indexes found.');
     const needed = (report.indexCandidates || []).filter(row => row.indexAssessment?.status === 'index_may_help');
     if (report.available) {
-        add('Needed indexes', needed.length ? 'warning' : (report.indexCandidates?.length ? 'info' : 'ok'), needed.length
+        const incomplete = report.digestCoverage && (!report.digestCoverage.count || !report.digestCoverage.complete);
+        add('Needed indexes', needed.length ? 'warning' : (report.indexCandidates?.length ? 'info' : incomplete ? 'unknown' : 'ok'), needed.length
             ? `${needed.length} query pattern(s) would likely benefit from a new index.`
-            : report.indexCandidates?.length ? `${report.indexCandidates.length} query pattern(s) scan many rows; review their execution plans.` : 'No queries flagged as needing an index.');
+            : report.indexCandidates?.length ? `${report.indexCandidates.length} query pattern(s) scan many rows; review their execution plans.`
+                : incomplete ? 'Inconclusive: query statistics are empty or instrumentation is incomplete.' : 'No collected query patterns met the index-review thresholds.');
         const slow = report.slowQueries || [];
-        add('Slow queries', slow.length ? 'warning' : 'ok', slow.length
+        add('Slow queries', slow.length ? 'warning' : incomplete ? 'unknown' : 'ok', slow.length
             ? `${slow.length} query pattern(s) exceeded ${report.thresholds.slowMs / 1000} s.`
-            : `No query patterns exceeded ${report.thresholds.slowMs / 1000} s.`);
+            : incomplete ? 'Inconclusive: query statistics are empty or instrumentation is incomplete.'
+                : `No collected query patterns met the duration and minimum-execution thresholds (${report.thresholds.slowMs / 1000} s).`);
     } else {
         add('Needed indexes', 'unknown', 'Unavailable: Performance Schema statistics could not be read.');
         add('Slow queries', 'unknown', 'Unavailable: Performance Schema statistics could not be read.');
@@ -134,7 +144,7 @@ export function buildNotifications(report) {
     const health = report.serverHealth;
     for (const [key, label] of [['lockContention', 'Lock contention'], ['diskIo', 'Disk I/O saturation'], ['memory', 'Memory & buffer pool'], ['connections', 'Connection exhaustion']]) {
         const area = health?.[key];
-        if (!area) { add(label, 'unknown', 'Unavailable: server status could not be read.'); continue; }
+        if (!area || area.status === 'unknown') { add(label, 'unknown', 'Unavailable: required server status metrics could not be read.'); continue; }
         const problems = area.checks.filter(c => c.status !== 'ok');
         add(label, area.status, problems.length ? problems.map(c => c.message).join(' ') : 'No problems detected.');
     }

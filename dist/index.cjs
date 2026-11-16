@@ -10,10 +10,9 @@ var url = require('url');
 var readline = require('readline');
 var mysql = require('mysql2');
 var fs$1 = require('fs/promises');
+var node_crypto = require('node:crypto');
 var express = require('express');
 var http = require('http');
-var cors = require('cors');
-var node_crypto = require('node:crypto');
 var process$1 = require('node:process');
 var node_buffer = require('node:buffer');
 var path$1 = require('node:path');
@@ -190,26 +189,6 @@ function _objectSpread2(e) {
     });
   }
   return e;
-}
-function _objectWithoutProperties(e, t) {
-  if (null == e) return {};
-  var o,
-    r,
-    i = _objectWithoutPropertiesLoose(e, t);
-  if (Object.getOwnPropertySymbols) {
-    var n = Object.getOwnPropertySymbols(e);
-    for (r = 0; r < n.length; r++) o = n[r], -1 === t.indexOf(o) && {}.propertyIsEnumerable.call(e, o) && (i[o] = e[o]);
-  }
-  return i;
-}
-function _objectWithoutPropertiesLoose(r, e) {
-  if (null == r) return {};
-  var t = {};
-  for (var n in r) if ({}.hasOwnProperty.call(r, n)) {
-    if (-1 !== e.indexOf(n)) continue;
-    t[n] = r[n];
-  }
-  return t;
 }
 function _regenerator() {
   /*! regenerator-runtime -- Copyright (c) 2014-present, Facebook, Inc. -- license (MIT): https://github.com/babel/babel/blob/main/packages/babel-helpers/LICENSE */
@@ -2463,6 +2442,10 @@ var cli = /*#__PURE__*/function () {
             alias: 'U',
             describe: 'UI port',
             "default": 3600
+          }).option('uiHost', {
+            describe: 'UI listen address; set explicitly to expose the UI beyond this computer',
+            type: 'string',
+            "default": '127.0.0.1'
           }).option('openUI', {
             alias: 'O',
             describe: 'Open UI',
@@ -2576,9 +2559,66 @@ var cli = /*#__PURE__*/function () {
   };
 }();
 
+// Split at the table body's top-level commas, preserving commas/parentheses in
+// expressions, enum values and comments. SHOW CREATE is multiline, but templates
+// may also contain compact CREATE statements.
+var splitCreateTableSQL = function splitCreateTableSQL(sql) {
+  var open = sql.indexOf('(');
+  if (open < 0) throw new Error('CREATE TABLE has no column definitions');
+  var definitions = [];
+  var depth = 1;
+  var start = open + 1;
+  var quote = null;
+  for (var i = start; i < sql.length; i++) {
+    var _char = sql[i];
+    if (quote) {
+      if (_char === '\\' && quote !== '`') i++;else if (_char === quote && sql[i + 1] === quote) i++;else if (_char === quote) quote = null;
+      continue;
+    }
+    if (_char === "'" || _char === '"' || _char === '`') {
+      quote = _char;
+      continue;
+    }
+    if (_char === '(') depth++;
+    if (_char === ')') {
+      depth--;
+      if (depth === 0) {
+        if (sql.slice(start, i).trim()) definitions.push(sql.slice(start, i).trim());
+        return {
+          head: sql.slice(0, open + 1),
+          definitions: definitions,
+          tail: sql.slice(i)
+        };
+      }
+    }
+    if (_char === ',' && depth === 1) {
+      definitions.push(sql.slice(start, i).trim());
+      start = i + 1;
+    }
+  }
+  throw new Error('CREATE TABLE has unclosed column definitions');
+};
+var splitTableForeignKeys = function splitTableForeignKeys(sql) {
+  var parts = splitCreateTableSQL(sql);
+  var constraints = parts.definitions.map(parseConstraint).filter(Boolean);
+  if (!constraints.length) return {
+    createSQL: sql,
+    constraints: constraints
+  };
+  var definitions = parts.definitions.filter(function (definition) {
+    return !parseConstraint(definition);
+  });
+  return {
+    createSQL: "".concat(parts.head, "\n  ").concat(definitions.join(',\n  '), "\n").concat(parts.tail),
+    constraints: constraints
+  };
+};
 var parseCreateTableSQL = function parseCreateTableSQL(createTableSQL) {
+  var _parts$tail$match$, _parts$tail$match, _parts$tail$match$2, _parts$tail$match2, _parts$tail$match$3, _parts$tail$match3;
   if (!createTableSQL) return null;
-  var name = createTableSQL.match(/CREATE TABLE\s+`([^`]+)`/)[1];
+  var nameMatch = createTableSQL.match(/CREATE TABLE\s+(?:IF NOT EXISTS\s+)?`((?:``|[^`])+)`/i);
+  if (!nameMatch) throw new Error('Expected CREATE TABLE with a quoted table name');
+  var name = nameMatch[1].replace(/``/g, '`');
   var columns = [];
   var indexes = [];
   var constraints = [];
@@ -2587,18 +2627,8 @@ var parseCreateTableSQL = function parseCreateTableSQL(createTableSQL) {
   var collate = null;
 
   // Split the SQL statement into lines and filter out empty lines
-  var lines = createTableSQL.split('\n').map(function (line) {
-    return line.trim();
-  }).filter(function (line) {
-    return line.length > 0;
-  });
-
-  // Updated to support indexes for text fields 
-  // 'KEY `idx_e2alarms_alarmstring` (`alarmString`(255))' -- would cut off the final bracket and wouldnt work.
-  var indexRegex = /(PRIMARY|UNIQUE)?\s*KEY\s*`([^`]+)`\s*\(((?:`[^`]+`(?:\(\d+\))?(?:\s*,\s*)?)+)\)|PRIMARY KEY\s*\(((?:`[^`]+`(?:\(\d+\))?(?:\s*,\s*)?)+)\)/;
-
-  // Regular expression to match table options (ENGINE, CHARSET, COLLATE)
-  var optionsRegex = /ENGINE=(\w+)\s+DEFAULT\s+CHARSET=(\w+)(\s+COLLATE=(\w+))?/;
+  var parts = splitCreateTableSQL(createTableSQL);
+  var lines = parts.definitions;
 
   // Process each line
   var _iterator = _createForOfIteratorHelper(lines),
@@ -2611,27 +2641,28 @@ var parseCreateTableSQL = function parseCreateTableSQL(createTableSQL) {
       }
       // Column definitions are the only lines that start with a backticked name
       var column = parseColumnDefinition(line);
-      var indexMatch = indexRegex.exec(line);
+      var indexMatch = line.match(/^(?:(PRIMARY|UNIQUE|FULLTEXT|SPATIAL)\s+)?(?:KEY|INDEX)\s*(?:`([^`]+)`\s*)?(?:USING\s+(BTREE|HASH)\s*)?\(/i);
       var constraintMatch = parseConstraint(line);
       if (column) {
         columns.push(column);
       } else if (indexMatch && !constraintMatch) {
-        var isPrimary = line.includes("PRIMARY KEY"); // Check for PRIMARY in both patterns
-        var isUnique = line.includes("UNIQUE KEY"); // Only set Unique if it matches
-
-        var keyName = isPrimary ? null : indexMatch[2]; // Set KeyName to null if it's a primary key
-        var columnNames = indexMatch[3] ? indexMatch[3].split(',').map(function (col) {
-          return col.trim().replace(/`/g, '');
-        }) // Remove backticks
-        : indexMatch[4].split(',').map(function (col) {
-          return col.trim().replace(/`/g, '');
-        }); // Remove backticks
+        var _indexMatch$, _indexMatch$2, _indexMatch$3, _indexMatch$4, _indexParts$tail$matc;
+        var isPrimary = ((_indexMatch$ = indexMatch[1]) === null || _indexMatch$ === void 0 ? void 0 : _indexMatch$.toUpperCase()) === 'PRIMARY';
+        var isUnique = ((_indexMatch$2 = indexMatch[1]) === null || _indexMatch$2 === void 0 ? void 0 : _indexMatch$2.toUpperCase()) === 'UNIQUE';
+        var indexParts = splitCreateTableSQL(line);
+        var columnNames = indexParts.definitions.map(function (column) {
+          return column.startsWith('(') ? column : column.replace(/`/g, '').replace(/\s+ASC$/i, '').replace(/\s+DESC$/i, ' DESC');
+        });
         var index = {
-          ColumnName: columnNames
+          ColumnName: columnNames,
+          Name: isPrimary ? 'PRIMARY' : indexMatch[2]
         };
-        if (isPrimary) index.Primary = true, index.Name = "PRIMARY";
+        if (isPrimary) index.Primary = true;
         if (isUnique) index.Unique = true;
-        if (keyName) index.Name = keyName;
+        var kind = (_indexMatch$3 = indexMatch[1]) === null || _indexMatch$3 === void 0 ? void 0 : _indexMatch$3.toUpperCase();
+        var algorithm = ((_indexMatch$4 = indexMatch[3]) === null || _indexMatch$4 === void 0 ? void 0 : _indexMatch$4.toUpperCase()) || ((_indexParts$tail$matc = indexParts.tail.match(/\bUSING\s+(BTREE|HASH)/i)) === null || _indexParts$tail$matc === void 0 ? void 0 : _indexParts$tail$matc[1].toUpperCase());
+        if (kind === 'FULLTEXT' || kind === 'SPATIAL') index.Type = kind;else if (algorithm && algorithm !== 'BTREE') index.Type = algorithm;
+        if (/\bINVISIBLE\b/i.test(indexParts.tail)) index.Visible = false;
         indexes.push(index);
       } else if (constraintMatch) {
         constraints.push(constraintMatch);
@@ -2644,12 +2675,9 @@ var parseCreateTableSQL = function parseCreateTableSQL(createTableSQL) {
   } finally {
     _iterator.f();
   }
-  var optionsMatch = optionsRegex.exec(createTableSQL);
-  if (optionsMatch) {
-    engine = optionsMatch[1];
-    charset = optionsMatch[2];
-    collate = optionsMatch[4] || null; // Collate may not be present
-  }
+  engine = (_parts$tail$match$ = (_parts$tail$match = parts.tail.match(/\bENGINE\s*=\s*(\w+)/i)) === null || _parts$tail$match === void 0 ? void 0 : _parts$tail$match[1]) !== null && _parts$tail$match$ !== void 0 ? _parts$tail$match$ : null;
+  charset = (_parts$tail$match$2 = (_parts$tail$match2 = parts.tail.match(/\b(?:DEFAULT\s+)?CHARSET\s*=\s*(\w+)/i)) === null || _parts$tail$match2 === void 0 ? void 0 : _parts$tail$match2[1]) !== null && _parts$tail$match$2 !== void 0 ? _parts$tail$match$2 : null;
+  collate = (_parts$tail$match$3 = (_parts$tail$match3 = parts.tail.match(/\bCOLLATE\s*=\s*(\w+)/i)) === null || _parts$tail$match3 === void 0 ? void 0 : _parts$tail$match3[1]) !== null && _parts$tail$match$3 !== void 0 ? _parts$tail$match$3 : null;
   return {
     name: name,
     columns: columns,
@@ -2661,58 +2689,50 @@ var parseCreateTableSQL = function parseCreateTableSQL(createTableSQL) {
   };
 };
 var parseConstraint = function parseConstraint(sql) {
+  var _sql$match$1$toUpperC, _sql$match, _sql$match$1$toUpperC2, _sql$match2;
   if (!sql) return null;
-  var regex = /FOREIGN KEY \((`[^`]+`)\) REFERENCES (`[^`]+`)\s?\((`[^`]+`)\)(?:\sON DELETE (NO|CASCADE|SET NULL|SET DEFAULT))?(?:\sON UPDATE (NO ACTION|CASCADE|SET NULL|SET DEFAULT))?/i;
+  var regex = /^\s*CONSTRAINT\s+`((?:``|[^`])+)`\s+FOREIGN KEY\s*\(([^)]+)\)\s+REFERENCES\s+(?:`((?:``|[^`])+)`\s*\.\s*)?`((?:``|[^`])+)`\s*\(([^)]+)\)/i;
   var match = sql.match(regex);
-  if (!match) {
-    return null;
-  }
-  var onDelete = null;
-  var onUpdate = null;
-  if (sql.includes('ON DELETE CASCADE')) {
-    onDelete = 'CASCADE';
-  } else if (sql.includes('ON DELETE SET NULL')) {
-    onDelete = 'SET NULL';
-  } else if (sql.includes('ON DELETE SET DEFAULT')) {
-    onDelete = 'SET DEFAULT';
-  } else {
-    onDelete = 'NO ACTION';
-  }
-  if (sql.includes('ON UPDATE CASCADE')) {
-    onUpdate = 'CASCADE';
-  } else if (sql.includes('ON UPDATE SET NULL')) {
-    onUpdate = 'SET NULL';
-  } else if (sql.includes('ON UPDATE SET DEFAULT')) {
-    onUpdate = 'SET DEFAULT';
-  } else {
-    onUpdate = 'NO ACTION';
-  }
-  var columnName = match[1] || '';
-  columnName = columnName.replace(/`/g, '');
-  var table = match[2] || '';
-  table = table.replace(/`/g, '');
-  var column = match[3] || '';
-  column = column.replace(/`/g, '');
+  if (!match) return null;
+  var identifiers = function identifiers(text) {
+    return _toConsumableArray(text.matchAll(/`((?:``|[^`])+)`/g)).map(function (m) {
+      return m[1].replace(/``/g, '`');
+    });
+  };
+  var columns = identifiers(match[2]);
+  var referenced = identifiers(match[5]);
+  var references = {
+    Table: match[4].replace(/``/g, '`'),
+    Column: referenced.length === 1 ? referenced[0] : referenced
+  };
+  if (referenced.length > 1) references.Columns = referenced;
+  if (match[3]) references.Database = match[3].replace(/``/g, '`');
   return {
-    Name: "AlertRule",
-    // Replace with actual constraint name if needed
+    Name: match[1].replace(/``/g, '`'),
     Type: "FOREIGN KEY",
-    ColumnName: [columnName],
-    // Column in the current table
-    References: {
-      Table: table,
-      // Referenced table
-      Column: column // Referenced column
-    },
-    OnDelete: onDelete,
-    OnUpdate: onUpdate
+    ColumnName: columns,
+    References: references,
+    OnDelete: (_sql$match$1$toUpperC = (_sql$match = sql.match(/\bON DELETE\s+(NO ACTION|RESTRICT|CASCADE|SET NULL|SET DEFAULT)/i)) === null || _sql$match === void 0 ? void 0 : _sql$match[1].toUpperCase()) !== null && _sql$match$1$toUpperC !== void 0 ? _sql$match$1$toUpperC : 'NO ACTION',
+    OnUpdate: (_sql$match$1$toUpperC2 = (_sql$match2 = sql.match(/\bON UPDATE\s+(NO ACTION|RESTRICT|CASCADE|SET NULL|SET DEFAULT)/i)) === null || _sql$match2 === void 0 ? void 0 : _sql$match2[1].toUpperCase()) !== null && _sql$match$1$toUpperC2 !== void 0 ? _sql$match$1$toUpperC2 : 'NO ACTION'
   };
 };
 
 // A quoted SQL string, allowing '' and backslash escapes inside it
 var quotedStringRegex = /'(?:[^'\\]|\\.|'')*'/g;
 var unquote = function unquote(quoted) {
-  return quoted.slice(1, -1).replace(/''/g, "'").replace(/\\(.)/g, '$1');
+  return quoted.slice(1, -1).replace(/''/g, "'").replace(/\\([\s\S])/g, function (_match, _char2) {
+    var _$b$n$r$t$Z$$_$_cha;
+    return (_$b$n$r$t$Z$$_$_cha = {
+      '0': '\0',
+      b: '\b',
+      n: '\n',
+      r: '\r',
+      t: '\t',
+      Z: '\x1a',
+      '%': '\\%',
+      '_': '\\_'
+    }[_char2]) !== null && _$b$n$r$t$Z$$_$_cha !== void 0 ? _$b$n$r$t$Z$$_$_cha : _char2;
+  });
 };
 
 // Type with its parameters: int, float(10,2), enum('a','b'), varchar(45); then unsigned/zerofill
@@ -2724,6 +2744,7 @@ var columnTypeRegex = /^([a-zA-Z]+(?:\((?:'(?:[^'\\]|\\.|'')*'|[^)'])*\))?)((?:\
  * Returns null if the line isn't a column definition.
  */
 var parseColumnDefinition = function parseColumnDefinition(line) {
+  var _defaultText$match;
   var lineMatch = line.trim().match(/^`([^`]+)`\s+(.*?),?$/);
   if (!lineMatch) return null;
   var typeMatch = lineMatch[2].match(columnTypeRegex);
@@ -2752,16 +2773,35 @@ var parseColumnDefinition = function parseColumnDefinition(line) {
   if (/\bNOT NULL\b/i.test(rest)) {
     column.NotNull = true;
   }
-  var defaultMatch = rest.match(/\bDEFAULT\s+('\d+'|\((?:[^()]|\([^()]*\))*\)|[^\s,]+)/i);
+  var parenthesized = function parenthesized(text) {
+    if (!text.startsWith('(')) return null;
+    var depth = 0;
+    for (var i = 0; i < text.length; i++) {
+      if (text[i] === '(') depth++;else if (text[i] === ')' && --depth === 0) return text.slice(0, i + 1);
+    }
+    return null;
+  };
+  var defaultStart = rest.match(/\bDEFAULT\s+/i);
+  var defaultText = defaultStart ? rest.slice(defaultStart.index + defaultStart[0].length) : '';
+  var defaultValue = parenthesized(defaultText) || ((_defaultText$match = defaultText.match(/^('\d+'|[^\s,]+)/)) === null || _defaultText$match === void 0 ? void 0 : _defaultText$match[1]);
+  var defaultMatch = defaultValue ? [null, defaultValue] : null;
   if (defaultMatch) {
     // A plain string default is stored unquoted; anything else (NULL,
     // CURRENT_TIMESTAMP, b'0', an expression) is kept as written
     var whole = defaultMatch[1].match(/^'(\d+)'$/);
     column.Default = whole ? strings[whole[1]] : restoreQuoted(defaultMatch[1]);
+    // Preserve the distinction between SQL NULL/functions/expressions and a
+    // quoted string whose contents happen to look like SQL.
+    if (whole && /^(?:NULL$|CURRENT_TIMESTAMP(?:\(\d*\))?$|now(?:\(\d*\))?$|\(|[bx]'|0x)/i.test(column.Default)) column.DefaultQuoted = true;
   }
-  var generatedMatch = rest.match(/\bGENERATED ALWAYS AS\s*(\((?:[^()]|\((?:[^()]|\([^()]*\))*\))*\))\s*(STORED|VIRTUAL)?/i);
-  if (generatedMatch) {
-    column.Generated = "".concat(restoreQuoted(generatedMatch[1])).concat(generatedMatch[2] ? " ".concat(generatedMatch[2].toUpperCase()) : '');
+  var generatedStart = rest.match(/\bGENERATED ALWAYS AS\s*/i);
+  if (generatedStart) {
+    var _text$slice$match;
+    var text = rest.slice(generatedStart.index + generatedStart[0].length);
+    var expression = parenthesized(text);
+    if (!expression) throw new Error("Invalid generated expression for ".concat(column.Field));
+    var storage = (_text$slice$match = text.slice(expression.length).match(/^\s*(STORED|VIRTUAL)\b/i)) === null || _text$slice$match === void 0 ? void 0 : _text$slice$match[1];
+    column.Generated = "".concat(restoreQuoted(expression)).concat(storage ? " ".concat(storage.toUpperCase()) : '');
   }
   if (/\bAUTO_INCREMENT\b/i.test(rest)) {
     column.AutoIncrement = true;
@@ -3005,8 +3045,9 @@ var getDatabases = /*#__PURE__*/function () {
  *                     and the definer option to procedures, triggers and views
  */
 var getDatabaseStructure = /*#__PURE__*/function () {
-  var _ref2 = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee2(connection, database, command, options) {
-    var syncOptions,
+  var _ref2 = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee2(connection, database, command) {
+    var options,
+      syncOptions,
       tables,
       procedures,
       views,
@@ -3053,57 +3094,50 @@ var getDatabaseStructure = /*#__PURE__*/function () {
     return _regeneratorRuntime().wrap(function _callee2$(_context2) {
       while (1) switch (_context2.prev = _context2.next) {
         case 0:
+          options = _args2.length > 3 && _args2[3] !== undefined ? _args2[3] : {};
           syncOptions = _args2.length > 4 && _args2[4] !== undefined ? _args2[4] : {};
-          if (!(connection.state === 'disconnected')) {
-            _context2.next = 4;
-            break;
-          }
           _context2.next = 4;
-          return connection.reconnect();
-        case 4:
-          _context2.next = 6;
           return connection.query("USE `".concat(database, "`"));
-        case 6:
+        case 4:
           // Switch to the target database
           tables = {};
           procedures = [];
           views = {};
-          dbDir = path.join(options.output, database); // Use argv.output for the base path
-          // Create the output directory for the database if it doesn't exist
+          dbDir = path.join(options.output || '.', database); // Create the output directory for the database if it doesn't exist
           if (!(command === 'dump')) {
-            _context2.next = 14;
+            _context2.next = 12;
             break;
           }
           tableDir = path.join(dbDir, 'tables'); // Subfolder for table SQL files
-          _context2.next = 14;
+          _context2.next = 12;
           return fs$1.mkdir(tableDir, {
             recursive: true
           });
-        case 14:
-          _context2.next = 16;
+        case 12:
+          _context2.next = 14;
           return connection.query('SHOW FULL TABLES WHERE Table_Type != "VIEW"');
-        case 16:
+        case 14:
           tableRows = _context2.sent;
           _iterator = _createForOfIteratorHelper(tableRows);
-          _context2.prev = 18;
+          _context2.prev = 16;
           _iterator.s();
-        case 20:
+        case 18:
           if ((_step = _iterator.n()).done) {
-            _context2.next = 43;
+            _context2.next = 41;
             break;
           }
           row = _step.value;
           tableName = Object.values(row)[0]; // Get the first value in the row object
           if (tableName) {
-            _context2.next = 26;
+            _context2.next = 24;
             break;
           }
           logger("Undefined table name found in database ".concat(database), row);
-          return _context2.abrupt("continue", 41);
-        case 26:
-          _context2.next = 28;
+          return _context2.abrupt("continue", 39);
+        case 24:
+          _context2.next = 26;
           return connection.query("SHOW CREATE TABLE `".concat(tableName, "`"));
-        case 28:
+        case 26:
           createTableRow = _context2.sent;
           liveCreateTableSQL = createTableRow[0]['Create Table'];
           createTableSQL = command === 'dump' ? applyAutoIncrementOption(liveCreateTableSQL, getTableOptions(syncOptions, database, tableName).autoIncrement) : liveCreateTableSQL;
@@ -3122,51 +3156,51 @@ var getDatabaseStructure = /*#__PURE__*/function () {
 
           // Save the CREATE TABLE statement to an individual SQL file for each table
           if (!(command === 'dump')) {
-            _context2.next = 41;
+            _context2.next = 39;
             break;
           }
           _tableDir = path.join(dbDir, 'tables'); // Subfolder for table SQL files
           filePath = path.join(_tableDir, "".concat(tableName, ".sql")); // Use the table directory for file saving
-          _context2.next = 38;
+          _context2.next = 36;
           return fs$1.mkdir(path.dirname(filePath), {
             recursive: true
           });
-        case 38:
-          _context2.next = 40;
+        case 36:
+          _context2.next = 38;
           return fs$1.writeFile(filePath, "".concat(createTableSQL, "\n"), 'utf-8');
-        case 40:
+        case 38:
           logger("Table structure saved to: ".concat(filePath));
+        case 39:
+          _context2.next = 18;
+          break;
         case 41:
-          _context2.next = 20;
+          _context2.next = 46;
           break;
         case 43:
-          _context2.next = 48;
-          break;
-        case 45:
-          _context2.prev = 45;
-          _context2.t0 = _context2["catch"](18);
+          _context2.prev = 43;
+          _context2.t0 = _context2["catch"](16);
           _iterator.e(_context2.t0);
-        case 48:
-          _context2.prev = 48;
+        case 46:
+          _context2.prev = 46;
           _iterator.f();
-          return _context2.finish(48);
-        case 51:
-          _context2.next = 53;
+          return _context2.finish(46);
+        case 49:
+          _context2.next = 51;
           return connection.query("SHOW PROCEDURE STATUS WHERE Db = ?", [database]);
-        case 53:
+        case 51:
           routineRows = _context2.sent;
           _iterator2 = _createForOfIteratorHelper(routineRows);
-          _context2.prev = 55;
+          _context2.prev = 53;
           _iterator2.s();
-        case 57:
+        case 55:
           if ((_step2 = _iterator2.n()).done) {
-            _context2.next = 74;
+            _context2.next = 72;
             break;
           }
           _row = _step2.value;
-          _context2.next = 61;
+          _context2.next = 59;
           return connection.query("SHOW CREATE PROCEDURE `".concat(_row.Name, "`"));
-        case 61:
+        case 59:
           createSQLrow = _context2.sent;
           createSQL = createSQLrow[0]['Create Procedure'];
           if (command === 'dump') createSQL = applyDefiner(createSQL, syncOptions.definer);
@@ -3175,57 +3209,57 @@ var getDatabaseStructure = /*#__PURE__*/function () {
             Definition: createSQL
           }); // Add procedure names to the array
           if (!(command === 'dump')) {
-            _context2.next = 72;
+            _context2.next = 70;
             break;
           }
           _filePath = path.join(dbDir, 'procedures', "".concat(_row.Name, ".sql")); // Use the table directory for file saving
-          _context2.next = 69;
+          _context2.next = 67;
           return fs$1.mkdir(path.dirname(_filePath), {
             recursive: true
           });
-        case 69:
-          _context2.next = 71;
+        case 67:
+          _context2.next = 69;
           return fs$1.writeFile(_filePath, "".concat(createSQL, "\n"), 'utf-8');
-        case 71:
+        case 69:
           logger("Procedure definition saved to: ".concat(_filePath));
+        case 70:
+          _context2.next = 55;
+          break;
         case 72:
-          _context2.next = 57;
+          _context2.next = 77;
           break;
         case 74:
-          _context2.next = 79;
-          break;
-        case 76:
-          _context2.prev = 76;
-          _context2.t1 = _context2["catch"](55);
+          _context2.prev = 74;
+          _context2.t1 = _context2["catch"](53);
           _iterator2.e(_context2.t1);
-        case 79:
-          _context2.prev = 79;
+        case 77:
+          _context2.prev = 77;
           _iterator2.f();
-          return _context2.finish(79);
-        case 82:
-          _context2.next = 84;
+          return _context2.finish(77);
+        case 80:
+          _context2.next = 82;
           return connection.query("\n        SELECT TRIGGER_NAME, EVENT_OBJECT_TABLE\n        FROM INFORMATION_SCHEMA.TRIGGERS\n        WHERE TRIGGER_SCHEMA = ?\n    ", [database]);
-        case 84:
+        case 82:
           triggerRows = _context2.sent;
           _iterator3 = _createForOfIteratorHelper(triggerRows);
-          _context2.prev = 86;
+          _context2.prev = 84;
           _iterator3.s();
-        case 88:
+        case 86:
           if ((_step3 = _iterator3.n()).done) {
-            _context2.next = 112;
+            _context2.next = 110;
             break;
           }
           _row2 = _step3.value;
           triggerName = _row2.TRIGGER_NAME;
           _tableName = _row2.EVENT_OBJECT_TABLE; // Ensure triggerDefinition is defined before using it
-          _context2.next = 94;
+          _context2.next = 92;
           return connection.query("SHOW CREATE TRIGGER `".concat(triggerName, "`"));
-        case 94:
+        case 92:
           triggerDefinitionRow = _context2.sent;
           liveTriggerDefinition = triggerDefinitionRow[0]['SQL Original Statement'];
           triggerDefinition = command === 'dump' ? applyDefiner(liveTriggerDefinition, syncOptions.definer) : liveTriggerDefinition;
           if (!triggerDefinition) {
-            _context2.next = 109;
+            _context2.next = 107;
             break;
           }
           tables[_tableName].triggers.push({
@@ -3233,115 +3267,173 @@ var getDatabaseStructure = /*#__PURE__*/function () {
             Definition: triggerDefinition
           });
           if (!(command === 'dump')) {
-            _context2.next = 107;
+            _context2.next = 105;
             break;
           }
           _tableDir2 = path.join(dbDir, 'tables'); // Subfolder for table SQL files
           triggerFilePath = path.join(_tableDir2, 'triggers', "".concat(triggerName, ".sql"));
-          _context2.next = 104;
+          _context2.next = 102;
           return fs$1.mkdir(path.dirname(triggerFilePath), {
             recursive: true
           });
-        case 104:
-          _context2.next = 106;
+        case 102:
+          _context2.next = 104;
           return fs$1.writeFile(triggerFilePath, "".concat(triggerDefinition, "\n"), 'utf-8');
-        case 106:
+        case 104:
           logger("Trigger definition saved to: ".concat(triggerFilePath));
-        case 107:
-          _context2.next = 110;
+        case 105:
+          _context2.next = 108;
           break;
-        case 109:
+        case 107:
           logger("Trigger ".concat(triggerName, " has no action statement."));
+        case 108:
+          _context2.next = 86;
+          break;
         case 110:
-          _context2.next = 88;
+          _context2.next = 115;
           break;
         case 112:
-          _context2.next = 117;
-          break;
-        case 114:
-          _context2.prev = 114;
-          _context2.t2 = _context2["catch"](86);
+          _context2.prev = 112;
+          _context2.t2 = _context2["catch"](84);
           _iterator3.e(_context2.t2);
-        case 117:
-          _context2.prev = 117;
+        case 115:
+          _context2.prev = 115;
           _iterator3.f();
-          return _context2.finish(117);
-        case 120:
-          _context2.next = 122;
+          return _context2.finish(115);
+        case 118:
+          _context2.next = 120;
           return connection.query("SHOW FULL TABLES IN `".concat(database, "` WHERE TABLE_TYPE LIKE 'VIEW'"));
-        case 122:
+        case 120:
           viewRows = _context2.sent;
           _iterator4 = _createForOfIteratorHelper(viewRows);
-          _context2.prev = 124;
+          _context2.prev = 122;
           _iterator4.s();
-        case 126:
+        case 124:
           if ((_step4 = _iterator4.n()).done) {
-            _context2.next = 152;
+            _context2.next = 149;
             break;
           }
           _row3 = _step4.value;
           viewName = _row3["Tables_in_".concat(database.toLowerCase())];
           if (!viewName) viewName = _row3["Tables_in_".concat(database)];
           logger("getting view Tables_in_".concat(database), viewName);
-          _context2.prev = 131;
-          _context2.next = 134;
+          _context2.prev = 129;
+          _context2.next = 132;
           return connection.query("SHOW CREATE VIEW `".concat(viewName, "`"));
-        case 134:
+        case 132:
           viewDefinition = _context2.sent;
           liveViewDefinition = viewDefinition[0]['Create View'];
           views[viewName] = command === 'dump' ? applyDefiner(liveViewDefinition, syncOptions.definer) : liveViewDefinition;
           if (!(command === 'dump')) {
-            _context2.next = 144;
+            _context2.next = 142;
             break;
           }
           _filePath2 = path.join(dbDir, 'views', "".concat(viewName, ".sql")); // Use the table directory for file saving
-          _context2.next = 141;
+          _context2.next = 139;
           return fs$1.mkdir(path.dirname(_filePath2), {
             recursive: true
           });
-        case 141:
-          _context2.next = 143;
+        case 139:
+          _context2.next = 141;
           return fs$1.writeFile(_filePath2, "".concat(views[viewName], "\n"), 'utf-8');
-        case 143:
+        case 141:
           logger("View definition saved to: ".concat(_filePath2));
+        case 142:
+          _context2.next = 147;
+          break;
         case 144:
-          _context2.next = 150;
+          _context2.prev = 144;
+          _context2.t3 = _context2["catch"](129);
+          throw new Error("Cannot read view ".concat(database, ".").concat(viewName, ": ").concat(_context2.t3.message), {
+            cause: _context2.t3
+          });
+        case 147:
+          _context2.next = 124;
           break;
-        case 146:
-          _context2.prev = 146;
-          _context2.t3 = _context2["catch"](131);
-          logger("Error retrieving definition for view ".concat(viewName, ":"), _context2.t3.message);
-          logger(_row3);
-        case 150:
-          _context2.next = 126;
+        case 149:
+          _context2.next = 154;
           break;
-        case 152:
-          _context2.next = 157;
-          break;
+        case 151:
+          _context2.prev = 151;
+          _context2.t4 = _context2["catch"](122);
+          _iterator4.e(_context2.t4);
         case 154:
           _context2.prev = 154;
-          _context2.t4 = _context2["catch"](124);
-          _iterator4.e(_context2.t4);
-        case 157:
-          _context2.prev = 157;
           _iterator4.f();
-          return _context2.finish(157);
-        case 160:
+          return _context2.finish(154);
+        case 157:
           return _context2.abrupt("return", {
             tables: tables,
             procedures: procedures,
             views: views
           });
-        case 161:
+        case 158:
         case "end":
           return _context2.stop();
       }
-    }, _callee2, null, [[18, 45, 48, 51], [55, 76, 79, 82], [86, 114, 117, 120], [124, 154, 157, 160], [131, 146]]);
+    }, _callee2, null, [[16, 43, 46, 49], [53, 74, 77, 80], [84, 112, 115, 118], [122, 151, 154, 157], [129, 144]]);
   }));
-  return function getDatabaseStructure(_x2, _x3, _x4, _x5) {
+  return function getDatabaseStructure(_x2, _x3, _x4) {
     return _ref2.apply(this, arguments);
   };
 }();
+
+/**
+ * Undo formatting that differs between MySQL versions but doesn't change the
+ * structure, so a template dumped from one version compares cleanly with
+ * another:
+ *   - integer display widths: int(11) in 5.7 is int from 8.0.19, except
+ *     tinyint(1) and ZEROFILL types, which keep them
+ *   - year(4) in 5.7 is year from 8.0.19
+ *   - utf8 is shown as utf8mb3 from 8.0.24 (fully from 8.0.30)
+ * Applies to column types and to procedure, trigger and view definitions.
+ */
+// Only transform SQL code. Strings, quoted identifiers and comments contain
+// application data and must not be rewritten as if they were type declarations.
+var transformSQLCode = function transformSQLCode(sql, transform) {
+  if (typeof sql !== 'string') return sql;
+  var protectedText = /'(?:[^'\\]|\\.|'')*'|"(?:[^"\\]|\\.|"")*"|`(?:[^`]|``)*`|\/\*[\s\S]*?\*\/|--[ \t][^\r\n]*(?:\r?\n|$)|#[^\r\n]*(?:\r?\n|$)/g;
+  var offset = 0;
+  var output = '';
+  var _iterator = _createForOfIteratorHelper(sql.matchAll(protectedText)),
+    _step;
+  try {
+    for (_iterator.s(); !(_step = _iterator.n()).done;) {
+      var match = _step.value;
+      output += transform(sql.slice(offset, match.index), match[0]) + match[0];
+      offset = match.index + match[0].length;
+    }
+  } catch (err) {
+    _iterator.e(err);
+  } finally {
+    _iterator.f();
+  }
+  return output + transform(sql.slice(offset), null);
+};
+var normalizeVersionFormatting = function normalizeVersionFormatting(sql) {
+  return transformSQLCode(sql, function (code, nextToken) {
+    var types = code.replace(/\b(tinyint|smallint|mediumint|int|integer|bigint)\((\d+)\)(\s+unsigned)?(?!\s+(?:unsigned\s+)?zerofill)/gi, function (match, type, width) {
+      var unsigned = arguments.length > 3 && arguments[3] !== undefined ? arguments[3] : '';
+      return type.toLowerCase() === 'tinyint' && width === '1' && !unsigned ? match : "".concat(type).concat(unsigned);
+    }).replace(/\byear\(4\)/gi, 'year');
+    // Metadata passes a bare charset/collation name; SQL must name it in a
+    // charset clause or literal introducer, not merely as an identifier prefix.
+    if (!nextToken && /^\s*utf8mb3(?:_\w+)?\s*$/i.test(types)) return types.replace(/utf8mb3/i, 'utf8');
+    return types.replace(/(\b(?:CHARACTER\s+SET|CHARSET|COLLATE|USING)\s*=?\s*)utf8mb3(?=\b|_)/gi, '$1utf8').replace(/\b_utf8mb3(\s*)$/gi, function (match, spaces) {
+      return nextToken !== null && nextToken !== void 0 && nextToken.startsWith("'") ? "_utf8".concat(spaces) : match;
+    });
+  });
+};
+
+// A column type compared across MySQL versions
+var normalizeColumnType = function normalizeColumnType(type) {
+  return normalizeVersionFormatting(type);
+};
+var normalizeSQLDefinition = function normalizeSQLDefinition(definition) {
+  return transformSQLCode(normalizeVersionFormatting(definition), function (code) {
+    return code.replace(/\s+/g, ' ');
+  }).trim();
+};
 
 // '8.0.36-log' -> { major: 8, minor: 0 }; also takes '5.7'
 var parseVersion = function parseVersion(version) {
@@ -3386,139 +3478,197 @@ var getServerVersion = /*#__PURE__*/function () {
   };
 }();
 
+// Defaults are server/session metadata, not constants inferred from a version.
+// In particular, an 8.0 session can still select the old utf8mb4_general_ci default.
+var getDefaultCollations = /*#__PURE__*/function () {
+  var _ref2 = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee2(connection, serverVersion) {
+    var unavailable, defaults, rows, _rows$2, _rows;
+    return _regeneratorRuntime().wrap(function _callee2$(_context2) {
+      while (1) switch (_context2.prev = _context2.next) {
+        case 0:
+          unavailable = function unavailable(error) {
+            if (error.fatal || /^(?:PROTOCOL_|ECONN|EPIPE|ETIMEDOUT)/.test(error.code || '')) throw error;
+          };
+          _context2.prev = 1;
+          _context2.next = 4;
+          return connection.query('SHOW CHARACTER SET');
+        case 4:
+          rows = _context2.sent;
+          defaults = Object.fromEntries(rows.filter(function (row) {
+            return row.Charset && row['Default collation'];
+          }).map(function (row) {
+            return [row.Charset, row['Default collation']];
+          }));
+          _context2.next = 12;
+          break;
+        case 8:
+          _context2.prev = 8;
+          _context2.t0 = _context2["catch"](1);
+          unavailable(_context2.t0);
+          return _context2.abrupt("return", {});
+        case 12:
+          if (!(majorMinor(serverVersion) === '8.0')) {
+            _context2.next = 23;
+            break;
+          }
+          _context2.prev = 13;
+          _context2.next = 16;
+          return connection.query('SELECT @@SESSION.default_collation_for_utf8mb4 AS collation');
+        case 16:
+          _rows = _context2.sent;
+          if ((_rows$2 = _rows[0]) !== null && _rows$2 !== void 0 && _rows$2.collation) defaults.utf8mb4 = _rows[0].collation;
+          _context2.next = 23;
+          break;
+        case 20:
+          _context2.prev = 20;
+          _context2.t1 = _context2["catch"](13);
+          unavailable(_context2.t1);
+        case 23:
+          return _context2.abrupt("return", defaults);
+        case 24:
+        case "end":
+          return _context2.stop();
+      }
+    }, _callee2, null, [[1, 8], [13, 20]]);
+  }));
+  return function getDefaultCollations(_x2, _x3) {
+    return _ref2.apply(this, arguments);
+  };
+}();
+
 /**
  * The MySQL version a template was dumped from: recorded in dumpInfo.json by
  * dump, or else inferred from how its SQL is written. Returns
  * { version, inferred, reason? } or null when it can't tell.
  */
 var getTemplateVersion = /*#__PURE__*/function () {
-  var _ref2 = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee2(dir) {
+  var _ref3 = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee3(dir) {
     var info, sql, _iterator, _step, entry, structure;
-    return _regeneratorRuntime().wrap(function _callee2$(_context2) {
-      while (1) switch (_context2.prev = _context2.next) {
+    return _regeneratorRuntime().wrap(function _callee3$(_context3) {
+      while (1) switch (_context3.prev = _context3.next) {
         case 0:
-          _context2.prev = 0;
-          _context2.t0 = JSON;
-          _context2.next = 4;
+          _context3.prev = 0;
+          _context3.t0 = JSON;
+          _context3.next = 4;
           return fs$1.readFile(path.join(dir, 'dumpInfo.json'), 'utf-8');
         case 4:
-          _context2.t1 = _context2.sent;
-          info = _context2.t0.parse.call(_context2.t0, _context2.t1);
+          _context3.t1 = _context3.sent;
+          info = _context3.t0.parse.call(_context3.t0, _context3.t1);
           if (!info.mysqlVersion) {
-            _context2.next = 8;
+            _context3.next = 8;
             break;
           }
-          return _context2.abrupt("return", {
+          return _context3.abrupt("return", {
             version: info.mysqlVersion,
             inferred: false
           });
         case 8:
-          _context2.next = 12;
+          _context3.next = 12;
           break;
         case 10:
-          _context2.prev = 10;
-          _context2.t2 = _context2["catch"](0);
+          _context3.prev = 10;
+          _context3.t2 = _context3["catch"](0);
         case 12:
           sql = '';
-          _context2.prev = 13;
-          _context2.t3 = _createForOfIteratorHelper;
-          _context2.next = 17;
+          _context3.prev = 13;
+          _context3.t3 = _createForOfIteratorHelper;
+          _context3.next = 17;
           return fs$1.readdir(dir, {
             withFileTypes: true
           });
         case 17:
-          _context2.t4 = _context2.sent;
-          _iterator = (0, _context2.t3)(_context2.t4);
-          _context2.prev = 19;
+          _context3.t4 = _context3.sent;
+          _iterator = (0, _context3.t3)(_context3.t4);
+          _context3.prev = 19;
           _iterator.s();
         case 21:
           if ((_step = _iterator.n()).done) {
-            _context2.next = 38;
+            _context3.next = 38;
             break;
           }
           entry = _step.value;
           if (entry.isDirectory()) {
-            _context2.next = 25;
+            _context3.next = 25;
             break;
           }
-          return _context2.abrupt("continue", 36);
+          return _context3.abrupt("continue", 36);
         case 25:
-          _context2.prev = 25;
-          _context2.t5 = JSON;
-          _context2.next = 29;
+          _context3.prev = 25;
+          _context3.t5 = JSON;
+          _context3.next = 29;
           return fs$1.readFile(path.join(dir, entry.name, "".concat(entry.name, ".json")), 'utf-8');
         case 29:
-          _context2.t6 = _context2.sent;
-          structure = _context2.t5.parse.call(_context2.t5, _context2.t6);
+          _context3.t6 = _context3.sent;
+          structure = _context3.t5.parse.call(_context3.t5, _context3.t6);
           sql += Object.values(structure.tables || {}).map(function (t) {
             return t.createSQL || '';
           }).join('\n');
-          _context2.next = 36;
+          _context3.next = 36;
           break;
         case 34:
-          _context2.prev = 34;
-          _context2.t7 = _context2["catch"](25);
+          _context3.prev = 34;
+          _context3.t7 = _context3["catch"](25);
         case 36:
-          _context2.next = 21;
+          _context3.next = 21;
           break;
         case 38:
-          _context2.next = 43;
+          _context3.next = 43;
           break;
         case 40:
-          _context2.prev = 40;
-          _context2.t8 = _context2["catch"](19);
-          _iterator.e(_context2.t8);
+          _context3.prev = 40;
+          _context3.t8 = _context3["catch"](19);
+          _iterator.e(_context3.t8);
         case 43:
-          _context2.prev = 43;
+          _context3.prev = 43;
           _iterator.f();
-          return _context2.finish(43);
+          return _context3.finish(43);
         case 46:
-          _context2.next = 51;
+          _context3.next = 51;
           break;
         case 48:
-          _context2.prev = 48;
-          _context2.t9 = _context2["catch"](13);
-          return _context2.abrupt("return", null);
+          _context3.prev = 48;
+          _context3.t9 = _context3["catch"](13);
+          return _context3.abrupt("return", null);
         case 51:
           if (!/utf8mb4_0900_|\butf8mb3\b/i.test(sql)) {
-            _context2.next = 53;
+            _context3.next = 53;
             break;
           }
-          return _context2.abrupt("return", {
+          return _context3.abrupt("return", {
             version: '8.0',
             inferred: true,
             reason: 'uses utf8mb4_0900 collations or utf8mb3, which only 8.0 prints'
           });
         case 53:
           if (!/\b(?:smallint|mediumint|int|bigint)\(\d+\)|\btinyint\((?!1\))\d+\)/i.test(sql)) {
-            _context2.next = 55;
+            _context3.next = 55;
             break;
           }
-          return _context2.abrupt("return", {
+          return _context3.abrupt("return", {
             version: '5.7',
             inferred: true,
             reason: 'shows integer display widths like int(11), as 5.7 and 8.0 before 8.0.19 do'
           });
         case 55:
           if (!/\b(?:smallint|mediumint|int|bigint)\b(?!\()/i.test(sql)) {
-            _context2.next = 57;
+            _context3.next = 57;
             break;
           }
-          return _context2.abrupt("return", {
+          return _context3.abrupt("return", {
             version: '8.0',
             inferred: true,
             reason: 'shows integers without display widths, as 8.0.19 and later do'
           });
         case 57:
-          return _context2.abrupt("return", null);
+          return _context3.abrupt("return", null);
         case 58:
         case "end":
-          return _context2.stop();
+          return _context3.stop();
       }
-    }, _callee2, null, [[0, 10], [13, 48], [19, 40, 43, 46], [25, 34]]);
+    }, _callee3, null, [[0, 10], [13, 48], [19, 40, 43, 46], [25, 34]]);
   }));
-  return function getTemplateVersion(_x2) {
-    return _ref2.apply(this, arguments);
+  return function getTemplateVersion(_x4) {
+    return _ref3.apply(this, arguments);
   };
 }();
 
@@ -3531,46 +3681,45 @@ var versionNotes = function versionNotes(templateVersion, serverVersion) {
   if (!template || !server || template === server) return [];
   var notes = ["The template is from MySQL ".concat(template, " and the server is MySQL ").concat(server, ". Integer display widths (int(11) vs int), YEAR(4) and utf8 vs utf8mb3 are printed differently by these versions and are ignored when comparing.")];
   if (isBefore80(serverVersion) && !isBefore80(templateVersion)) {
-    notes.push("MySQL ".concat(server, " has no utf8mb4_0900 collations, so tables and columns are created with utf8mb4_unicode_ci (utf8mb4_bin for accent- or case-sensitive ones) instead."));
+    notes.push("MySQL ".concat(server, " has no utf8mb4_0900 collations. Compatibility replacements are approximations: ai_ci and as_ci use utf8mb4_unicode_ci, and other suffixes use utf8mb4_bin. Sort order and trailing-space comparisons can differ; as_ci also loses accent sensitivity."));
+    notes.push("MySQL ".concat(server, " does not support index visibility. Invisible template indexes are created and compared as visible indexes on this server."));
     notes.push("Expression defaults such as DEFAULT (...) need MySQL 8.0.13 or later and fail on MySQL ".concat(server, "."));
   }
   return notes;
 };
 var getVersionInfo = /*#__PURE__*/function () {
-  var _ref3 = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee3(connection, templateDir) {
+  var _ref4 = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee4(connection, templateDir) {
     var server, template;
-    return _regeneratorRuntime().wrap(function _callee3$(_context3) {
-      while (1) switch (_context3.prev = _context3.next) {
+    return _regeneratorRuntime().wrap(function _callee4$(_context4) {
+      while (1) switch (_context4.prev = _context4.next) {
         case 0:
-          _context3.next = 2;
+          _context4.next = 2;
           return getServerVersion(connection);
         case 2:
-          server = _context3.sent;
-          _context3.next = 5;
+          server = _context4.sent;
+          _context4.next = 5;
           return getTemplateVersion(templateDir);
         case 5:
-          template = _context3.sent;
-          return _context3.abrupt("return", {
+          template = _context4.sent;
+          return _context4.abrupt("return", {
             server: server,
             template: template,
             notes: versionNotes(template === null || template === void 0 ? void 0 : template.version, server)
           });
         case 7:
         case "end":
-          return _context3.stop();
+          return _context4.stop();
       }
-    }, _callee3);
+    }, _callee4);
   }));
-  return function getVersionInfo(_x3, _x4) {
-    return _ref3.apply(this, arguments);
+  return function getVersionInfo(_x5, _x6) {
+    return _ref4.apply(this, arguments);
   };
 }();
 
-// MySQL 8 added the _0900_ collation family, which does not exist on 5.7. The _unicode_ci
-// collation of the same charset is accent- and case-insensitive like _0900_ai_ci and is
-// present on both versions, so a table created with it means the same thing either way.
-// Accent- or case-sensitive _0900_ collations map to the charset's _bin. Null if collation
-// isn't a _0900_ one.
+// Preserve the existing compatibility mapping, while reporting it as an
+// approximation rather than semantic equivalence. In particular as_ci loses
+// accent sensitivity with unicode_ci; binary fallbacks also change ordering.
 var portableCollation = function portableCollation(collation) {
   var match = /^(\w+?)_0900_(\w+)$/i.exec(collation || '');
   if (!match) return null;
@@ -3584,10 +3733,12 @@ var portableCollation = function portableCollation(collation) {
  */
 var adaptSQLForServer = function adaptSQLForServer(sql, serverVersion) {
   if (typeof sql !== 'string' || !isBefore80(serverVersion)) return sql;
-  return sql.replace(/\b\w+?_0900_\w+/gi, function (collation) {
-    var _portableCollation;
-    return (_portableCollation = portableCollation(collation)) !== null && _portableCollation !== void 0 ? _portableCollation : collation;
-  }).replace(/\butf8mb3_(\w+)/gi, 'utf8_$1');
+  return transformSQLCode(sql, function (code) {
+    return code.replace(/\b\w+?_0900_\w+/gi, function (collation) {
+      var _portableCollation;
+      return (_portableCollation = portableCollation(collation)) !== null && _portableCollation !== void 0 ? _portableCollation : collation;
+    }).replace(/\butf8mb3_(\w+)/gi, 'utf8_$1');
+  });
 };
 
 // A dump is a directory containing <directory-name>.json. Root-level config
@@ -3674,7 +3825,7 @@ function _getDatabaseDumpNames() {
 
 var dumpAllDatabases = /*#__PURE__*/function () {
   var _ref = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee(connection, command, options) {
-    var response, databases, syncOptions, _iterator, _step, database, dbStructure, mysqlVersion;
+    var response, available, databases, syncOptions, _iterator, _step, database, dbStructure, mysqlVersion;
     return _regeneratorRuntime().wrap(function _callee$(_context) {
       while (1) switch (_context.prev = _context.next) {
         case 0:
@@ -3683,23 +3834,32 @@ var dumpAllDatabases = /*#__PURE__*/function () {
           _context.next = 4;
           return getDatabases(connection);
         case 4:
-          databases = _context.sent;
-          _context.next = 7;
+          available = _context.sent;
+          databases = available.filter(function (database) {
+            return !options.database || database === options.database;
+          });
+          if (!(options.database && !databases.length)) {
+            _context.next = 8;
+            break;
+          }
+          throw new Error("Database ".concat(options.database, " does not exist."));
+        case 8:
+          _context.next = 10;
           return loadSyncOptions(options.output);
-        case 7:
+        case 10:
           syncOptions = _context.sent;
           _iterator = _createForOfIteratorHelper(databases);
-          _context.prev = 9;
+          _context.prev = 12;
           _iterator.s();
-        case 11:
+        case 14:
           if ((_step = _iterator.n()).done) {
-            _context.next = 25;
+            _context.next = 28;
             break;
           }
           database = _step.value;
-          _context.next = 15;
+          _context.next = 18;
           return getDatabaseStructure(connection, database, command, options, syncOptions);
-        case 15:
+        case 18:
           dbStructure = _context.sent;
           if (Object.keys(dbStructure.views).length === 0) {
             delete dbStructure.views;
@@ -3708,46 +3868,46 @@ var dumpAllDatabases = /*#__PURE__*/function () {
             delete dbStructure.procedures;
           }
           // A database without tables has no folder yet
-          _context.next = 20;
+          _context.next = 23;
           return fs$1.mkdir(path.join(options.output, database), {
             recursive: true
           });
-        case 20:
-          _context.next = 22;
-          return fs$1.writeFile(path.join(options.output, database, "".concat(database, ".json")), JSON.stringify(dbStructure, null, 4), 'utf-8');
-        case 22:
-          response[database] = dbStructure;
         case 23:
-          _context.next = 11;
-          break;
+          _context.next = 25;
+          return fs$1.writeFile(path.join(options.output, database, "".concat(database, ".json")), JSON.stringify(dbStructure, null, 4), 'utf-8');
         case 25:
-          _context.next = 30;
+          response[database] = dbStructure;
+        case 26:
+          _context.next = 14;
           break;
-        case 27:
-          _context.prev = 27;
-          _context.t0 = _context["catch"](9);
-          _iterator.e(_context.t0);
+        case 28:
+          _context.next = 33;
+          break;
         case 30:
           _context.prev = 30;
-          _iterator.f();
-          return _context.finish(30);
+          _context.t0 = _context["catch"](12);
+          _iterator.e(_context.t0);
         case 33:
-          _context.next = 35;
-          return getServerVersion(connection);
-        case 35:
-          mysqlVersion = _context.sent;
+          _context.prev = 33;
+          _iterator.f();
+          return _context.finish(33);
+        case 36:
           _context.next = 38;
+          return getServerVersion(connection);
+        case 38:
+          mysqlVersion = _context.sent;
+          _context.next = 41;
           return fs$1.writeFile(path.join(options.output, 'dumpInfo.json'), JSON.stringify({
             timestamp: new Date().toISOString(),
             mysqlVersion: mysqlVersion
           }, null, 4), 'utf-8');
-        case 38:
+        case 41:
           return _context.abrupt("return", response);
-        case 39:
+        case 42:
         case "end":
           return _context.stop();
       }
-    }, _callee, null, [[9, 27, 30, 33]]);
+    }, _callee, null, [[12, 30, 33, 36]]);
   }));
   return function dumpAllDatabases(_x, _x2, _x3) {
     return _ref.apply(this, arguments);
@@ -3786,544 +3946,561 @@ var getDatabasesFromExistingDumps = /*#__PURE__*/function () {
           _iterator2.s();
         case 14:
           if ((_step2 = _iterator2.n()).done) {
-            _context2.next = 22;
+            _context2.next = 24;
             break;
           }
           database = _step2.value;
-          _context2.next = 18;
-          return fs$1.readFile(path.join(options.output, database, "".concat(database, ".json")), 'utf8');
+          if (!(options.database && options.database !== database)) {
+            _context2.next = 18;
+            break;
+          }
+          return _context2.abrupt("continue", 22);
         case 18:
+          _context2.next = 20;
+          return fs$1.readFile(path.join(options.output, database, "".concat(database, ".json")), 'utf8');
+        case 20:
           dbStructure = _context2.sent;
           response[database] = JSON.parse(dbStructure);
-        case 20:
+        case 22:
           _context2.next = 14;
           break;
-        case 22:
-          _context2.next = 27;
-          break;
         case 24:
-          _context2.prev = 24;
+          _context2.next = 29;
+          break;
+        case 26:
+          _context2.prev = 26;
           _context2.t0 = _context2["catch"](12);
           _iterator2.e(_context2.t0);
-        case 27:
-          _context2.prev = 27;
+        case 29:
+          _context2.prev = 29;
           _iterator2.f();
-          return _context2.finish(27);
-        case 30:
+          return _context2.finish(29);
+        case 32:
           return _context2.abrupt("return", response);
-        case 31:
+        case 33:
         case "end":
           return _context2.stop();
       }
-    }, _callee2, null, [[12, 24, 27, 30]]);
+    }, _callee2, null, [[12, 26, 29, 32]]);
   }));
   return function getDatabasesFromExistingDumps(_x4) {
     return _ref2.apply(this, arguments);
   };
 }();
 
-/**
- * Undo formatting that differs between MySQL versions but doesn't change the
- * structure, so a template dumped from one version compares cleanly with
- * another:
- *   - integer display widths: int(11) in 5.7 is int from 8.0.19, except
- *     tinyint(1) and ZEROFILL types, which keep them
- *   - year(4) in 5.7 is year from 8.0.19
- *   - utf8 is shown as utf8mb3 from 8.0.24 (fully from 8.0.30)
- * Applies to column types and to procedure, trigger and view definitions.
- */
-var normalizeVersionFormatting = function normalizeVersionFormatting(sql) {
-  if (typeof sql !== 'string') return sql;
-  return sql.replace(/\b(tinyint|smallint|mediumint|int|integer|bigint)\((\d+)\)(\s+unsigned)?(?!\s+(?:unsigned\s+)?zerofill)/gi, function (match, type, width) {
-    var unsigned = arguments.length > 3 && arguments[3] !== undefined ? arguments[3] : '';
-    return type.toLowerCase() === 'tinyint' && width === '1' && !unsigned ? match : "".concat(type).concat(unsigned);
-  }).replace(/\byear\(4\)/gi, 'year').replace(/\butf8mb3(?=\b|_)/gi, 'utf8');
-};
-
-// A column type compared across MySQL versions
-var normalizeColumnType = function normalizeColumnType(type) {
-  return normalizeVersionFormatting(type);
-};
-var normalizeSQLDefinition = function normalizeSQLDefinition(definition) {
-  return normalizeVersionFormatting(definition).replace(/\s+/g, ' ') // Replace multiple whitespace with a single space
-  .replace(/'/g, "\\'") // Escape single quotes
-  .trim(); // Trim leading and trailing whitespace
-};
-
-// Column attributes that aren't compared but are needed to rebuild a column
-// exactly; null means the template's column doesn't have it.
 var COLUMN_DETAILS = ['OnUpdate', 'Charset', 'Collate', 'Comment', 'Generated'];
-
-// A nullable column with no default defaults to NULL, and MySQL doesn't print
-// DEFAULT NULL for TEXT/BLOB columns, so treat both forms as the same
 var normalizedDefault = function normalizedDefault(field) {
   return field.Default === undefined && !field.NotNull ? 'NULL' : field.Default;
 };
 var isPrimaryIndex$1 = function isPrimaryIndex(index) {
   return !!index.Primary || index.Name === 'PRIMARY';
 };
-
-// Compare index columns ignoring order and prefix lengths: `col` and `col`(255) index the same column
 var indexKey = function indexKey(index) {
-  return index.ColumnName.map(function (col) {
-    return col.replace(/\(\d+\)$/, '');
-  }).sort().join(', ');
+  return JSON.stringify([index.ColumnName, !!index.Unique || isPrimaryIndex$1(index), isPrimaryIndex$1(index), index.Type || 'BTREE', index.Visible !== false]);
+};
+var normalizeAction = function normalizeAction(action) {
+  return !action || action === 'RESTRICT' ? 'NO ACTION' : action;
+};
+var constraintKey = function constraintKey(constraint, database) {
+  return JSON.stringify([constraint.ColumnName, constraint.References.Database === database ? '' : constraint.References.Database || '', constraint.References.Table, constraint.References.Columns || [].concat(constraint.References.Column), normalizeAction(constraint.OnDelete), normalizeAction(constraint.OnUpdate)]);
 };
 
-/**
- * The template table as its createSQL describes it. The stored columns and
- * indexes arrays were derived from createSQL by whichever parser version wrote
- * the dump, and older versions cut some values short ('System Generated' as
- * System, enum(...) as enum). Re-parsing compares both sides with the same
- * parser. The stored arrays are used only when there's no createSQL.
- */
-var parseExpectedTable = function parseExpectedTable(tableName, contents) {
-  if (!contents.createSQL) return contents;
-  try {
-    var parsed = parseCreateTableSQL(contents.createSQL);
-    if (!parsed) return contents;
-    var columns = parsed.columns.map(function (column) {
-      var withDetails = _objectSpread2({}, column);
-      for (var _i = 0, _COLUMN_DETAILS = COLUMN_DETAILS; _i < _COLUMN_DETAILS.length; _i++) {
-        var key = _COLUMN_DETAILS[_i];
-        if (withDetails[key] === undefined) withDetails[key] = null;
-      }
-      return withDetails;
-    });
-    return _objectSpread2(_objectSpread2({}, contents), {}, {
-      columns: columns,
-      indexes: parsed.indexes
-    });
-  } catch (e) {
-    logger("Could not re-parse createSQL for table ".concat(tableName, ", using stored structure"), e.message);
-    return contents;
-  }
+// Re-parse authoritative CREATE SQL instead of trusting stale arrays in old dumps.
+var parseTable = function parseTable(contents, serverVersion) {
+  if (!contents.createSQL) return _objectSpread2({
+    columns: [],
+    indexes: [],
+    constraints: [],
+    triggers: []
+  }, contents);
+  var parsed = parseCreateTableSQL(adaptSQLForServer(contents.createSQL, serverVersion));
+  var columns = parsed.columns.map(function (column) {
+    var details = _objectSpread2({}, column);
+    for (var _i = 0, _COLUMN_DETAILS = COLUMN_DETAILS; _i < _COLUMN_DETAILS.length; _i++) {
+      var key = _COLUMN_DETAILS[_i];
+      if (details[key] === undefined) details[key] = null;
+    }
+    return details;
+  });
+  var indexes = parsed.indexes.map(function (index) {
+    if (Number(String(serverVersion).split('.')[0]) < 8 && index.Visible === false) {
+      var compatible = _objectSpread2({}, index);
+      delete compatible.Visible;
+      return compatible;
+    }
+    return index;
+  });
+  return _objectSpread2(_objectSpread2(_objectSpread2({}, contents), parsed), {}, {
+    columns: columns,
+    indexes: indexes,
+    triggers: contents.triggers || []
+  });
+};
+var textColumn = function textColumn(field) {
+  return /^(?:var)?char\b|^(?:tiny|medium|long)?text\b|^enum\b|^set\b/i.test(field.Type);
+};
+var charsetOf = function charsetOf(field, table) {
+  var _field$Collate;
+  return normalizeVersionFormatting(field.Charset || ((_field$Collate = field.Collate) === null || _field$Collate === void 0 ? void 0 : _field$Collate.split('_')[0]) || table.charset || null);
+};
+var collationOf = function collationOf(field, table, defaults) {
+  return normalizeVersionFormatting(field.Collate || (!field.Charset ? table.collate : null) || defaults[charsetOf(field, table)] || null);
+};
+var normalizedExpression = function normalizedExpression(expression) {
+  return expression ? normalizeSQLDefinition(expression) : null;
 };
 
-/**
- * @param getTableOptions  tableName => that table's sync options ({ autoIncrement, rows, ... })
- */
+/** The fourth argument supplies serverVersion for 8.0 -> 5.7 compatibility. */
 var findDifferences = function findDifferences(expected, current) {
   var getTableOptions = arguments.length > 2 && arguments[2] !== undefined ? arguments[2] : function () {
     return {};
   };
-  var differences = [];
-
-  // Detect extra tables
+  var _ref = arguments.length > 3 && arguments[3] !== undefined ? arguments[3] : {},
+    serverVersion = _ref.serverVersion,
+    database = _ref.database,
+    _ref$defaultCollation = _ref.defaultCollations,
+    defaultCollations = _ref$defaultCollation === void 0 ? {} : _ref$defaultCollation;
+  var defaults = Object.fromEntries(Object.entries(defaultCollations).map(function (_ref2) {
+    var _ref3 = _slicedToArray(_ref2, 2),
+      charset = _ref3[0],
+      collation = _ref3[1];
+    return [normalizeVersionFormatting(charset), normalizeVersionFormatting(collation)];
+  }));
+  if (!expected.tables) throw new Error('No tables found in expected');
   if (!current.tables) throw new Error('No tables found in current');
+  var differences = [];
   for (var _i2 = 0, _Object$keys = Object.keys(current.tables); _i2 < _Object$keys.length; _i2++) {
     var tableName = _Object$keys[_i2];
     if (!expected.tables[tableName]) {
-      differences.push({
-        type: 'extra_table',
-        tableName: tableName
-      });
-    }
-  }
-
-  // Compare tables and fields
-  if (!expected.tables) throw new Error('No tables found in expected');
-  for (var _i3 = 0, _Object$entries = Object.entries(expected.tables); _i3 < _Object$entries.length; _i3++) {
-    var _Object$entries$_i = _slicedToArray(_Object$entries[_i3], 2),
-      _tableName = _Object$entries$_i[0],
-      storedContents = _Object$entries$_i[1];
-    //check if craete table matches from json, if so, we dont need to compare indexes, triggers, or fields
-    var contents = parseExpectedTable(_tableName, storedContents);
-    var columns = contents.columns,
-      indexes = contents.indexes,
-      triggers = contents.triggers;
-      contents.createSQL;
-      contents.name;
-      contents.engine;
-      contents.charset;
-      contents.collate;
-    if (!current.tables[_tableName]) {
-      logger('missing_table', contents);
-      differences.push({
-        type: 'missing_table',
-        tableName: _tableName,
-        createSQL: applyAutoIncrementOption(contents.createSQL, getTableOptions(_tableName).autoIncrement)
-      });
-      continue;
-    }
-    try {
-      //verify triggers
-      logger('Verifying triggers for table', _tableName);
-      var _iterator = _createForOfIteratorHelper(triggers),
+      // Remove references owned by tables being dropped before dropping
+      // any table. This also handles cycles without disabling FK checks.
+      var _iterator = _createForOfIteratorHelper(parseTable(current.tables[tableName]).constraints),
         _step;
       try {
-        var _loop = function _loop() {
-          var trigger = _step.value;
-          var currentTrigger = current.tables[_tableName].triggers.find(function (t) {
-            return t.Name === trigger.Name;
-          });
-          if (!currentTrigger) {
-            logger('Missing trigger', trigger);
-            differences.push({
-              type: 'missing_trigger',
-              tableName: _tableName,
-              trigger: trigger
-            });
-          } else {
-            var _currentTrigger$Defin;
-            // Compare additional properties if needed
-            // Compared like procedures: runs of whitespace count as one space
-            if (trigger.Definition !== undefined && normalizeSQLDefinition((_currentTrigger$Defin = currentTrigger.Definition) !== null && _currentTrigger$Defin !== void 0 ? _currentTrigger$Defin : '') !== normalizeSQLDefinition(trigger.Definition)) {
-              logger('Mismatched trigger', {
-                expected: trigger,
-                current: currentTrigger
-              });
-              differences.push({
-                type: 'mismatched_trigger',
-                tableName: _tableName,
-                trigger: trigger,
-                currentTrigger: currentTrigger
-              });
-            }
-          }
-        };
         for (_iterator.s(); !(_step = _iterator.n()).done;) {
-          _loop();
+          var constraint = _step.value;
+          differences.push({
+            type: 'extra_constraint',
+            tableName: tableName,
+            constraintName: constraint.Name,
+            constraint: constraint
+          });
         }
       } catch (err) {
         _iterator.e(err);
       } finally {
         _iterator.f();
       }
-      var _iterator2 = _createForOfIteratorHelper(current.tables[_tableName].triggers),
+      differences.push({
+        type: 'extra_table',
+        tableName: tableName
+      });
+    }
+  }
+  var _loop = function _loop() {
+    var _Object$entries$_i = _slicedToArray(_Object$entries[_i3], 2),
+      tableName = _Object$entries$_i[0],
+      stored = _Object$entries$_i[1];
+    var contents = parseTable(stored, serverVersion);
+    var columns = contents.columns,
+      indexes = contents.indexes,
+      constraints = contents.constraints,
+      triggers = contents.triggers;
+    if (!current.tables[tableName]) {
+      var createSQL = applyAutoIncrementOption(stored.createSQL, getTableOptions(tableName).autoIncrement);
+      var plan = splitTableForeignKeys(createSQL);
+      differences.push({
+        type: 'missing_table',
+        tableName: tableName,
+        createSQL: plan.createSQL
+      });
+      // Add references after all tables exist, including cycles and other
+      // databases. MySQL still validates existing rows when adding the FK.
+      var _iterator2 = _createForOfIteratorHelper(plan.constraints),
         _step2;
       try {
-        var _loop2 = function _loop2() {
-          var trigger = _step2.value;
-          if (!triggers.some(function (t) {
-            return t.Name === trigger.Name;
-          })) {
-            logger('Extra trigger', trigger);
-            differences.push({
-              type: 'extra_trigger',
-              tableName: _tableName,
-              trigger: trigger
-            });
-          }
-        };
         for (_iterator2.s(); !(_step2 = _iterator2.n()).done;) {
-          _loop2();
+          var _constraint = _step2.value;
+          differences.push({
+            type: 'missing_constraint',
+            tableName: tableName,
+            constraintName: _constraint.Name,
+            constraint: _constraint
+          });
         }
       } catch (err) {
         _iterator2.e(err);
       } finally {
         _iterator2.f();
       }
-    } catch (e) {
-      logger("Error verifying triggers for table ".concat(_tableName), e);
-    }
-    var createTableSql = current.tables[_tableName].createSQL;
-    // The AUTO_INCREMENT=N counter changes with every insert, so it isn't part of the structure
-    if (createTableSql && contents.createSQL && removeAutoIncrementCounter(createTableSql) === removeAutoIncrementCounter(contents.createSQL)) {
-      logger("Table ".concat(_tableName, " createSQL matches from json, skipping indexes, triggers, and fields"));
-      continue;
-    } else {
-      logger("Table ".concat(_tableName, " createSQL does not match from json, comparing indexes, triggers, and fields"));
-      logger(createTableSql);
-      logger(contents.createSQL);
-    }
-    current.tables[_tableName].columns.map(function (f) {
-      return f.Field;
-    });
-    var expectedFieldNames = columns.map(function (f) {
-      return f.Field;
-    });
-    logger('Detecting missing fields for table', _tableName);
-    // // Detect missing fields
-    // for (const field of columns) {
-    //     if (!currentFieldNames.includes(field.Field)) {
-    //         differences.push({ type: 'missing_field', tableName, field });
-    //     }
-    // }
-
-    logger('Detecting extra fields for table', _tableName);
-    // Detect extra fields
-    var _iterator3 = _createForOfIteratorHelper(current.tables[_tableName].columns),
-      _step3;
-    try {
-      for (_iterator3.s(); !(_step3 = _iterator3.n()).done;) {
-        var field = _step3.value;
-        if (!expectedFieldNames.includes(field.Field)) {
+      var _iterator3 = _createForOfIteratorHelper(triggers),
+        _step3;
+      try {
+        for (_iterator3.s(); !(_step3 = _iterator3.n()).done;) {
+          var trigger = _step3.value;
           differences.push({
-            type: 'extra_field',
-            tableName: _tableName,
-            field: field
+            type: 'missing_trigger',
+            tableName: tableName,
+            trigger: trigger
           });
         }
+      } catch (err) {
+        _iterator3.e(err);
+      } finally {
+        _iterator3.f();
       }
-
-      // verify Type Null and Default
-    } catch (err) {
-      _iterator3.e(err);
-    } finally {
-      _iterator3.f();
+      return 1; // continue
     }
-    logger('Verifying Type Null and Default for table', _tableName);
-    var _iterator4 = _createForOfIteratorHelper(columns),
+    var live = parseTable(current.tables[tableName]);
+    var _iterator4 = _createForOfIteratorHelper(triggers),
       _step4;
     try {
-      var _loop3 = function _loop3() {
-          var field = _step4.value;
-          var currentField = current.tables[_tableName].columns.find(function (f) {
-            return f.Field === field.Field;
-          });
-          if (!currentField) {
-            logger('Current field not found for', field.Field, 'in table', _tableName);
-            differences.push({
-              type: 'missing_field',
-              tableName: _tableName,
-              field: field
-            });
-            return 0; // continue
-          }
-          if (!!field.NotNull !== !!currentField.NotNull) {
-            differences.push({
-              type: 'mismatched_field',
-              info: "Null",
-              tableName: _tableName,
-              field: field,
-              currentField: currentField
-            });
-          }
-          if (normalizedDefault(field) !== normalizedDefault(currentField)) {
-            differences.push({
-              type: 'mismatched_field',
-              info: "Default",
-              tableName: _tableName,
-              field: field,
-              currentField: currentField
-            });
-          }
-          if (field.Type !== currentField.Type) {
-            // int(11) in 5.7 is int in 8.0, year(4) is year, utf8 is utf8mb3: formatting, not structure
-            if (normalizeColumnType(field.Type) === normalizeColumnType(currentField.Type)) return 0; // continue
-            if (field.Type == 'varchar' && currentField.Type.startsWith('varchar(')) return 0; // continue
-            // varchar(255) is the default for varchar and used on older versions of mysql
-            differences.push({
-              type: 'mismatched_field',
-              info: "Type",
-              tableName: _tableName,
-              field: field,
-              currentField: currentField
-            });
-          }
-        },
-        _ret;
+      var _loop2 = function _loop2() {
+        var _currentTrigger$Defin;
+        var trigger = _step4.value;
+        var currentTrigger = live.triggers.find(function (t) {
+          return t.Name === trigger.Name;
+        });
+        if (!currentTrigger) differences.push({
+          type: 'missing_trigger',
+          tableName: tableName,
+          trigger: trigger
+        });else if (trigger.Definition !== undefined && normalizeSQLDefinition((_currentTrigger$Defin = currentTrigger.Definition) !== null && _currentTrigger$Defin !== void 0 ? _currentTrigger$Defin : '') !== normalizeSQLDefinition(adaptSQLForServer(trigger.Definition, serverVersion))) differences.push({
+          type: 'mismatched_trigger',
+          tableName: tableName,
+          trigger: trigger,
+          currentTrigger: currentTrigger
+        });
+      };
       for (_iterator4.s(); !(_step4 = _iterator4.n()).done;) {
-        _ret = _loop3();
-        if (_ret === 0) continue;
+        _loop2();
       }
-
-      // verify indexes
     } catch (err) {
       _iterator4.e(err);
     } finally {
       _iterator4.f();
     }
-    logger('Verifying indexes for table', _tableName);
-    var _iterator5 = _createForOfIteratorHelper(indexes),
+    var _iterator5 = _createForOfIteratorHelper(live.triggers),
       _step5;
     try {
-      var _loop4 = function _loop4() {
-        var _sameColumns$find;
-        var index = _step5.value;
-        // Check if the current index matches the expected index structure, preferring the same name
-        var sameColumns = current.tables[_tableName].indexes.filter(function (i) {
-          return indexKey(i) === indexKey(index);
+      var _loop3 = function _loop3() {
+        var trigger = _step5.value;
+        if (!triggers.some(function (t) {
+          return t.Name === trigger.Name;
+        })) differences.push({
+          type: 'extra_trigger',
+          tableName: tableName,
+          trigger: trigger
         });
-        var currentIndex = (_sameColumns$find = sameColumns.find(function (i) {
-          return i.Name === index.Name;
-        })) !== null && _sameColumns$find !== void 0 ? _sameColumns$find : sameColumns[0];
-        if (!currentIndex) {
-          logger('Missing index', index);
-          differences.push({
-            type: 'missing_index',
-            tableName: _tableName,
-            indexName: index.Name,
-            index: index
-          });
-        } else {
-          // If needed, you can add further checks for uniqueness or other properties here
-          if (currentIndex.Name == index.Name) {
-            if (!!currentIndex.Unique !== !!index.Unique) {
-              differences.push({
-                type: 'mismatched_index',
-                from: 'unique',
-                tableName: _tableName,
-                indexName: index.Name,
-                index: index
-              });
-            } else if (isPrimaryIndex$1(currentIndex) !== isPrimaryIndex$1(index)) {
-              differences.push({
-                type: 'mismatched_index',
-                from: 'primary',
-                tableName: _tableName,
-                indexName: index.Name,
-                index: index
-              });
-            }
-          }
-        }
       };
       for (_iterator5.s(); !(_step5 = _iterator5.n()).done;) {
-        _loop4();
+        _loop3();
       }
     } catch (err) {
       _iterator5.e(err);
     } finally {
       _iterator5.f();
     }
-    var _iterator6 = _createForOfIteratorHelper(current.tables[_tableName].indexes),
+    var tableOptions = {};
+    for (var _i4 = 0, _arr = ['engine', 'charset', 'collate']; _i4 < _arr.length; _i4++) {
+      var key = _arr[_i4];
+      if (contents[key] && normalizeVersionFormatting(contents[key]).toLowerCase() !== normalizeVersionFormatting(live[key] || (key === 'collate' ? defaults[normalizeVersionFormatting(live.charset)] : '') || '').toLowerCase()) tableOptions[key] = contents[key];
+    }
+    if (Object.keys(tableOptions).length) {
+      if (tableOptions.collate && contents.charset) tableOptions.charset = contents.charset;
+      differences.push({
+        type: 'mismatched_table_options',
+        tableName: tableName,
+        options: tableOptions,
+        currentOptions: {
+          engine: live.engine,
+          charset: live.charset,
+          collate: live.collate
+        }
+      });
+    }
+    var expectedNames = columns.map(function (field) {
+      return field.Field;
+    });
+    var currentNames = live.columns.map(function (field) {
+      return field.Field;
+    });
+    var expectedCommon = expectedNames.filter(function (name) {
+      return currentNames.includes(name);
+    });
+    var currentCommon = currentNames.filter(function (name) {
+      return expectedNames.includes(name);
+    });
+    var _iterator6 = _createForOfIteratorHelper(live.columns),
       _step6;
     try {
-      var _loop5 = function _loop5() {
-        var index = _step6.value;
-        logger('Checking index', index);
-        var indexFound = false;
-
-        // Compare sorted copies; sorting ColumnName in place would reorder composite index columns
-        if (!indexes.some(function (i) {
-          return indexKey(i) === indexKey(index);
-        })) {
-          differences.push({
-            type: 'extra_index',
-            tableName: _tableName,
-            indexName: index.Name,
-            index: index
-          });
-        }
-      };
       for (_iterator6.s(); !(_step6 = _iterator6.n()).done;) {
-        _loop5();
+        var field = _step6.value;
+        if (!expectedNames.includes(field.Field)) differences.push({
+          type: 'extra_field',
+          tableName: tableName,
+          field: field
+        });
       }
     } catch (err) {
       _iterator6.e(err);
     } finally {
       _iterator6.f();
     }
+    var _iterator7 = _createForOfIteratorHelper(columns.entries()),
+      _step7;
+    try {
+      var _loop4 = function _loop4() {
+        var _step7$value = _slicedToArray(_step7.value, 2),
+          position = _step7$value[0],
+          field = _step7$value[1];
+        var after = position ? columns[position - 1].Field : null;
+        var currentField = live.columns.find(function (f) {
+          return f.Field === field.Field;
+        });
+        if (!currentField) {
+          differences.push({
+            type: 'missing_field',
+            tableName: tableName,
+            field: field,
+            after: after
+          });
+          return 1; // continue
+        }
+        var changed = [];
+        if (!!field.NotNull !== !!currentField.NotNull) changed.push('Null');
+        if (normalizedDefault(field) !== normalizedDefault(currentField) || !!field.DefaultQuoted !== !!currentField.DefaultQuoted) changed.push('Default');
+        if (normalizeColumnType(field.Type) !== normalizeColumnType(currentField.Type) && !(field.Type === 'varchar' && currentField.Type.startsWith('varchar('))) changed.push('Type');
+        if (!!field.AutoIncrement !== !!currentField.AutoIncrement) changed.push('AutoIncrement');
+        if (normalizedExpression(field.OnUpdate) !== normalizedExpression(currentField.OnUpdate)) changed.push('OnUpdate');
+        if (normalizedExpression(field.Generated) !== normalizedExpression(currentField.Generated)) changed.push('Generated');
+        if ((field.Comment || '') !== (currentField.Comment || '')) changed.push('Comment');
+        if (textColumn(field)) {
+          if (charsetOf(field, contents) && charsetOf(field, contents) !== charsetOf(currentField, live)) changed.push('Charset');
+          if (collationOf(field, contents, defaults) && collationOf(field, contents, defaults) !== collationOf(currentField, live, defaults)) changed.push('Collate');
+        }
+        if (expectedCommon.indexOf(field.Field) !== currentCommon.indexOf(field.Field)) changed.push('Position');
+        if (changed.length) {
+          // Restate effective defaults so CHANGE cannot inherit a drifted charset.
+          var desired = _objectSpread2({}, field);
+          if (textColumn(field) && charsetOf(field, contents)) desired.Charset = charsetOf(field, contents);
+          if (textColumn(field) && collationOf(field, contents, defaults)) desired.Collate = collationOf(field, contents, defaults);
+          differences.push({
+            type: 'mismatched_field',
+            info: changed[0],
+            changes: changed,
+            tableName: tableName,
+            field: desired,
+            currentField: currentField,
+            after: after
+          });
+        }
+      };
+      for (_iterator7.s(); !(_step7 = _iterator7.n()).done;) {
+        if (_loop4()) continue;
+      }
+    } catch (err) {
+      _iterator7.e(err);
+    } finally {
+      _iterator7.f();
+    }
+    var matchedIndexes = new Set();
+    var _iterator8 = _createForOfIteratorHelper(indexes),
+      _step8;
+    try {
+      var _loop5 = function _loop5() {
+        var index = _step8.value;
+        var sameName = live.indexes.find(function (i) {
+          return i.Name === index.Name;
+        });
+        var equivalent = live.indexes.find(function (i) {
+          return !matchedIndexes.has(i) && indexKey(i) === indexKey(index);
+        });
+        var currentIndex = sameName || equivalent;
+        if (!currentIndex) differences.push({
+          type: 'missing_index',
+          tableName: tableName,
+          indexName: index.Name,
+          index: index
+        });else {
+          matchedIndexes.add(currentIndex);
+          if (indexKey(currentIndex) !== indexKey(index)) differences.push({
+            type: 'mismatched_index',
+            tableName: tableName,
+            indexName: index.Name,
+            index: index,
+            currentIndex: currentIndex
+          });
+        }
+      };
+      for (_iterator8.s(); !(_step8 = _iterator8.n()).done;) {
+        _loop5();
+      }
+    } catch (err) {
+      _iterator8.e(err);
+    } finally {
+      _iterator8.f();
+    }
+    var _iterator9 = _createForOfIteratorHelper(live.indexes),
+      _step9;
+    try {
+      for (_iterator9.s(); !(_step9 = _iterator9.n()).done;) {
+        var index = _step9.value;
+        if (!matchedIndexes.has(index)) differences.push({
+          type: 'extra_index',
+          tableName: tableName,
+          indexName: index.Name,
+          index: index
+        });
+      }
+    } catch (err) {
+      _iterator9.e(err);
+    } finally {
+      _iterator9.f();
+    }
+    var _iterator0 = _createForOfIteratorHelper(constraints),
+      _step0;
+    try {
+      var _loop6 = function _loop6() {
+        var constraint = _step0.value;
+        var currentConstraint = live.constraints.find(function (c) {
+          return c.Name === constraint.Name;
+        });
+        if (!currentConstraint) differences.push({
+          type: 'missing_constraint',
+          tableName: tableName,
+          constraintName: constraint.Name,
+          constraint: constraint
+        });else if (constraintKey(constraint, database) !== constraintKey(currentConstraint, database)) differences.push({
+          type: 'mismatched_constraint',
+          tableName: tableName,
+          constraintName: constraint.Name,
+          constraint: constraint,
+          currentConstraint: currentConstraint
+        });
+      };
+      for (_iterator0.s(); !(_step0 = _iterator0.n()).done;) {
+        _loop6();
+      }
+    } catch (err) {
+      _iterator0.e(err);
+    } finally {
+      _iterator0.f();
+    }
+    var _iterator1 = _createForOfIteratorHelper(live.constraints),
+      _step1;
+    try {
+      var _loop7 = function _loop7() {
+        var constraint = _step1.value;
+        if (!constraints.some(function (c) {
+          return c.Name === constraint.Name;
+        })) differences.push({
+          type: 'extra_constraint',
+          tableName: tableName,
+          constraintName: constraint.Name,
+          constraint: constraint
+        });
+      };
+      for (_iterator1.s(); !(_step1 = _iterator1.n()).done;) {
+        _loop7();
+      }
+    } catch (err) {
+      _iterator1.e(err);
+    } finally {
+      _iterator1.f();
+    }
+  };
+  for (var _i3 = 0, _Object$entries = Object.entries(expected.tables); _i3 < _Object$entries.length; _i3++) {
+    if (_loop()) continue;
   }
-
-  // Compare stored procedures
-  if (!expected.procedures) {
-    logger('No procedures found in expected');
-  } else {
-    var _loop6 = function _loop6() {
-      var _Object$entries2$_i = _slicedToArray(_Object$entries2[_i4], 2);
-        _Object$entries2$_i[0];
-        var contents = _Object$entries2$_i[1];
-      var procName = contents.Name;
-      var currentProc = current.procedures.find(function (p) {
-        return p.Name === procName;
+  var _iterator10 = _createForOfIteratorHelper(expected.procedures || []),
+    _step10;
+  try {
+    var _loop8 = function _loop8() {
+      var procedure = _step10.value;
+      var currentProcedure = (current.procedures || []).find(function (p) {
+        return p.Name === procedure.Name;
       });
-      if (!currentProc) {
-        logger('missing_procedure', contents);
-        differences.push(_objectSpread2({
-          type: 'missing_procedure'
-        }, contents));
-        return 1; // continue
-      }
-
-      // Check if the procedure definition matches
-      if (currentProc.Definition !== contents.Definition) {
-        var normalizedCurrentDef = normalizeSQLDefinition(currentProc.Definition);
-        var normalizedNewDef = normalizeSQLDefinition(contents.Definition);
-        if (normalizedCurrentDef !== normalizedNewDef) {
-          // currentDefinition lets the difference be shown side by side with the template's
-          differences.push(_objectSpread2(_objectSpread2({
-            type: 'mismatched_procedure'
-          }, contents), {}, {
-            currentDefinition: currentProc.Definition
-          }));
-        }
-      }
+      if (!currentProcedure) differences.push(_objectSpread2({
+        type: 'missing_procedure'
+      }, procedure));else if (normalizeSQLDefinition(currentProcedure.Definition) !== normalizeSQLDefinition(adaptSQLForServer(procedure.Definition, serverVersion))) differences.push(_objectSpread2(_objectSpread2({
+        type: 'mismatched_procedure'
+      }, procedure), {}, {
+        currentDefinition: currentProcedure.Definition
+      }));
     };
-    for (var _i4 = 0, _Object$entries2 = Object.entries(expected.procedures); _i4 < _Object$entries2.length; _i4++) {
-      if (_loop6()) continue;
+    for (_iterator10.s(); !(_step10 = _iterator10.n()).done;) {
+      _loop8();
     }
+  } catch (err) {
+    _iterator10.e(err);
+  } finally {
+    _iterator10.f();
   }
-
-  // Compare views
-  if (expected.views || current.views) {
-    // Handle missing views (when expected has views but current doesn't have them)
-    if (expected.views && !current.views) {
-      for (var _i5 = 0, _Object$entries3 = Object.entries(expected.views); _i5 < _Object$entries3.length; _i5++) {
-        var _Object$entries3$_i = _slicedToArray(_Object$entries3[_i5], 2),
-          viewName = _Object$entries3$_i[0],
-          expectedDefinition = _Object$entries3$_i[1];
-        differences.push({
-          type: 'missing_view',
-          viewName: viewName,
-          definition: expectedDefinition
-        });
-      }
-    }
-    // Handle extra views (when current has views but expected doesn't have them)
-    else if (current.views && !expected.views) {
-      for (var _i6 = 0, _Object$keys2 = Object.keys(current.views); _i6 < _Object$keys2.length; _i6++) {
-        var _viewName = _Object$keys2[_i6];
-        differences.push({
-          type: 'extra_view',
-          viewName: _viewName
-        });
-      }
-    }
-    // Compare views when both exist
-    else if (expected.views && current.views) {
-      // Check for missing and mismatched views
-      for (var _i7 = 0, _Object$entries4 = Object.entries(expected.views); _i7 < _Object$entries4.length; _i7++) {
-        var _Object$entries4$_i = _slicedToArray(_Object$entries4[_i7], 2),
-          _viewName2 = _Object$entries4$_i[0],
-          _expectedDefinition = _Object$entries4$_i[1];
-        if (!current.views[_viewName2]) {
-          differences.push({
-            type: 'missing_view',
-            viewName: _viewName2,
-            definition: _expectedDefinition
-          });
-        } else if (normalizeSQLDefinition(current.views[_viewName2]) !== normalizeSQLDefinition(_expectedDefinition)) {
-          differences.push({
-            type: 'mismatched_view',
-            viewName: _viewName2,
-            definition: _expectedDefinition,
-            current: current.views[_viewName2]
-          });
-        }
-      }
-
-      // Check for extra views
-      for (var _i8 = 0, _Object$keys3 = Object.keys(current.views); _i8 < _Object$keys3.length; _i8++) {
-        var _viewName3 = _Object$keys3[_i8];
-        if (!expected.views[_viewName3]) {
-          differences.push({
-            type: 'extra_view',
-            viewName: _viewName3
-          });
-        }
-      }
-    }
+  for (var _i5 = 0, _Object$entries2 = Object.entries(expected.views || {}); _i5 < _Object$entries2.length; _i5++) {
+    var _current$views;
+    var _Object$entries2$_i = _slicedToArray(_Object$entries2[_i5], 2),
+      viewName = _Object$entries2$_i[0],
+      definition = _Object$entries2$_i[1];
+    if (!((_current$views = current.views) !== null && _current$views !== void 0 && _current$views[viewName])) differences.push({
+      type: 'missing_view',
+      viewName: viewName,
+      definition: definition
+    });else if (normalizeSQLDefinition(current.views[viewName]) !== normalizeSQLDefinition(adaptSQLForServer(definition, serverVersion))) differences.push({
+      type: 'mismatched_view',
+      viewName: viewName,
+      definition: definition,
+      current: current.views[viewName]
+    });
+  }
+  for (var _i6 = 0, _Object$keys2 = Object.keys(current.views || {}); _i6 < _Object$keys2.length; _i6++) {
+    var _expected$views;
+    var _viewName = _Object$keys2[_i6];
+    if (!((_expected$views = expected.views) !== null && _expected$views !== void 0 && _expected$views[_viewName])) differences.push({
+      type: 'extra_view',
+      viewName: _viewName
+    });
   }
   return differences;
 };
 
+// Cross-schema scheduling is internal: a caller-supplied JSON property cannot
+// redirect an operation outside the database selected by the API.
+var targetDatabase = Symbol('targetDatabase');
+var isViewDependencyError = function isViewDependencyError(error) {
+  return ['ER_NO_SUCH_TABLE', 'ER_VIEW_INVALID'].includes(error.code) || [1146, 1356].includes(error.errno);
+};
 var quoteString = function quoteString(value) {
   return "'".concat(String(value).replace(/\\/g, '\\\\').replace(/'/g, "''"), "'");
+};
+var quoteIdentifier = function quoteIdentifier(value) {
+  return "`".concat(String(value).replace(/`/g, '``'), "`");
+};
+var columnPosition = function columnPosition(diff) {
+  return 'after' in diff ? diff.after === null ? ' FIRST' : " AFTER ".concat(quoteIdentifier(diff.after)) : '';
+};
+var addConstraintClause = function addConstraintClause(constraint) {
+  var columns = constraint.ColumnName.map(quoteIdentifier).join(', ');
+  var referenced = (constraint.References.Columns || [].concat(constraint.References.Column)).map(quoteIdentifier).join(', ');
+  var table = (constraint.References.Database ? "".concat(quoteIdentifier(constraint.References.Database), ".") : '') + quoteIdentifier(constraint.References.Table);
+  var action = function action(value) {
+    if (!['NO ACTION', 'RESTRICT', 'CASCADE', 'SET NULL', 'SET DEFAULT'].includes(value)) throw new Error("Unsupported foreign key action: ".concat(value));
+    return value;
+  };
+  return "ADD CONSTRAINT ".concat(quoteIdentifier(constraint.Name), " FOREIGN KEY (").concat(columns, ") REFERENCES ").concat(table, " (").concat(referenced, ") ON DELETE ").concat(action(constraint.OnDelete || 'NO ACTION'), " ON UPDATE ").concat(action(constraint.OnUpdate || 'NO ACTION'));
 };
 
 // Types MySQL won't give a literal default
 var noLiteralDefaultRegex = /^(tiny|medium|long)?(text|blob)$|^json$|^geometry|^point$|^linestring$|^polygon$/i;
 var defaultClause = function defaultClause(field) {
   var value = field.Default;
+  if (field.DefaultQuoted) return "DEFAULT ".concat(quoteString(value));
   if (value === undefined || value === null || value === 'NULL') {
     // A NOT NULL column can't default to NULL; leave it without a default
     return field.NotNull ? '' : 'DEFAULT NULL';
   }
   // Functions, expressions, and bit/hex literals such as b'0' are written as they were read
-  if (/^(CURRENT_TIMESTAMP|now)(\(\d*\))?$/i.test(value) || value.startsWith('(') || /^[bx]'[0-9a-f]*'$/i.test(value) || /^0x[0-9a-f]+$/i.test(value)) {
+  if (/^(CURRENT_TIMESTAMP|now)(\(\d*\))?$/i.test(value) || String(value).startsWith('(') || /^[bx]'[0-9a-f]*'$/i.test(value) || /^0x[0-9a-f]+$/i.test(value)) {
     return "DEFAULT ".concat(value);
   }
   if (noLiteralDefaultRegex.test(field.Type)) {
@@ -4362,16 +4539,20 @@ var columnDefinition = function columnDefinition(field, currentField) {
 // `col`, or `col`(255) for a prefix index on a text column
 var formatIndexColumns = function formatIndexColumns(columns) {
   return columns.map(function (col) {
-    var match = col.match(/^`?([^`(]+)`?(?:\((\d+)\))?$/);
-    if (!match) return "`".concat(col, "`");
-    return "`".concat(match[1], "`").concat(match[2] ? "(".concat(match[2], ")") : '');
+    if (col.startsWith('(')) return col;
+    var match = col.match(/^`?([^`(]+?)`?(?:\((\d+)\))?(?:\s+(ASC|DESC))?$/i);
+    if (!match) throw new Error("Invalid index column: ".concat(col));
+    return "".concat(quoteIdentifier(match[1])).concat(match[2] ? "(".concat(match[2], ")") : '').concat(match[3] ? " ".concat(match[3].toUpperCase()) : '');
   }).join(', ');
 };
 var isPrimaryIndex = function isPrimaryIndex(index) {
   return !!index.Primary || index.Name === 'PRIMARY';
 };
+var indexStructure = function indexStructure(index) {
+  return JSON.stringify([index.ColumnName, !!index.Unique || isPrimaryIndex(index), isPrimaryIndex(index), index.Type || 'BTREE']);
+};
 var addIndexClause = function addIndexClause(index) {
-  return isPrimaryIndex(index) ? "ADD PRIMARY KEY (".concat(formatIndexColumns(index.ColumnName), ")") : "ADD ".concat(index.Unique ? 'UNIQUE ' : '', "INDEX `").concat(index.Name, "` (").concat(formatIndexColumns(index.ColumnName), ")");
+  return isPrimaryIndex(index) ? "ADD PRIMARY KEY (".concat(formatIndexColumns(index.ColumnName), ")") : "ADD ".concat(index.Unique ? 'UNIQUE ' : ['FULLTEXT', 'SPATIAL'].includes(index.Type) ? "".concat(index.Type, " ") : '', "INDEX ").concat(quoteIdentifier(index.Name), " (").concat(formatIndexColumns(index.ColumnName), ")").concat(index.Type === 'HASH' ? ' USING HASH' : '').concat(index.Visible === false ? ' INVISIBLE' : '');
 };
 var dropIndexClause = function dropIndexClause(index) {
   return isPrimaryIndex(index) ? 'DROP PRIMARY KEY' : "DROP INDEX `".concat(index.Name, "`");
@@ -4379,7 +4560,7 @@ var dropIndexClause = function dropIndexClause(index) {
 var describeDifference$1 = function describeDifference(diff) {
   var _diff$field, _diff$trigger;
   var name = diff.tableName || diff.viewName || diff.Name || diff.database || '';
-  var detail = ((_diff$field = diff.field) === null || _diff$field === void 0 ? void 0 : _diff$field.Field) || diff.indexName || ((_diff$trigger = diff.trigger) === null || _diff$trigger === void 0 ? void 0 : _diff$trigger.Name) || (diff.key ? JSON.stringify(diff.key) : '');
+  var detail = ((_diff$field = diff.field) === null || _diff$field === void 0 ? void 0 : _diff$field.Field) || diff.indexName || diff.constraintName || ((_diff$trigger = diff.trigger) === null || _diff$trigger === void 0 ? void 0 : _diff$trigger.Name) || (diff.key ? JSON.stringify(diff.key) : '');
   return "".concat(diff.type, " ").concat(name).concat(detail ? '.' + detail : '');
 };
 
@@ -4387,7 +4568,9 @@ var describeDifference$1 = function describeDifference(diff) {
 // column attribute (COLLATE x). Passing null for `to` removes the clause entirely.
 var replaceCollation = function replaceCollation(sql, from, to) {
   var escaped = from.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return sql.replace(new RegExp('COLLATE(\\s*)=(\\s*)' + escaped, 'gi'), to ? "COLLATE$1=$2".concat(to) : '').replace(new RegExp('COLLATE(\\s+)' + escaped, 'gi'), to ? "COLLATE$1".concat(to) : '');
+  return transformSQLCode(sql, function (code) {
+    return code.replace(new RegExp('COLLATE(\\s*)=(\\s*)' + escaped, 'gi'), to ? "COLLATE$1=$2".concat(to) : '').replace(new RegExp('COLLATE(\\s+)' + escaped, 'gi'), to ? "COLLATE$1".concat(to) : '');
+  });
 };
 
 // Rewrites that let DDL dumped from a newer server run on an older one. Each inspects the
@@ -4425,27 +4608,55 @@ var compatRewrites = [function (sql, errorMessage) {
  * (e.g. an 8.0 collation on 5.7), each as { type, tableName, description, message }.
  */
 var applyDifferences = /*#__PURE__*/function () {
-  var _ref = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee2(connection, database, differences) {
-    var failures, warnings, current, warn, serverVersion, query, _iterator, _step, _loop;
-    return _regeneratorRuntime().wrap(function _callee2$(_context4) {
-      while (1) switch (_context4.prev = _context4.next) {
+  var _ref = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee3(connection, database, differences) {
+    var failures, warnings, deferredViews, completedViews, scope, fail, appliedTogether, removedColumns, indexRemovedWithColumns, current, warn, serverVersion, query, replaceStoredObject, _iterator, _step, _loop, _ret, pending, _iterator2, _step2, diff, _i3, _deferredViews, _deferredViews$_i, _diff, error;
+    return _regeneratorRuntime().wrap(function _callee3$(_context5) {
+      while (1) switch (_context5.prev = _context5.next) {
         case 0:
           failures = [];
           warnings = [];
+          deferredViews = [];
+          completedViews = 0;
+          scope = function scope(diff) {
+            return diff[targetDatabase] ? {
+              database: diff[targetDatabase]
+            } : {};
+          };
+          fail = function fail(diff, error) {
+            console.error("Failed to apply ".concat(describeDifference$1(diff), ": ").concat(error.message));
+            logger(diff);
+            failures.push(_objectSpread2(_objectSpread2({}, scope(diff)), {}, {
+              type: diff.type,
+              tableName: diff.tableName,
+              description: describeDifference$1(diff),
+              message: error.message
+            }, error.recoverySQL ? {
+              recoverySQL: error.recoverySQL
+            } : {}));
+          };
+          appliedTogether = new Set();
+          removedColumns = new Map();
+          indexRemovedWithColumns = function indexRemovedWithColumns(tableName, index) {
+            var _index$ColumnName;
+            return (index === null || index === void 0 || (_index$ColumnName = index.ColumnName) === null || _index$ColumnName === void 0 ? void 0 : _index$ColumnName.length) && index.ColumnName.every(function (column) {
+              var _removedColumns$get;
+              return (_removedColumns$get = removedColumns.get(tableName)) === null || _removedColumns$get === void 0 ? void 0 : _removedColumns$get.has(column.replace(/\s+(?:ASC|DESC)$/i, '').replace(/\(\d+\)$/, ''));
+            });
+          };
           current = null; // the difference being applied, for warnings from query()
           warn = function warn(diff, message) {
             console.warn("Applied ".concat(describeDifference$1(diff), " with a change: ").concat(message));
-            warnings.push({
+            warnings.push(_objectSpread2(_objectSpread2({}, scope(diff)), {}, {
               type: diff.type,
               tableName: diff.tableName,
               description: describeDifference$1(diff),
               message: message
-            });
+            }));
           }; // Template SQL from MySQL 8.0 can name collations a 5.7 server doesn't have
-          _context4.next = 6;
+          _context5.next = 13;
           return getServerVersion(connection);
-        case 6:
-          serverVersion = _context4.sent;
+        case 13:
+          serverVersion = _context5.sent;
           query = /*#__PURE__*/function () {
             var _ref2 = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee(sql, values) {
               var adapted;
@@ -4455,7 +4666,7 @@ var applyDifferences = /*#__PURE__*/function () {
                     adapted = adaptSQLForServer(sql, serverVersion);
                     if (adapted !== sql) {
                       console.log("Adapted for MySQL ".concat(serverVersion, ": ").concat(adapted));
-                      if (current) warn(current, "MySQL ".concat(serverVersion, " has no utf8mb4_0900 collations, so the closest one it has was used"));
+                      if (current) warn(current, "MySQL ".concat(serverVersion, " required a charset/collation compatibility replacement; collation replacements are approximations and can change sort, accent/case and trailing-space comparisons"));
                     }
                     return _context.abrupt("return", connection.query(adapted, values));
                   case 3:
@@ -4467,6 +4678,119 @@ var applyDifferences = /*#__PURE__*/function () {
             return function query(_x4, _x5) {
               return _ref2.apply(this, arguments);
             };
+          }(); // MySQL has no atomic CREATE OR REPLACE for procedures/triggers. Preserve
+          // the live definition before dropping it, and recover it if CREATE fails.
+          replaceStoredObject = /*#__PURE__*/function () {
+            var _ref3 = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee2(kind, name, definition, definitionKey) {
+              var _yield$query, _yield$query2, original, previous, session, _yield$query3, _yield$query4, _i, _arr, setting, _i2, _arr2, _setting;
+              return _regeneratorRuntime().wrap(function _callee2$(_context2) {
+                while (1) switch (_context2.prev = _context2.next) {
+                  case 0:
+                    _context2.next = 2;
+                    return query("SHOW CREATE ".concat(kind, " ").concat(quoteIdentifier(name)));
+                  case 2:
+                    _yield$query = _context2.sent;
+                    _yield$query2 = _slicedToArray(_yield$query, 1);
+                    original = _yield$query2[0];
+                    previous = original === null || original === void 0 ? void 0 : original[definitionKey];
+                    if (previous) {
+                      _context2.next = 8;
+                      break;
+                    }
+                    throw new Error("Cannot replace ".concat(kind.toLowerCase(), " ").concat(name, ": its current definition could not be read"));
+                  case 8:
+                    _context2.next = 10;
+                    return query("DROP ".concat(kind, " ").concat(quoteIdentifier(name)));
+                  case 10:
+                    _context2.prev = 10;
+                    _context2.next = 13;
+                    return query(definition);
+                  case 13:
+                    _context2.next = 60;
+                    break;
+                  case 15:
+                    _context2.prev = 15;
+                    _context2.t0 = _context2["catch"](10);
+                    _context2.prev = 17;
+                    if (!(original.sql_mode !== undefined)) {
+                      _context2.next = 33;
+                      break;
+                    }
+                    _context2.next = 21;
+                    return query('SELECT @@SESSION.sql_mode AS sql_mode, @@SESSION.character_set_client AS character_set_client, @@SESSION.collation_connection AS collation_connection');
+                  case 21:
+                    _yield$query3 = _context2.sent;
+                    _yield$query4 = _slicedToArray(_yield$query3, 1);
+                    session = _yield$query4[0];
+                    _i = 0, _arr = ['sql_mode', 'character_set_client', 'collation_connection'];
+                  case 25:
+                    if (!(_i < _arr.length)) {
+                      _context2.next = 33;
+                      break;
+                    }
+                    setting = _arr[_i];
+                    if (!(original[setting] !== undefined)) {
+                      _context2.next = 30;
+                      break;
+                    }
+                    _context2.next = 30;
+                    return query("SET SESSION ".concat(setting, " = ?"), [original[setting]]);
+                  case 30:
+                    _i++;
+                    _context2.next = 25;
+                    break;
+                  case 33:
+                    _context2.next = 35;
+                    return query(previous);
+                  case 35:
+                    _context2.t0.message += "; original ".concat(kind.toLowerCase(), " restored");
+                    _context2.next = 42;
+                    break;
+                  case 38:
+                    _context2.prev = 38;
+                    _context2.t1 = _context2["catch"](17);
+                    _context2.t0.message += "; restoring the original ".concat(kind.toLowerCase(), " also failed: ").concat(_context2.t1.message);
+                    _context2.t0.recoverySQL = previous;
+                  case 42:
+                    _context2.prev = 42;
+                    if (!session) {
+                      _context2.next = 58;
+                      break;
+                    }
+                    _i2 = 0, _arr2 = ['sql_mode', 'character_set_client', 'collation_connection'];
+                  case 45:
+                    if (!(_i2 < _arr2.length)) {
+                      _context2.next = 58;
+                      break;
+                    }
+                    _setting = _arr2[_i2];
+                    _context2.prev = 47;
+                    _context2.next = 50;
+                    return query("SET SESSION ".concat(_setting, " = ?"), [session[_setting]]);
+                  case 50:
+                    _context2.next = 55;
+                    break;
+                  case 52:
+                    _context2.prev = 52;
+                    _context2.t2 = _context2["catch"](47);
+                    _context2.t0.message += "; could not restore session ".concat(_setting, ": ").concat(_context2.t2.message);
+                  case 55:
+                    _i2++;
+                    _context2.next = 45;
+                    break;
+                  case 58:
+                    return _context2.finish(42);
+                  case 59:
+                    throw _context2.t0;
+                  case 60:
+                  case "end":
+                    return _context2.stop();
+                }
+              }, _callee2, null, [[10, 15], [17, 38, 42, 59], [47, 52]]);
+            }));
+            return function replaceStoredObject(_x6, _x7, _x8, _x9) {
+              return _ref3.apply(this, arguments);
+            };
           }(); // A dump written by MySQL 8 assumes explicit_defaults_for_timestamp is on, where a
           // `timestamp NOT NULL` column with no DEFAULT is just a column with no default. With
           // the MySQL 5.7 default of off, the server instead assigns every TIMESTAMP NOT NULL
@@ -4474,29 +4798,33 @@ var applyDifferences = /*#__PURE__*/function () {
           // rejects at CREATE TABLE time. Matching MySQL 8 for this session applies that DDL as
           // written; DDL that states its defaults - everything SHOW CREATE TABLE emits, on
           // either version - parses the same way with the setting on or off.
-          _context4.prev = 8;
-          _context4.next = 11;
+          _context5.prev = 16;
+          _context5.next = 19;
           return connection.query('SET SESSION explicit_defaults_for_timestamp = 1');
-        case 11:
-          _context4.next = 16;
+        case 19:
+          _context5.next = 24;
           break;
-        case 13:
-          _context4.prev = 13;
-          _context4.t0 = _context4["catch"](8);
-          logger("Could not set explicit_defaults_for_timestamp for this session: ".concat(_context4.t0.message));
-        case 16:
+        case 21:
+          _context5.prev = 21;
+          _context5.t0 = _context5["catch"](16);
+          logger("Could not set explicit_defaults_for_timestamp for this session: ".concat(_context5.t0.message));
+        case 24:
           differences.sort(function (a, b) {
             //Sort to make sure we apply the differences in a logical order.
             var typePriority = {
               'missing_database': 1,
               'missing_table': 2,
               'extra_table': 2,
+              'extra_constraint': 1.5,
+              'mismatched_table_options': 2.5,
               'missing_field': 3,
               'extra_field': 3,
               'mismatched_field': 3,
               'missing_index': 4,
               'extra_index': 4,
               'mismatched_index': 4,
+              'missing_constraint': 4.5,
+              'mismatched_constraint': 4.5,
               'missing_procedure': 5,
               'mismatched_procedure': 5,
               'missing_view': 6,
@@ -4511,417 +4839,443 @@ var applyDifferences = /*#__PURE__*/function () {
             return (typePriority[a.type] || 999) - (typePriority[b.type] || 999);
           });
           _iterator = _createForOfIteratorHelper(differences);
-          _context4.prev = 18;
+          _context5.prev = 26;
           _loop = /*#__PURE__*/_regeneratorRuntime().mark(function _loop() {
-            var diff, createDatabaseSQL, tableName, createSQL, sql, error, changes, _loop2, _tableName, dropTableSQL, addFieldSQL, dropFieldSQL, _tableName2, field, currentField, modifyFieldSQL, existingColumns, columnNames, missingColumns, addIndexSQL, dropIndexSQL, _tableName3, index, replaceIndexSQL, dropCurrentProcSQL, createProcSQL, dropViewSQL, createViewSQL, _dropViewSQL, _createViewSQL, _dropViewSQL2, createTriggerSQL, dropTriggerSQL, _createTriggerSQL, _dropTriggerSQL, columns, insertRowSQL, _createDatabaseSQL;
-            return _regeneratorRuntime().wrap(function _loop$(_context3) {
-              while (1) switch (_context3.prev = _context3.next) {
+            var diff, createDatabaseSQL, tableName, createSQL, sql, _error, changes, _loop2, _tableName, dropTableSQL, requiredKey, addFieldSQL, dropFieldSQL, _tableName2, field, currentField, _requiredKey, modifyFieldSQL, existingColumns, columnNames, missingColumns, addIndexSQL, dropIndexSQL, _tableName3, index, replaceIndexSQL, _diff$currentConstrai2, _diff$currentConstrai, temporary, finalize, clauses, _clauses, _i4, _Object$entries, _Object$entries$_i, key, value, keyword, createViewSQL, dropViewSQL, createTriggerSQL, dropTriggerSQL, columns, insertRowSQL, _createDatabaseSQL;
+            return _regeneratorRuntime().wrap(function _loop$(_context4) {
+              while (1) switch (_context4.prev = _context4.next) {
                 case 0:
                   diff = _step.value;
+                  if (!appliedTogether.has(diff)) {
+                    _context4.next = 3;
+                    break;
+                  }
+                  return _context4.abrupt("return", 0);
+                case 3:
                   current = diff;
-                  _context3.prev = 2;
+                  _context4.prev = 4;
                   if (!(diff.type == 'missing_database')) {
-                    _context3.next = 9;
+                    _context4.next = 11;
                     break;
                   }
                   createDatabaseSQL = "CREATE DATABASE `".concat(diff.database, "`;");
                   console.log("Executing: ".concat(createDatabaseSQL));
-                  _context3.next = 8;
+                  _context4.next = 10;
                   return query(createDatabaseSQL);
-                case 8:
-                  return _context3.abrupt("return", 1);
-                case 9:
-                  _context3.next = 11;
-                  return query("USE `".concat(database, "`"));
+                case 10:
+                  return _context4.abrupt("return", 0);
                 case 11:
+                  _context4.next = 13;
+                  return query("USE ".concat(quoteIdentifier(diff[targetDatabase] || database)));
+                case 13:
                   if (!(diff.type === 'missing_table')) {
-                    _context3.next = 37;
+                    _context4.next = 39;
                     break;
                   }
                   tableName = diff.tableName, createSQL = diff.createSQL;
                   logger("Creating missing table ".concat(tableName));
                   console.log("Executing: ".concat(createSQL));
-                  _context3.prev = 15;
-                  _context3.next = 18;
+                  _context4.prev = 17;
+                  _context4.next = 20;
                   return query(createSQL);
-                case 18:
-                  _context3.next = 35;
-                  break;
                 case 20:
-                  _context3.prev = 20;
-                  _context3.t0 = _context3["catch"](15);
+                  _context4.next = 37;
+                  break;
+                case 22:
+                  _context4.prev = 22;
+                  _context4.t0 = _context4["catch"](17);
                   // The dump can name things this server has never heard of - a MySQL 8
                   // collation, index visibility. Amend the statement for whatever the
                   // server objected to and retry, one objection at a time, since it only
                   // reports the first. The table then exists, but not exactly as dumped,
                   // so record every change rather than calling it a clean success.
                   sql = createSQL;
-                  error = _context3.t0;
+                  _error = _context4.t0;
                   changes = [];
                   _loop2 = /*#__PURE__*/_regeneratorRuntime().mark(function _loop2() {
                     var message, rewrite;
-                    return _regeneratorRuntime().wrap(function _loop2$(_context2) {
-                      while (1) switch (_context2.prev = _context2.next) {
+                    return _regeneratorRuntime().wrap(function _loop2$(_context3) {
+                      while (1) switch (_context3.prev = _context3.next) {
                         case 0:
-                          message = error.message;
+                          message = _error.message;
                           rewrite = compatRewrites.reduce(function (found, fn) {
                             return found || fn(sql, message);
                           }, null);
                           if (rewrite) {
-                            _context2.next = 4;
+                            _context3.next = 4;
                             break;
                           }
-                          return _context2.abrupt("return", 1);
+                          return _context3.abrupt("return", 1);
                         case 4:
                           sql = rewrite.sql;
                           changes.push(rewrite.message);
                           console.log("Retrying: ".concat(sql));
-                          _context2.prev = 7;
-                          _context2.next = 10;
+                          _context3.prev = 7;
+                          _context3.next = 10;
                           return query(sql);
                         case 10:
-                          error = null;
-                          _context2.next = 16;
+                          _error = null;
+                          _context3.next = 16;
                           break;
                         case 13:
-                          _context2.prev = 13;
-                          _context2.t0 = _context2["catch"](7);
-                          error = _context2.t0;
+                          _context3.prev = 13;
+                          _context3.t0 = _context3["catch"](7);
+                          _error = _context3.t0;
                         case 16:
                         case "end":
-                          return _context2.stop();
+                          return _context3.stop();
                       }
                     }, _loop2, null, [[7, 13]]);
                   });
-                case 26:
-                  if (!(error && changes.length < compatRewrites.length)) {
-                    _context3.next = 32;
-                    break;
-                  }
-                  return _context3.delegateYield(_loop2(), "t1", 28);
                 case 28:
-                  if (!_context3.t1) {
-                    _context3.next = 30;
+                  if (!(_error && changes.length < compatRewrites.length)) {
+                    _context4.next = 34;
                     break;
                   }
-                  return _context3.abrupt("break", 32);
+                  return _context4.delegateYield(_loop2(), "t1", 30);
                 case 30:
-                  _context3.next = 26;
-                  break;
-                case 32:
-                  if (!error) {
-                    _context3.next = 34;
+                  if (!_context4.t1) {
+                    _context4.next = 32;
                     break;
                   }
-                  throw error;
-                case 34:
-                  warn(diff, changes.join('; '));
-                case 35:
-                  _context3.next = 182;
+                  return _context4.abrupt("break", 34);
+                case 32:
+                  _context4.next = 28;
                   break;
+                case 34:
+                  if (!_error) {
+                    _context4.next = 36;
+                    break;
+                  }
+                  throw _error;
+                case 36:
+                  warn(diff, changes.join('; '));
                 case 37:
+                  _context4.next = 222;
+                  break;
+                case 39:
                   if (!(diff.type === 'extra_table')) {
-                    _context3.next = 46;
+                    _context4.next = 48;
                     break;
                   }
                   _tableName = diff.tableName;
                   logger("Dropping extra table ".concat(_tableName));
                   dropTableSQL = "DROP TABLE `".concat(_tableName, "`;");
                   console.log("Executing: ".concat(dropTableSQL));
-                  _context3.next = 44;
+                  _context4.next = 46;
                   return query(dropTableSQL);
-                case 44:
-                  _context3.next = 182;
-                  break;
                 case 46:
+                  _context4.next = 222;
+                  break;
+                case 48:
                   if (!(diff.type === 'missing_field')) {
-                    _context3.next = 53;
+                    _context4.next = 57;
                     break;
                   }
                   // Existing rows get the column's default, or the type's implicit default for NOT NULL without one
-                  addFieldSQL = "ALTER TABLE `".concat(diff.tableName, "` ADD COLUMN `").concat(diff.field.Field, "` ").concat(columnDefinition(diff.field), ";");
+                  requiredKey = diff.field.AutoIncrement && differences.find(function (candidate) {
+                    var _candidate$index$Colu;
+                    return candidate.type === 'missing_index' && candidate.tableName === diff.tableName && ((_candidate$index$Colu = candidate.index.ColumnName[0]) === null || _candidate$index$Colu === void 0 ? void 0 : _candidate$index$Colu.replace(/\(\d+\)$/, '')) === diff.field.Field;
+                  });
+                  addFieldSQL = "ALTER TABLE ".concat(quoteIdentifier(diff.tableName), " ADD COLUMN ").concat(quoteIdentifier(diff.field.Field), " ").concat(columnDefinition(diff.field)).concat(columnPosition(diff)).concat(requiredKey ? ", ".concat(addIndexClause(requiredKey.index)) : '', ";");
                   console.log("Executing: ".concat(addFieldSQL));
-                  _context3.next = 51;
+                  _context4.next = 54;
                   return query(addFieldSQL);
-                case 51:
-                  _context3.next = 182;
+                case 54:
+                  if (requiredKey) appliedTogether.add(requiredKey);
+                  _context4.next = 222;
                   break;
-                case 53:
+                case 57:
                   if (!(diff.type === 'extra_field')) {
-                    _context3.next = 60;
+                    _context4.next = 66;
                     break;
                   }
                   dropFieldSQL = "ALTER TABLE `".concat(diff.tableName, "` DROP COLUMN `").concat(diff.field.Field, "`;");
                   console.log("Executing: ".concat(dropFieldSQL));
-                  _context3.next = 58;
+                  _context4.next = 62;
                   return query(dropFieldSQL);
-                case 58:
-                  _context3.next = 182;
+                case 62:
+                  if (!removedColumns.has(diff.tableName)) removedColumns.set(diff.tableName, new Set());
+                  removedColumns.get(diff.tableName).add(diff.field.Field);
+                  _context4.next = 222;
                   break;
-                case 60:
-                  if (!(diff.type === 'mismatched_field')) {
-                    _context3.next = 68;
-                    break;
-                  }
-                  _tableName2 = diff.tableName, field = diff.field, currentField = diff.currentField; // use alter table rather than adding fields
-                  // // Helper function to determine if we need batch processing
-                  // const needsBatchProcessing = () => {
-                  //     const currentType = currentField.Type.toLowerCase();
-                  //     const newType = field.Type.toLowerCase();
-                  //     // Decimal changes
-                  //     if (currentType.includes('decimal') && newType.includes('decimal')) {
-                  //         return true;
-                  //     }
-                  //     // VARCHAR/CHAR length reductions
-                  //     if ((currentType.includes('varchar') || currentType.includes('char')) &&
-                  //         (newType.includes('varchar') || newType.includes('char'))) {
-                  //         const currentLength = parseInt(currentType.match(/\((\d+)\)/)?.[1] || '0');
-                  //         const newLength = parseInt(newType.match(/\((\d+)\)/)?.[1] || '0');
-                  //         return newLength < currentLength;
-                  //     }
-                  //     // TEXT to VARCHAR conversions
-                  //     if (currentType.includes('text') && newType.includes('varchar')) {
-                  //         return true;
-                  //     }
-                  //     // Numeric type downgrades
-                  //     const numericDowngrades = {
-                  //         'bigint': ['int', 'mediumint', 'smallint', 'tinyint'],
-                  //         'int': ['mediumint', 'smallint', 'tinyint'],
-                  //         'mediumint': ['smallint', 'tinyint'],
-                  //         'smallint': ['tinyint'],
-                  //         'double': ['float', 'decimal'],
-                  //         'float': ['decimal']
-                  //     };
-                  //     for (const [larger, smaller] of Object.entries(numericDowngrades)) {
-                  //         if (currentType.includes(larger) && smaller.some(t => newType.includes(t))) {
-                  //             return true;
-                  //         }
-                  //     }
-                  //     return false;
-                  // };
-                  // if (needsBatchProcessing()) {
-                  //     // Step 1: Add new column
-                  //     const addColumnSQL = `ALTER TABLE \`${tableName}\` ADD COLUMN \`${field.Field}_new\` ${field.Type} DEFAULT NULL;`;
-                  //     console.log(`Adding new column for type conversion: ${addColumnSQL}`);
-                  //     await query(addColumnSQL);
-                  //     // Step 2: Copy data in batches
-                  //     let totalUpdated = 0;
-                  //     let batchSize = 10000;
-                  //     let batchCount = 0;
-                  //     while (true) {
-                  //         const updateSQL = `
-                  //             UPDATE \`${tableName}\` 
-                  //             SET \`${field.Field}_new\` = \`${field.Field}\`
-                  //             WHERE \`${field.Field}_new\` IS NULL 
-                  //             AND \`${field.Field}\` IS NOT NULL
-                  //             LIMIT ${batchSize};
-                  //         `;
-                  //         const result = await query(updateSQL);
-                  //         const rowsAffected = result.affectedRows;
-                  //         if (rowsAffected === 0) break;
-                  //         totalUpdated += rowsAffected;
-                  //         batchCount++;
-                  //         console.log(`Batch ${batchCount}: Converted ${rowsAffected} rows. Total converted: ${totalUpdated}`);
-                  //     }
-                  //     // Step 3: Verify data (optional)
-                  //     const verifySQL = `
-                  //         SELECT COUNT(*) as mismatch FROM \`${tableName}\`
-                  //         WHERE \`${field.Field}\` IS NOT NULL 
-                  //         AND \`${field.Field}_new\` IS NULL;
-                  //     `;
-                  //     const [verifyResult] = await query(verifySQL);
-                  //     if (verifyResult.mismatch > 0) {
-                  //         console.log(`Warning: ${verifyResult.mismatch} rows may have failed conversion`);
-                  //     }
-                  //     // Step 4: Swap columns
-                  //     const swapColumnsSQL = `
-                  //         ALTER TABLE \`${tableName}\`
-                  //         DROP COLUMN \`${field.Field}\`,
-                  //         RENAME COLUMN \`${field.Field}_new\` TO \`${field.Field}\`
-                  //     `;
-                  //     console.log(`Executing: ${swapColumnsSQL}`);
-                  //     await query(swapColumnsSQL);
-                  //     console.log(`Completed type conversion for ${field.Field}. Total rows converted: ${totalUpdated}`);
-                  // } else {
-                  // Original mismatched field handling for simple changes
-                  modifyFieldSQL = "ALTER TABLE `".concat(_tableName2, "` CHANGE `").concat(field.Field, "` `").concat(field.Field, "` ").concat(columnDefinition(field, currentField), ";");
-                  console.log("Executing: ".concat(modifyFieldSQL));
-                  _context3.next = 66;
-                  return query(modifyFieldSQL);
                 case 66:
-                  _context3.next = 182;
-                  break;
-                case 68:
-                  if (!(diff.type === 'missing_index')) {
-                    _context3.next = 84;
+                  if (!(diff.type === 'mismatched_field')) {
+                    _context4.next = 76;
                     break;
                   }
-                  _context3.next = 71;
+                  _tableName2 = diff.tableName, field = diff.field, currentField = diff.currentField; // MySQL requires AUTO_INCREMENT to be indexed in the same
+                  // ALTER that introduces it. A separate later ADD KEY fails.
+                  _requiredKey = field.AutoIncrement && differences.find(function (candidate) {
+                    var _candidate$index$Colu2;
+                    return candidate.type === 'missing_index' && candidate.tableName === _tableName2 && ((_candidate$index$Colu2 = candidate.index.ColumnName[0]) === null || _candidate$index$Colu2 === void 0 ? void 0 : _candidate$index$Colu2.replace(/\(\d+\)$/, '')) === field.Field;
+                  });
+                  modifyFieldSQL = "ALTER TABLE ".concat(quoteIdentifier(_tableName2), " CHANGE ").concat(quoteIdentifier(field.Field), " ").concat(quoteIdentifier(field.Field), " ").concat(columnDefinition(field, currentField)).concat(columnPosition(diff)).concat(_requiredKey ? ", ".concat(addIndexClause(_requiredKey.index)) : '', ";");
+                  console.log("Executing: ".concat(modifyFieldSQL));
+                  _context4.next = 73;
+                  return query(modifyFieldSQL);
+                case 73:
+                  if (_requiredKey) appliedTogether.add(_requiredKey);
+                  _context4.next = 222;
+                  break;
+                case 76:
+                  if (!(diff.type === 'missing_index')) {
+                    _context4.next = 92;
+                    break;
+                  }
+                  _context4.next = 79;
                   return query("SHOW COLUMNS FROM `".concat(diff.tableName, "`"));
-                case 71:
-                  existingColumns = _context3.sent;
+                case 79:
+                  existingColumns = _context4.sent;
                   columnNames = existingColumns.map(function (col) {
                     return col.Field;
                   }); // Check if all columns for the index exist
                   missingColumns = Array.isArray(diff.index.ColumnName) ? diff.index.ColumnName.filter(function (col) {
-                    var _col$split;
-                    return !columnNames.includes(col) && !columnNames.includes((_col$split = col.split("(")) === null || _col$split === void 0 ? void 0 : _col$split[0]);
+                    return !col.startsWith('(') && !columnNames.includes(col.replace(/\s+(?:ASC|DESC)$/i, '').replace(/\(\d+\)$/, ''));
                   }) : [];
                   if (!(missingColumns.length > 0)) {
-                    _context3.next = 76;
+                    _context4.next = 84;
                     break;
                   }
                   throw new Error("Cannot create index ".concat(diff.index.Name, " on ").concat(diff.tableName, ". Missing columns: ").concat(missingColumns.join(', ')));
-                case 76:
+                case 84:
                   if (!(!Array.isArray(diff.index.ColumnName) || diff.index.ColumnName.length === 0)) {
-                    _context3.next = 78;
+                    _context4.next = 86;
                     break;
                   }
                   throw new Error("Cannot create index ".concat(diff.index.Name, " on ").concat(diff.tableName, ". ColumnName is undefined or empty."));
-                case 78:
+                case 86:
                   addIndexSQL = "ALTER TABLE `".concat(diff.tableName, "` ").concat(addIndexClause(diff.index), ";");
                   console.log("Executing: ".concat(addIndexSQL));
-                  _context3.next = 82;
+                  _context4.next = 90;
                   return query(addIndexSQL);
-                case 82:
-                  _context3.next = 182;
+                case 90:
+                  _context4.next = 222;
                   break;
-                case 84:
+                case 92:
                   if (!(diff.type === 'extra_index')) {
-                    _context3.next = 91;
+                    _context4.next = 101;
                     break;
                   }
+                  if (!indexRemovedWithColumns(diff.tableName, diff.index)) {
+                    _context4.next = 95;
+                    break;
+                  }
+                  return _context4.abrupt("return", 0);
+                case 95:
                   dropIndexSQL = "ALTER TABLE `".concat(diff.tableName, "` ").concat(dropIndexClause(diff.index), ";");
                   console.log("Executing: ".concat(dropIndexSQL));
-                  _context3.next = 89;
+                  _context4.next = 99;
                   return query(dropIndexSQL);
-                case 89:
-                  _context3.next = 182;
-                  break;
-                case 91:
-                  if (!(diff.type === 'mismatched_index')) {
-                    _context3.next = 99;
-                    break;
-                  }
-                  _tableName3 = diff.tableName, index = diff.index; // Drop and re-add in one statement: the index is never missing if the add fails,
-                  // and a primary key on an AUTO_INCREMENT column can be replaced
-                  replaceIndexSQL = "ALTER TABLE `".concat(_tableName3, "` ").concat(dropIndexClause(index), ", ").concat(addIndexClause(index), ";");
-                  console.log("Executing: ".concat(replaceIndexSQL));
-                  _context3.next = 97;
-                  return query(replaceIndexSQL);
-                case 97:
-                  _context3.next = 182;
-                  break;
                 case 99:
-                  if (!(diff.type === 'missing_procedure' || diff.type === 'mismatched_procedure')) {
-                    _context3.next = 110;
+                  _context4.next = 222;
+                  break;
+                case 101:
+                  if (!(diff.type === 'mismatched_index')) {
+                    _context4.next = 116;
                     break;
                   }
-                  // Drop the procedure if it exists
-                  dropCurrentProcSQL = "DROP PROCEDURE IF EXISTS `".concat(diff.Name, "`;");
-                  console.log("Executing: ".concat(dropCurrentProcSQL));
-                  _context3.next = 104;
-                  return query(dropCurrentProcSQL);
-                case 104:
-                  // Create the procedure
-                  createProcSQL = diff.Definition;
-                  console.log("Executing: ".concat(createProcSQL)); // Log the SQL statement
-                  _context3.next = 108;
-                  return query(createProcSQL);
-                case 108:
-                  _context3.next = 182;
+                  _tableName3 = diff.tableName, index = diff.index;
+                  if (!(diff.currentIndex && indexStructure(diff.currentIndex) === indexStructure(index) && diff.currentIndex.Visible !== false !== (index.Visible !== false))) {
+                    _context4.next = 107;
+                    break;
+                  }
+                  _context4.next = 106;
+                  return query("ALTER TABLE ".concat(quoteIdentifier(_tableName3), " ALTER INDEX ").concat(quoteIdentifier(index.Name), " ").concat(index.Visible === false ? 'INVISIBLE' : 'VISIBLE', ";"));
+                case 106:
+                  return _context4.abrupt("return", 0);
+                case 107:
+                  // Drop and re-add in one statement: the index is never missing if the add fails,
+                  // and a primary key on an AUTO_INCREMENT column can be replaced
+                  replaceIndexSQL = "ALTER TABLE `".concat(_tableName3, "` ").concat(indexRemovedWithColumns(_tableName3, diff.currentIndex) ? '' : "".concat(dropIndexClause(index), ", ")).concat(addIndexClause(index), ";");
+                  console.log("Executing: ".concat(replaceIndexSQL));
+                  _context4.next = 111;
+                  return query(replaceIndexSQL);
+                case 111:
+                  if (!(index.Visible === false)) {
+                    _context4.next = 114;
+                    break;
+                  }
+                  _context4.next = 114;
+                  return query("ALTER TABLE ".concat(quoteIdentifier(_tableName3), " ALTER INDEX ").concat(quoteIdentifier(index.Name), " INVISIBLE;"));
+                case 114:
+                  _context4.next = 222;
                   break;
-                case 110:
-                  if (!(diff.type === 'missing_view')) {
-                    _context3.next = 121;
+                case 116:
+                  if (!(diff.type === 'missing_constraint' || diff.type === 'mismatched_constraint' || diff.type === 'extra_constraint')) {
+                    _context4.next = 140;
+                    break;
+                  }
+                  if (!(diff.type === 'mismatched_constraint')) {
+                    _context4.next = 133;
+                    break;
+                  }
+                  // With FK checks enabled MySQL uses a table-copy ALTER and
+                  // rejects DROP+ADD of the same FK name. Use a distinct name
+                  // for the validated replacement, then restore the template
+                  // name in a second validated ALTER. A constraint remains
+                  // enforced throughout; a failed first ALTER keeps the old one.
+                  temporary = _objectSpread2(_objectSpread2({}, diff.constraint), {}, {
+                    Name: "mysqlsyncr_fk_".concat(node_crypto.randomBytes(12).toString('hex'))
+                  });
+                  _context4.next = 121;
+                  return query("ALTER TABLE ".concat(quoteIdentifier(diff.tableName), " DROP FOREIGN KEY ").concat(quoteIdentifier(((_diff$currentConstrai = diff.currentConstraint) === null || _diff$currentConstrai === void 0 ? void 0 : _diff$currentConstrai.Name) || diff.constraint.Name), ", ").concat(addConstraintClause(temporary), ";"));
+                case 121:
+                  finalize = "ALTER TABLE ".concat(quoteIdentifier(diff.tableName), " DROP FOREIGN KEY ").concat(quoteIdentifier(temporary.Name), ", ").concat(addConstraintClause(diff.constraint), ";");
+                  _context4.prev = 122;
+                  _context4.next = 125;
+                  return query(finalize);
+                case 125:
+                  _context4.next = 132;
+                  break;
+                case 127:
+                  _context4.prev = 127;
+                  _context4.t2 = _context4["catch"](122);
+                  _context4.t2.message += "; replacement remains enforced as ".concat(temporary.Name, ", but its final name could not be restored");
+                  _context4.t2.recoverySQL = finalize;
+                  throw _context4.t2;
+                case 132:
+                  return _context4.abrupt("return", 0);
+                case 133:
+                  clauses = [];
+                  if (diff.type !== 'missing_constraint') clauses.push("DROP FOREIGN KEY ".concat(quoteIdentifier(((_diff$currentConstrai2 = diff.currentConstraint) === null || _diff$currentConstrai2 === void 0 ? void 0 : _diff$currentConstrai2.Name) || diff.constraint.Name)));
+                  if (diff.type !== 'extra_constraint') clauses.push(addConstraintClause(diff.constraint));
+                  _context4.next = 138;
+                  return query("ALTER TABLE ".concat(quoteIdentifier(diff.tableName), " ").concat(clauses.join(', '), ";"));
+                case 138:
+                  _context4.next = 222;
+                  break;
+                case 140:
+                  if (!(diff.type === 'mismatched_table_options')) {
+                    _context4.next = 160;
+                    break;
+                  }
+                  _clauses = [];
+                  _i4 = 0, _Object$entries = Object.entries(diff.options || {});
+                case 143:
+                  if (!(_i4 < _Object$entries.length)) {
+                    _context4.next = 154;
+                    break;
+                  }
+                  _Object$entries$_i = _slicedToArray(_Object$entries[_i4], 2), key = _Object$entries$_i[0], value = _Object$entries$_i[1];
+                  if (/^[a-zA-Z0-9_]+$/.test(value)) {
+                    _context4.next = 147;
+                    break;
+                  }
+                  throw new Error("Invalid table option ".concat(key, ": ").concat(value));
+                case 147:
+                  keyword = {
+                    engine: 'ENGINE',
+                    charset: 'DEFAULT CHARACTER SET',
+                    collate: 'COLLATE'
+                  }[key];
+                  if (keyword) {
+                    _context4.next = 150;
+                    break;
+                  }
+                  throw new Error("Unknown table option ".concat(key));
+                case 150:
+                  _clauses.push("".concat(keyword, "=").concat(value));
+                case 151:
+                  _i4++;
+                  _context4.next = 143;
+                  break;
+                case 154:
+                  if (_clauses.length) {
+                    _context4.next = 156;
+                    break;
+                  }
+                  throw new Error('No table options to apply');
+                case 156:
+                  _context4.next = 158;
+                  return query("ALTER TABLE ".concat(quoteIdentifier(diff.tableName), " ").concat(_clauses.join(' '), ";"));
+                case 158:
+                  _context4.next = 222;
+                  break;
+                case 160:
+                  if (!(diff.type === 'missing_procedure' || diff.type === 'mismatched_procedure')) {
+                    _context4.next = 170;
+                    break;
+                  }
+                  if (!(diff.type === 'mismatched_procedure')) {
+                    _context4.next = 166;
+                    break;
+                  }
+                  _context4.next = 164;
+                  return replaceStoredObject('PROCEDURE', diff.Name, diff.Definition, 'Create Procedure');
+                case 164:
+                  _context4.next = 168;
+                  break;
+                case 166:
+                  _context4.next = 168;
+                  return query(diff.Definition);
+                case 168:
+                  _context4.next = 222;
+                  break;
+                case 170:
+                  if (!(diff.type === 'missing_view' || diff.type === 'mismatched_view')) {
+                    _context4.next = 178;
+                    break;
+                  }
+                  // An invalid replacement must leave the existing view intact.
+                  createViewSQL = diff.definition.replace(/^\s*CREATE\s+(?:OR\s+REPLACE\s+)?/i, 'CREATE OR REPLACE ');
+                  console.log("Executing: ".concat(createViewSQL));
+                  _context4.next = 175;
+                  return query(createViewSQL);
+                case 175:
+                  completedViews++;
+                  _context4.next = 222;
+                  break;
+                case 178:
+                  if (!(diff.type === 'extra_view')) {
+                    _context4.next = 185;
                     break;
                   }
                   dropViewSQL = "DROP VIEW IF EXISTS `".concat(diff.viewName, "`;");
                   console.log("Executing: ".concat(dropViewSQL));
-                  _context3.next = 115;
+                  _context4.next = 183;
                   return query(dropViewSQL);
-                case 115:
-                  createViewSQL = diff.definition; // Use the expected definition to create the view
-                  console.log("Executing: ".concat(createViewSQL));
-                  _context3.next = 119;
-                  return query(createViewSQL);
-                case 119:
-                  _context3.next = 182;
+                case 183:
+                  _context4.next = 222;
                   break;
-                case 121:
-                  if (!(diff.type === 'mismatched_view')) {
-                    _context3.next = 132;
-                    break;
-                  }
-                  _dropViewSQL = "DROP VIEW IF EXISTS `".concat(diff.viewName, "`;");
-                  console.log("Executing: ".concat(_dropViewSQL));
-                  _context3.next = 126;
-                  return query(_dropViewSQL);
-                case 126:
-                  _createViewSQL = diff.definition; // Use the expected definition to create the view
-                  console.log("Executing: ".concat(_createViewSQL));
-                  _context3.next = 130;
-                  return query(_createViewSQL);
-                case 130:
-                  _context3.next = 182;
-                  break;
-                case 132:
-                  if (!(diff.type === 'extra_view')) {
-                    _context3.next = 139;
-                    break;
-                  }
-                  _dropViewSQL2 = "DROP VIEW IF EXISTS `".concat(diff.viewName, "`;");
-                  console.log("Executing: ".concat(_dropViewSQL2));
-                  _context3.next = 137;
-                  return query(_dropViewSQL2);
-                case 137:
-                  _context3.next = 182;
-                  break;
-                case 139:
+                case 185:
                   if (!(diff.type === 'missing_trigger')) {
-                    _context3.next = 147;
+                    _context4.next = 193;
                     break;
                   }
                   createTriggerSQL = diff.trigger.Definition;
                   logger('fixing trigger', diff.trigger.Name);
                   console.log("Executing: ".concat(createTriggerSQL));
-                  _context3.next = 145;
+                  _context4.next = 191;
                   return query(createTriggerSQL);
-                case 145:
-                  _context3.next = 182;
+                case 191:
+                  _context4.next = 222;
                   break;
-                case 147:
+                case 193:
                   if (!(diff.type === 'mismatched_trigger')) {
-                    _context3.next = 158;
+                    _context4.next = 198;
+                    break;
+                  }
+                  _context4.next = 196;
+                  return replaceStoredObject('TRIGGER', diff.trigger.Name, diff.trigger.Definition, 'SQL Original Statement');
+                case 196:
+                  _context4.next = 222;
+                  break;
+                case 198:
+                  if (!(diff.type === 'extra_trigger')) {
+                    _context4.next = 205;
                     break;
                   }
                   dropTriggerSQL = "DROP TRIGGER IF EXISTS `".concat(diff.trigger.Name, "`;");
                   console.log("Executing: ".concat(dropTriggerSQL));
-                  _context3.next = 152;
+                  _context4.next = 203;
                   return query(dropTriggerSQL);
-                case 152:
-                  _createTriggerSQL = diff.trigger.Definition;
-                  console.log("Executing: ".concat(_createTriggerSQL));
-                  _context3.next = 156;
-                  return query(_createTriggerSQL);
-                case 156:
-                  _context3.next = 182;
+                case 203:
+                  _context4.next = 222;
                   break;
-                case 158:
-                  if (!(diff.type === 'extra_trigger')) {
-                    _context3.next = 165;
-                    break;
-                  }
-                  _dropTriggerSQL = "DROP TRIGGER IF EXISTS `".concat(diff.trigger.Name, "`;");
-                  console.log("Executing: ".concat(_dropTriggerSQL));
-                  _context3.next = 163;
-                  return query(_dropTriggerSQL);
-                case 163:
-                  _context3.next = 182;
-                  break;
-                case 165:
+                case 205:
                   if (!(diff.type === 'missing_row')) {
-                    _context3.next = 173;
+                    _context4.next = 213;
                     break;
                   }
                   columns = Object.keys(diff.row);
@@ -4931,96 +5285,163 @@ var applyDifferences = /*#__PURE__*/function () {
                     return '?';
                   }).join(', '), ");");
                   console.log("Executing: ".concat(insertRowSQL), JSON.stringify(diff.row));
-                  _context3.next = 171;
+                  _context4.next = 211;
                   return query(insertRowSQL, columns.map(function (col) {
                     return diff.row[col];
                   }));
-                case 171:
-                  _context3.next = 182;
+                case 211:
+                  _context4.next = 222;
                   break;
-                case 173:
+                case 213:
                   if (!(diff.type === 'missing_database')) {
-                    _context3.next = 181;
+                    _context4.next = 221;
                     break;
                   }
                   logger('fixing missing database', diff.database);
                   _createDatabaseSQL = "CREATE DATABASE `".concat(diff.database, "`;");
                   console.log("Executing: ".concat(_createDatabaseSQL));
-                  _context3.next = 179;
+                  _context4.next = 219;
                   return query(_createDatabaseSQL);
-                case 179:
-                  _context3.next = 182;
+                case 219:
+                  _context4.next = 222;
                   break;
-                case 181:
+                case 221:
                   throw new Error("Unknown difference type: ".concat(diff.type));
-                case 182:
-                  _context3.next = 189;
+                case 222:
+                  _context4.next = 227;
                   break;
-                case 184:
-                  _context3.prev = 184;
-                  _context3.t2 = _context3["catch"](2);
-                  console.error("Failed to apply ".concat(describeDifference$1(diff), ": ").concat(_context3.t2.message));
-                  logger(diff);
-                  failures.push({
-                    type: diff.type,
-                    tableName: diff.tableName,
-                    description: describeDifference$1(diff),
-                    message: _context3.t2.message
-                  });
-                case 189:
+                case 224:
+                  _context4.prev = 224;
+                  _context4.t3 = _context4["catch"](4);
+                  if (['missing_view', 'mismatched_view'].includes(diff.type) && isViewDependencyError(_context4.t3)) deferredViews.push({
+                    diff: diff,
+                    error: _context4.t3
+                  });else fail(diff, _context4.t3);
+                case 227:
                 case "end":
-                  return _context3.stop();
+                  return _context4.stop();
               }
-            }, _loop, null, [[2, 184], [15, 20]]);
+            }, _loop, null, [[4, 224], [17, 22], [122, 127]]);
           });
           _iterator.s();
-        case 21:
-          if ((_step = _iterator.n()).done) {
-            _context4.next = 27;
-            break;
-          }
-          return _context4.delegateYield(_loop(), "t1", 23);
-        case 23:
-          if (!_context4.t1) {
-            _context4.next = 25;
-            break;
-          }
-          return _context4.abrupt("continue", 25);
-        case 25:
-          _context4.next = 21;
-          break;
-        case 27:
-          _context4.next = 32;
-          break;
         case 29:
-          _context4.prev = 29;
-          _context4.t2 = _context4["catch"](18);
-          _iterator.e(_context4.t2);
-        case 32:
-          _context4.prev = 32;
+          if ((_step = _iterator.n()).done) {
+            _context5.next = 36;
+            break;
+          }
+          return _context5.delegateYield(_loop(), "t1", 31);
+        case 31:
+          _ret = _context5.t1;
+          if (!(_ret === 0)) {
+            _context5.next = 34;
+            break;
+          }
+          return _context5.abrupt("continue", 34);
+        case 34:
+          _context5.next = 29;
+          break;
+        case 36:
+          _context5.next = 41;
+          break;
+        case 38:
+          _context5.prev = 38;
+          _context5.t2 = _context5["catch"](26);
+          _iterator.e(_context5.t2);
+        case 41:
+          _context5.prev = 41;
           _iterator.f();
-          return _context4.finish(32);
-        case 35:
-          return _context4.abrupt("return", {
+          return _context5.finish(41);
+        case 44:
+          if (!(deferredViews.length && completedViews > 0)) {
+            _context5.next = 77;
+            break;
+          }
+          pending = deferredViews;
+          deferredViews = [];
+          completedViews = 0;
+          _iterator2 = _createForOfIteratorHelper(pending);
+          _context5.prev = 49;
+          _iterator2.s();
+        case 51:
+          if ((_step2 = _iterator2.n()).done) {
+            _context5.next = 67;
+            break;
+          }
+          diff = _step2.value.diff;
+          current = diff;
+          _context5.prev = 54;
+          _context5.next = 57;
+          return query("USE ".concat(quoteIdentifier(diff[targetDatabase] || database)));
+        case 57:
+          _context5.next = 59;
+          return query(diff.definition.replace(/^\s*CREATE\s+(?:OR\s+REPLACE\s+)?/i, 'CREATE OR REPLACE '));
+        case 59:
+          completedViews++;
+          _context5.next = 65;
+          break;
+        case 62:
+          _context5.prev = 62;
+          _context5.t3 = _context5["catch"](54);
+          if (isViewDependencyError(_context5.t3)) deferredViews.push({
+            diff: diff,
+            error: _context5.t3
+          });else fail(diff, _context5.t3);
+        case 65:
+          _context5.next = 51;
+          break;
+        case 67:
+          _context5.next = 72;
+          break;
+        case 69:
+          _context5.prev = 69;
+          _context5.t4 = _context5["catch"](49);
+          _iterator2.e(_context5.t4);
+        case 72:
+          _context5.prev = 72;
+          _iterator2.f();
+          return _context5.finish(72);
+        case 75:
+          _context5.next = 44;
+          break;
+        case 77:
+          for (_i3 = 0, _deferredViews = deferredViews; _i3 < _deferredViews.length; _i3++) {
+            _deferredViews$_i = _deferredViews[_i3], _diff = _deferredViews$_i.diff, error = _deferredViews$_i.error;
+            fail(_diff, error);
+          }
+          return _context5.abrupt("return", {
             attempted: differences.length,
             failures: failures,
             warnings: warnings
           });
-        case 36:
+        case 79:
         case "end":
-          return _context4.stop();
+          return _context5.stop();
       }
-    }, _callee2, null, [[8, 13], [18, 29, 32, 35]]);
+    }, _callee3, null, [[16, 21], [26, 38, 41, 44], [49, 69, 72, 75], [54, 62]]);
   }));
   return function applyDifferences(_x, _x2, _x3) {
     return _ref.apply(this, arguments);
   };
 }();
 
+// Used by the global view phase so a view in schema A can depend on one in Z.
+var applyViewsAcrossDatabases = function applyViewsAcrossDatabases(connection, allDifferences) {
+  return applyDifferences(connection, null, Object.entries(allDifferences).flatMap(function (_ref4) {
+    var _ref5 = _slicedToArray(_ref4, 2),
+      database = _ref5[0],
+      differences = _ref5[1];
+    return differences.filter(function (diff) {
+      return ['missing_view', 'mismatched_view', 'extra_view'].includes(diff.type);
+    }).map(function (diff) {
+      return _objectSpread2(_objectSpread2({}, diff), {}, _defineProperty({}, targetDatabase, database));
+    });
+  }));
+};
+
 // One line summing up the failures from applyDifferences, for errors and logs
-var describeFailures = function describeFailures(_ref3) {
-  var attempted = _ref3.attempted,
-    failures = _ref3.failures;
+var describeFailures = function describeFailures(_ref6) {
+  var attempted = _ref6.attempted,
+    failures = _ref6.failures;
   return "".concat(failures.length, " of ").concat(attempted, " difference(s) failed to apply: ").concat(failures.map(function (f) {
     return "".concat(f.description, " (").concat(f.message, ")");
   }).join('; '));
@@ -5072,7 +5493,7 @@ var findMissingRows = /*#__PURE__*/function () {
           _iterator = _createForOfIteratorHelper(tableOptions.rows);
           _context2.prev = 11;
           _loop = /*#__PURE__*/_regeneratorRuntime().mark(function _loop() {
-            var row, missingKeyColumns, rowKey, where, values, found;
+            var row, missingKeyColumns, rowKey, where, values, columns, found;
             return _regeneratorRuntime().wrap(function _loop$(_context) {
               while (1) switch (_context.prev = _context.next) {
                 case 0:
@@ -5090,7 +5511,7 @@ var findMissingRows = /*#__PURE__*/function () {
                     return [col, row[col]];
                   }));
                   if (!tableExists) {
-                    _context.next = 20;
+                    _context.next = 16;
                     break;
                   }
                   where = key.map(function (col) {
@@ -5100,38 +5521,40 @@ var findMissingRows = /*#__PURE__*/function () {
                     return row[col] !== null;
                   }).map(function (col) {
                     return row[col];
-                  });
-                  _context.prev = 8;
-                  _context.next = 11;
-                  return connection.query("SELECT 1 FROM `".concat(database, "`.`").concat(tableName, "` WHERE ").concat(where, " LIMIT 1"), values);
-                case 11:
-                  found = _context.sent;
-                  _context.next = 18;
-                  break;
-                case 14:
-                  _context.prev = 14;
-                  _context.t0 = _context["catch"](8);
-                  // e.g. a key column the table doesn't have yet; checked again once the structure is fixed
-                  console.error("Could not check seed rows for ".concat(database, ".").concat(tableName, ": ").concat(_context.t0.message));
+                  }); // A structural difference already records a missing key column;
+                  // the verification pass checks seed rows after that column exists.
+                  columns = current.tables[tableName].columns;
+                  if (!(Array.isArray(columns) && key.some(function (name) {
+                    return !columns.some(function (col) {
+                      return col.Field === name;
+                    });
+                  }))) {
+                    _context.next = 11;
+                    break;
+                  }
                   return _context.abrupt("return", 0);
-                case 18:
+                case 11:
+                  _context.next = 13;
+                  return connection.query("SELECT 1 FROM `".concat(database, "`.`").concat(tableName, "` WHERE ").concat(where, " LIMIT 1"), values);
+                case 13:
+                  found = _context.sent;
                   if (!(found.length > 0)) {
-                    _context.next = 20;
+                    _context.next = 16;
                     break;
                   }
                   return _context.abrupt("return", 1);
-                case 20:
+                case 16:
                   differences.push({
                     type: 'missing_row',
                     tableName: tableName,
                     key: rowKey,
                     row: row
                   });
-                case 21:
+                case 17:
                 case "end":
                   return _context.stop();
               }
-            }, _loop, null, [[8, 14]]);
+            }, _loop);
           });
           _iterator.s();
         case 14:
@@ -5184,349 +5607,539 @@ var findMissingRows = /*#__PURE__*/function () {
   };
 }();
 
-var compareAllDatabases = /*#__PURE__*/function () {
-  var _ref = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee(connection, inputDir) {
-    var update,
-      command,
-      options,
-      expectedDatabases,
-      syncOptions,
-      existingDatabases,
-      allDifferences,
-      missingDatabases,
-      _iterator,
-      _step,
-      _database,
-      _iterator2,
-      _step2,
-      database,
-      _iterator3,
-      _step3,
-      _loop,
-      _ret,
-      _args2 = arguments;
-    return _regeneratorRuntime().wrap(function _callee$(_context2) {
-      while (1) switch (_context2.prev = _context2.next) {
+// Dependencies can cross schema boundaries. Finish each phase in ALL schemas
+// before starting the next; never disable foreign-key validation to restore.
+var phase = function phase(_ref) {
+  var type = _ref.type;
+  if (type === 'missing_database') return 0;
+  if (type === 'extra_constraint') return 1;
+  if (type.endsWith('_constraint')) return 3;
+  if (type.endsWith('_procedure')) return 4;
+  if (type.endsWith('_view')) return 5;
+  if (type.endsWith('_trigger')) return 6;
+  if (type === 'missing_row') return 7;
+  return 2;
+};
+var applyAllDifferences = /*#__PURE__*/function () {
+  var _ref2 = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee(connection, allDifferences) {
+    var result, _loop, step;
+    return _regeneratorRuntime().wrap(function _callee$(_context3) {
+      while (1) switch (_context3.prev = _context3.next) {
         case 0:
-          update = _args2.length > 2 && _args2[2] !== undefined ? _args2[2] : false;
-          command = _args2.length > 3 ? _args2[3] : undefined;
-          options = _args2.length > 4 ? _args2[4] : undefined;
-          if (!(connection.state === 'disconnected')) {
-            _context2.next = 6;
-            break;
-          }
-          _context2.next = 6;
-          return connection.reconnect();
-        case 6:
-          _context2.next = 8;
-          return getDatabaseDumpNames(inputDir);
-        case 8:
-          expectedDatabases = _context2.sent;
-          _context2.next = 11;
-          return loadSyncOptions(inputDir);
-        case 11:
-          syncOptions = _context2.sent;
-          logger('Expected databases from input directory:', expectedDatabases);
-
-          // Check existing databases
-          _context2.next = 15;
-          return getDatabases(connection);
-        case 15:
-          existingDatabases = _context2.sent;
-          // console.log('Existing databases:', existingDatabases);
-          allDifferences = {};
-          missingDatabases = [];
-          logger('All differences:', allDifferences);
-
-          // Note missing databases and prepare to create them
-          _iterator = _createForOfIteratorHelper(expectedDatabases);
-          _context2.prev = 20;
-          _iterator.s();
-        case 22:
-          if ((_step = _iterator.n()).done) {
-            _context2.next = 29;
-            break;
-          }
-          _database = _step.value;
-          if (!(options && options.database && options.database !== _database)) {
-            _context2.next = 26;
-            break;
-          }
-          return _context2.abrupt("continue", 27);
-        case 26:
-          if (!existingDatabases.includes(_database)) {
-            allDifferences[_database] = [{
-              database: _database,
-              type: 'missing_database',
-              message: 'Database not found'
-            }];
-            missingDatabases.push(_database);
-          }
-        case 27:
-          _context2.next = 22;
-          break;
-        case 29:
-          _context2.next = 34;
-          break;
-        case 31:
-          _context2.prev = 31;
-          _context2.t0 = _context2["catch"](20);
-          _iterator.e(_context2.t0);
-        case 34:
-          _context2.prev = 34;
-          _iterator.f();
-          return _context2.finish(34);
-        case 37:
-          if (!(missingDatabases.length > 0 && update)) {
-            _context2.next = 60;
-            break;
-          }
-          logger('Creating missing databases:');
-          _iterator2 = _createForOfIteratorHelper(missingDatabases);
-          _context2.prev = 40;
-          _iterator2.s();
-        case 42:
-          if ((_step2 = _iterator2.n()).done) {
-            _context2.next = 50;
-            break;
-          }
-          database = _step2.value;
-          logger("Creating database ".concat(database, "..."));
-          _context2.next = 47;
-          return connection.query("CREATE DATABASE `".concat(database, "`;"));
-        case 47:
-          logger("Database ".concat(database, " created."));
-        case 48:
-          _context2.next = 42;
-          break;
-        case 50:
-          _context2.next = 55;
-          break;
-        case 52:
-          _context2.prev = 52;
-          _context2.t1 = _context2["catch"](40);
-          _iterator2.e(_context2.t1);
-        case 55:
-          _context2.prev = 55;
-          _iterator2.f();
-          return _context2.finish(55);
-        case 58:
-          _context2.next = 61;
-          break;
-        case 60:
-          if (missingDatabases.length > 0 && !update) {
-            logger('Missing databases found but update is not enabled. Please enable update to create missing databases.');
-            logger('Please run the command again with the --update flag to create missing databases.');
-            logger('Missing databases:');
-            logger(missingDatabases);
-          } else {
-            logger('All expected databases exist.');
-          }
-        case 61:
-          _iterator3 = _createForOfIteratorHelper(expectedDatabases);
-          _context2.prev = 62;
-          _loop = /*#__PURE__*/_regeneratorRuntime().mark(function _loop() {
-            var database, filePath, fileContent, expectedStructure, currentStructure, differences, result;
-            return _regeneratorRuntime().wrap(function _loop$(_context) {
-              while (1) switch (_context.prev = _context.next) {
+          result = {
+            attempted: 0,
+            failures: [],
+            warnings: []
+          };
+          _loop = /*#__PURE__*/_regeneratorRuntime().mark(function _loop(step) {
+            var _result$failures, _result$warnings, applied, _loop2, _i, _Object$entries, error;
+            return _regeneratorRuntime().wrap(function _loop$(_context2) {
+              while (1) switch (_context2.prev = _context2.next) {
                 case 0:
-                  database = _step3.value;
-                  if (!(options && options.database && options.database !== database)) {
-                    _context.next = 3;
+                  if (!(step === 5 && Object.values(allDifferences).some(function (diffs) {
+                    return diffs.some(function (diff) {
+                      return phase(diff) === 5;
+                    });
+                  }))) {
+                    _context2.next = 9;
                     break;
                   }
-                  return _context.abrupt("return", 0);
+                  _context2.next = 3;
+                  return applyViewsAcrossDatabases(connection, allDifferences);
                 case 3:
-                  if (!missingDatabases.includes(database)) {
-                    _context.next = 6;
+                  applied = _context2.sent;
+                  result.attempted += applied.attempted;
+                  (_result$failures = result.failures).push.apply(_result$failures, _toConsumableArray(applied.failures));
+                  (_result$warnings = result.warnings).push.apply(_result$warnings, _toConsumableArray(applied.warnings));
+                  _context2.next = 18;
+                  break;
+                case 9:
+                  _loop2 = /*#__PURE__*/_regeneratorRuntime().mark(function _loop2() {
+                    var _result$failures2, _result$warnings2;
+                    var _Object$entries$_i, database, differences, batch, applied;
+                    return _regeneratorRuntime().wrap(function _loop2$(_context) {
+                      while (1) switch (_context.prev = _context.next) {
+                        case 0:
+                          _Object$entries$_i = _slicedToArray(_Object$entries[_i], 2), database = _Object$entries$_i[0], differences = _Object$entries$_i[1];
+                          batch = differences.filter(function (diff) {
+                            return phase(diff) === step;
+                          });
+                          if (batch.length) {
+                            _context.next = 4;
+                            break;
+                          }
+                          return _context.abrupt("return", 1);
+                        case 4:
+                          _context.next = 6;
+                          return applyDifferences(connection, database, batch);
+                        case 6:
+                          applied = _context.sent;
+                          result.attempted += applied.attempted;
+                          (_result$failures2 = result.failures).push.apply(_result$failures2, _toConsumableArray(applied.failures.map(function (f) {
+                            return _objectSpread2({
+                              database: database
+                            }, f);
+                          })));
+                          (_result$warnings2 = result.warnings).push.apply(_result$warnings2, _toConsumableArray(applied.warnings.map(function (w) {
+                            return _objectSpread2({
+                              database: database
+                            }, w);
+                          })));
+                        case 10:
+                        case "end":
+                          return _context.stop();
+                      }
+                    }, _loop2);
+                  });
+                  _i = 0, _Object$entries = Object.entries(allDifferences);
+                case 11:
+                  if (!(_i < _Object$entries.length)) {
+                    _context2.next = 18;
                     break;
                   }
-                  logger('Skipping database', database, 'because it is missing');
-                  return _context.abrupt("return", 0);
-                case 6:
-                  filePath = path.join(inputDir, database, "".concat(database, ".json"));
-                  _context.prev = 7;
-                  _context.next = 10;
-                  return fs$1.readFile(filePath, 'utf-8');
-                case 10:
-                  fileContent = _context.sent;
-                  expectedStructure = applyDefinerOption(JSON.parse(fileContent), syncOptions.definer);
-                  logger('Getting database structure for', database);
-                  _context.next = 15;
-                  return getDatabaseStructure(connection, database, command, options);
+                  return _context2.delegateYield(_loop2(), "t0", 13);
+                case 13:
+                  if (!_context2.t0) {
+                    _context2.next = 15;
+                    break;
+                  }
+                  return _context2.abrupt("continue", 15);
                 case 15:
-                  currentStructure = _context.sent;
-                  logger('Database structure for', database, 'obtained');
-                  differences = findDifferences(expectedStructure, currentStructure, function (tableName) {
-                    return getTableOptions(syncOptions, database, tableName);
-                  }); // A seed-row problem shouldn't hide this database's structure differences
-                  _context.prev = 18;
-                  _context.t0 = differences.push;
-                  _context.t1 = differences;
-                  _context.t2 = _toConsumableArray;
-                  _context.next = 24;
-                  return findMissingRows(connection, database, expectedStructure, currentStructure, syncOptions);
-                case 24:
-                  _context.t3 = _context.sent;
-                  _context.t4 = (0, _context.t2)(_context.t3);
-                  _context.t0.apply.call(_context.t0, _context.t1, _context.t4);
-                  _context.next = 32;
+                  _i++;
+                  _context2.next = 11;
                   break;
-                case 29:
-                  _context.prev = 29;
-                  _context.t5 = _context["catch"](18);
-                  console.error("Could not check seed rows for ".concat(database, ": ").concat(_context.t5.message));
-                case 32:
-                  logger('Differences for', database, 'obtained');
-                  if (update) {
-                    _context.next = 38;
+                case 18:
+                  if (!result.failures.length) {
+                    _context2.next = 22;
                     break;
                   }
-                  logger('Logging differences for', database);
-                  logDifferences(differences, database, true);
-                  _context.next = 51;
-                  break;
-                case 38:
-                  logger('Logging differences for', database);
-                  logDifferences(differences, database, false);
-                  logger('Applying differences for', database);
-                  _context.prev = 41;
-                  _context.next = 44;
-                  return applyDifferences(connection, database, differences);
-                case 44:
-                  result = _context.sent;
-                  if (result.failures.length > 0) {
-                    console.error("Error applying differences for ".concat(database, ": ").concat(describeFailures(result)));
-                  }
-                  _context.next = 51;
-                  break;
-                case 48:
-                  _context.prev = 48;
-                  _context.t6 = _context["catch"](41);
-                  console.error("Error applying differences for ".concat(database, ": ").concat(_context.t6.message));
-                case 51:
-                  allDifferences[database] = differences;
-                  _context.next = 57;
-                  break;
-                case 54:
-                  _context.prev = 54;
-                  _context.t7 = _context["catch"](7);
-                  console.error("Error processing database ".concat(database, ": ").concat(_context.t7.message));
-                case 57:
+                  error = new Error(describeFailures(result));
+                  Object.assign(error, result, {
+                    differences: allDifferences
+                  });
+                  throw error;
+                case 22:
                 case "end":
-                  return _context.stop();
+                  return _context2.stop();
               }
-            }, _loop, null, [[7, 54], [18, 29], [41, 48]]);
+            }, _loop);
           });
-          _iterator3.s();
-        case 65:
-          if ((_step3 = _iterator3.n()).done) {
-            _context2.next = 72;
+          step = 0;
+        case 3:
+          if (!(step <= 7)) {
+            _context3.next = 8;
             break;
           }
-          return _context2.delegateYield(_loop(), "t2", 67);
-        case 67:
-          _ret = _context2.t2;
-          if (!(_ret === 0)) {
-            _context2.next = 70;
-            break;
-          }
-          return _context2.abrupt("continue", 70);
-        case 70:
-          _context2.next = 65;
+          return _context3.delegateYield(_loop(step), "t0", 5);
+        case 5:
+          step++;
+          _context3.next = 3;
           break;
-        case 72:
-          _context2.next = 77;
-          break;
-        case 74:
-          _context2.prev = 74;
-          _context2.t3 = _context2["catch"](62);
-          _iterator3.e(_context2.t3);
-        case 77:
-          _context2.prev = 77;
-          _iterator3.f();
-          return _context2.finish(77);
-        case 80:
-          return _context2.abrupt("return", allDifferences);
-        case 81:
+        case 8:
+          return _context3.abrupt("return", result);
+        case 9:
         case "end":
-          return _context2.stop();
+          return _context3.stop();
       }
-    }, _callee, null, [[20, 31, 34, 37], [40, 52, 55, 58], [62, 74, 77, 80]]);
+    }, _callee);
   }));
-  return function compareAllDatabases(_x, _x2) {
-    return _ref.apply(this, arguments);
+  return function applyAllDifferences(_x, _x2) {
+    return _ref2.apply(this, arguments);
   };
 }();
-
-var _excluded = ["output"];
+var compareAllDatabases = /*#__PURE__*/function () {
+  var _ref3 = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee2(connection, inputDir) {
+    var update,
+      options,
+      names,
+      databases,
+      syncOptions,
+      expected,
+      _iterator,
+      _step,
+      database,
+      filename,
+      structure,
+      existing,
+      serverVersion,
+      defaultCollations,
+      allDifferences,
+      _iterator2,
+      _step2,
+      _loop3,
+      _args5 = arguments;
+    return _regeneratorRuntime().wrap(function _callee2$(_context5) {
+      while (1) switch (_context5.prev = _context5.next) {
+        case 0:
+          update = _args5.length > 2 && _args5[2] !== undefined ? _args5[2] : false;
+          options = _args5.length > 4 && _args5[4] !== undefined ? _args5[4] : {};
+          _context5.next = 5;
+          return getDatabaseDumpNames(inputDir);
+        case 5:
+          names = _context5.sent;
+          databases = names.filter(function (name) {
+            return !options.database || options.database === name;
+          });
+          if (databases.length) {
+            _context5.next = 9;
+            break;
+          }
+          throw new Error(options.database ? "Database ".concat(options.database, " is not in the template.") : 'No database manifests found in the template folder.');
+        case 9:
+          _context5.next = 11;
+          return loadSyncOptions(inputDir);
+        case 11:
+          syncOptions = _context5.sent;
+          expected = {}; // A corrupt/empty manifest must never look like an empty desired schema.
+          // Validate ALL files before the first mutation, including missing databases.
+          _iterator = _createForOfIteratorHelper(databases);
+          _context5.prev = 14;
+          _iterator.s();
+        case 16:
+          if ((_step = _iterator.n()).done) {
+            _context5.next = 29;
+            break;
+          }
+          database = _step.value;
+          filename = path.join(inputDir, database, "".concat(database, ".json"));
+          _context5.t0 = JSON;
+          _context5.next = 22;
+          return fs$1.readFile(filename, 'utf8');
+        case 22:
+          _context5.t1 = _context5.sent;
+          structure = _context5.t0.parse.call(_context5.t0, _context5.t1);
+          if (!(!structure || _typeof(structure) !== 'object' || !structure.tables || Array.isArray(structure.tables) || _typeof(structure.tables) !== 'object')) {
+            _context5.next = 26;
+            break;
+          }
+          throw new Error("Invalid template manifest: ".concat(filename));
+        case 26:
+          expected[database] = applyDefinerOption(structure, syncOptions.definer);
+        case 27:
+          _context5.next = 16;
+          break;
+        case 29:
+          _context5.next = 34;
+          break;
+        case 31:
+          _context5.prev = 31;
+          _context5.t2 = _context5["catch"](14);
+          _iterator.e(_context5.t2);
+        case 34:
+          _context5.prev = 34;
+          _iterator.f();
+          return _context5.finish(34);
+        case 37:
+          _context5.next = 39;
+          return getDatabases(connection);
+        case 39:
+          existing = _context5.sent;
+          if (!(databases.some(function (db) {
+            return existing.includes(db);
+          }) || update)) {
+            _context5.next = 46;
+            break;
+          }
+          _context5.next = 43;
+          return getServerVersion(connection);
+        case 43:
+          _context5.t3 = _context5.sent;
+          _context5.next = 47;
+          break;
+        case 46:
+          _context5.t3 = null;
+        case 47:
+          serverVersion = _context5.t3;
+          if (!serverVersion) {
+            _context5.next = 54;
+            break;
+          }
+          _context5.next = 51;
+          return getDefaultCollations(connection, serverVersion);
+        case 51:
+          _context5.t4 = _context5.sent;
+          _context5.next = 55;
+          break;
+        case 54:
+          _context5.t4 = {};
+        case 55:
+          defaultCollations = _context5.t4;
+          allDifferences = {};
+          _iterator2 = _createForOfIteratorHelper(databases);
+          _context5.prev = 58;
+          _loop3 = /*#__PURE__*/_regeneratorRuntime().mark(function _loop3() {
+            var database, missing, current, differences;
+            return _regeneratorRuntime().wrap(function _loop3$(_context4) {
+              while (1) switch (_context4.prev = _context4.next) {
+                case 0:
+                  database = _step2.value;
+                  missing = !existing.includes(database);
+                  if (!missing) {
+                    _context4.next = 6;
+                    break;
+                  }
+                  _context4.t0 = {
+                    tables: {},
+                    procedures: [],
+                    views: {}
+                  };
+                  _context4.next = 9;
+                  break;
+                case 6:
+                  _context4.next = 8;
+                  return getDatabaseStructure(connection, database, 'compare', _objectSpread2(_objectSpread2({}, options), {}, {
+                    output: inputDir
+                  }));
+                case 8:
+                  _context4.t0 = _context4.sent;
+                case 9:
+                  current = _context4.t0;
+                  differences = missing ? [{
+                    database: database,
+                    type: 'missing_database',
+                    message: 'Database not found'
+                  }] : [];
+                  differences.push.apply(differences, _toConsumableArray(findDifferences(expected[database], current, function (table) {
+                    return getTableOptions(syncOptions, database, table);
+                  }, {
+                    serverVersion: serverVersion,
+                    database: database,
+                    defaultCollations: defaultCollations
+                  })));
+                  _context4.t1 = differences.push;
+                  _context4.t2 = differences;
+                  _context4.t3 = _toConsumableArray;
+                  _context4.next = 17;
+                  return findMissingRows(connection, database, expected[database], current, syncOptions);
+                case 17:
+                  _context4.t4 = _context4.sent;
+                  _context4.t5 = (0, _context4.t3)(_context4.t4);
+                  _context4.t1.apply.call(_context4.t1, _context4.t2, _context4.t5);
+                  allDifferences[database] = differences;
+                  if (!options.quiet) logDifferences(differences, database, !update);
+                case 22:
+                case "end":
+                  return _context4.stop();
+              }
+            }, _loop3);
+          });
+          _iterator2.s();
+        case 61:
+          if ((_step2 = _iterator2.n()).done) {
+            _context5.next = 65;
+            break;
+          }
+          return _context5.delegateYield(_loop3(), "t5", 63);
+        case 63:
+          _context5.next = 61;
+          break;
+        case 65:
+          _context5.next = 70;
+          break;
+        case 67:
+          _context5.prev = 67;
+          _context5.t6 = _context5["catch"](58);
+          _iterator2.e(_context5.t6);
+        case 70:
+          _context5.prev = 70;
+          _iterator2.f();
+          return _context5.finish(70);
+        case 73:
+          if (!update) {
+            _context5.next = 76;
+            break;
+          }
+          _context5.next = 76;
+          return applyAllDifferences(connection, allDifferences);
+        case 76:
+          return _context5.abrupt("return", allDifferences);
+        case 77:
+        case "end":
+          return _context5.stop();
+      }
+    }, _callee2, null, [[14, 31, 34, 37], [58, 67, 70, 73]]);
+  }));
+  return function compareAllDatabases(_x3, _x4) {
+    return _ref3.apply(this, arguments);
+  };
+}();
 
 // The config also carries mysqlsyncr's own settings (the template folder); mysql2
 // warns about options it doesn't know, so pass it only the connection's
 var connectionOptions = function connectionOptions(config) {
-  var _ref = config || {};
-    _ref.output;
-    var options = _objectWithoutProperties(_ref, _excluded);
+  var options = _objectSpread2({}, config);
+  // Schema selection belongs to the operation. Selecting it in the handshake
+  // prevents compare/update from discovering and restoring a missing schema.
+  for (var _i = 0, _arr = ['database', 'output', 'uiPort', 'uiHost', 'openUI', 'verbose', 'write', 'slowMs', 'minExecutions', 'minRowsExamined', 'scanRatio', 'limit', 'json', 'baselineId']; _i < _arr.length; _i++) {
+    var key = _arr[_i];
+    delete options[key];
+  }
   return options;
 };
+var closedError = function closedError() {
+  return Object.assign(new Error('Database connection is closed or closing.'), {
+    code: 'MYSQLSYNCR_CONNECTION_CLOSED'
+  });
+};
+var waitForConnection = function waitForConnection(state) {
+  if (state.error) return Promise.reject(state.error);
+  if (state.closed || state.closing || state.connection.state === 'disconnected') return Promise.reject(closedError());
+  return new Promise(function (resolve, reject) {
+    state.connection.connect(function (error) {
+      if (error || state.error) reject(error || state.error);else if (state.closed || state.closing) reject(closedError());else resolve(state.connection);
+    });
+  });
+};
 var DBStructureChecker = /*#__PURE__*/function () {
-  function DBStructureChecker(config) {
+  function DBStructureChecker() {
+    var _ref,
+      _this = this;
+    var config = arguments.length > 0 && arguments[0] !== undefined ? arguments[0] : {};
     var targetDatabase = arguments.length > 1 && arguments[1] !== undefined ? arguments[1] : null;
     _classCallCheck(this, DBStructureChecker);
     this.config = config;
-    this.targetDatabase = targetDatabase;
-    this.connection = mysql.createConnection(connectionOptions(this.config));
+    this.targetDatabase = (_ref = targetDatabase !== null && targetDatabase !== void 0 ? targetDatabase : config === null || config === void 0 ? void 0 : config.database) !== null && _ref !== void 0 ? _ref : null;
     this.dumpAllDatabases = dumpAllDatabases;
     this.compareAllDatabases = compareAllDatabases;
     this.getDatabases = function () {
-      fs.readFileSync(path.join(__dirname, 'databases.json'), 'utf8');
+      return getDatabases(_this.connection);
     };
-    // this.connection.on('error', (err) => {
-    //     this.emit('error', err);
-    //     console.error('Database connection error:', err);
-    // });
-    this.connection.query = util.promisify(this.connection.query); // Promisify for async/await
+    this._openConnection();
   }
   return _createClass(DBStructureChecker, [{
-    key: "reconnect",
-    value: function () {
-      var _reconnect = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee() {
+    key: "_openConnection",
+    value: function _openConnection() {
+      var connection = mysql.createConnection(connectionOptions(this.config));
+      var state = {
+        connection: connection,
+        error: null,
+        closed: false,
+        closing: null
+      };
+      this._state = state;
+      this.connection = connection;
+      // Retain errors for ready/query callers even if they arrive between
+      // operations. Existing error/connect listeners still receive the events.
+      // There is no eagerly rejected promise for legacy event-only callers.
+      connection.on('error', function (error) {
+        state.error = error;
+      });
+      connection.once('end', function () {
+        state.closed = true;
+      });
+      var query = util.promisify(connection.query.bind(connection));
+      connection.query = /*#__PURE__*/_asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee() {
+        var _args = arguments;
         return _regeneratorRuntime().wrap(function _callee$(_context) {
           while (1) switch (_context.prev = _context.next) {
             case 0:
-              this.connection = mysql.createConnection(connectionOptions(this.config));
-              this.connection.query = util.promisify(this.connection.query); // Promisify for async/await
-              _context.next = 4;
-              return this.connection.connect();
+              _context.next = 2;
+              return waitForConnection(state);
+            case 2:
+              if (!state.error) {
+                _context.next = 4;
+                break;
+              }
+              throw state.error;
             case 4:
+              if (!(state.closed || state.closing)) {
+                _context.next = 6;
+                break;
+              }
+              throw closedError();
+            case 6:
+              return _context.abrupt("return", query.apply(void 0, _args));
+            case 7:
             case "end":
               return _context.stop();
           }
-        }, _callee, this);
+        }, _callee);
       }));
-      function reconnect() {
-        return _reconnect.apply(this, arguments);
-      }
-      return reconnect;
-    }()
+    }
   }, {
-    key: "closeConnection",
-    value: function () {
-      var _closeConnection = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee2() {
+    key: "ready",
+    value: function ready() {
+      return waitForConnection(this._state);
+    }
+  }, {
+    key: "connect",
+    value: function connect() {
+      return this.ready();
+    }
+  }, {
+    key: "reconnect",
+    value: function reconnect() {
+      var _this2 = this;
+      if (this._reconnecting) return this._reconnecting;
+      this._reconnecting = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee2() {
         return _regeneratorRuntime().wrap(function _callee2$(_context2) {
           while (1) switch (_context2.prev = _context2.next) {
             case 0:
-              if (!(this.connection.state !== 'disconnected')) {
-                _context2.next = 3;
-                break;
-              }
-              _context2.next = 3;
-              return this.connection.end();
-            case 3:
+              _context2.next = 2;
+              return _this2.closeConnection();
+            case 2:
+              _this2._openConnection();
+              return _context2.abrupt("return", _this2.ready());
+            case 4:
             case "end":
               return _context2.stop();
           }
-        }, _callee2, this);
+        }, _callee2);
+      }))()["finally"](function () {
+        _this2._reconnecting = null;
+      });
+      return this._reconnecting;
+    }
+  }, {
+    key: "closeConnection",
+    value: function () {
+      var _closeConnection = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee3() {
+        var state;
+        return _regeneratorRuntime().wrap(function _callee3$(_context3) {
+          while (1) switch (_context3.prev = _context3.next) {
+            case 0:
+              state = this._state;
+              if (!state.closed) {
+                _context3.next = 3;
+                break;
+              }
+              return _context3.abrupt("return");
+            case 3:
+              if (!state.closing) {
+                _context3.next = 5;
+                break;
+              }
+              return _context3.abrupt("return", state.closing);
+            case 5:
+              if (!(state.error || state.connection.state === 'disconnected')) {
+                _context3.next = 9;
+                break;
+              }
+              // A failed handshake/socket cannot accept a queued QUIT command.
+              state.connection.destroy();
+              state.closed = true;
+              return _context3.abrupt("return");
+            case 9:
+              state.closing = new Promise(function (resolve, reject) {
+                var finish = function finish(error) {
+                  state.closed = true;
+                  if (error) {
+                    state.connection.destroy();
+                    reject(error);
+                  } else resolve();
+                };
+                try {
+                  state.connection.end(finish);
+                } catch (error) {
+                  finish(error);
+                }
+              });
+              return _context3.abrupt("return", state.closing);
+            case 11:
+            case "end":
+              return _context3.stop();
+          }
+        }, _callee3, this);
       }));
       function closeConnection() {
         return _closeConnection.apply(this, arguments);
@@ -5577,6 +6190,9 @@ var joinCreateSQL = function joinCreateSQL(_ref) {
  * that precedes it in the live table.
  */
 var replaceCreateSQLElement = function replaceCreateSQLElement(templateSQL, liveSQL, key) {
+  var _ref2 = arguments.length > 3 && arguments[3] !== undefined ? arguments[3] : {},
+    _ref2$move = _ref2.move,
+    move = _ref2$move === void 0 ? false : _ref2$move;
   var template = splitCreateSQL(templateSQL);
   var live = splitCreateSQL(liveSQL);
   var templateIndex = template.body.findIndex(function (line) {
@@ -5585,6 +6201,12 @@ var replaceCreateSQLElement = function replaceCreateSQLElement(templateSQL, live
   var liveIndex = live.body.findIndex(function (line) {
     return elementKey(line) === key;
   });
+
+  // A column kept for its position is taken out and put back where the live table has it
+  if (move && liveIndex !== -1 && templateIndex !== -1) {
+    template.body.splice(templateIndex, 1);
+    templateIndex = -1;
+  }
   if (liveIndex === -1) {
     if (templateIndex !== -1) template.body.splice(templateIndex, 1);
   } else if (templateIndex !== -1) {
@@ -5649,13 +6271,15 @@ var syncEntries = function syncEntries() {
   });
 };
 var acceptTableElement = function acceptTableElement(template, current, diff, files) {
-  var _diff$indexName, _diff$index;
+  var _diff$indexName, _diff$index, _diff$changes;
   var templateTable = requireTable(template, diff.tableName, 'template');
   var currentTable = requireTable(current, diff.tableName, 'database');
   if (!templateTable.createSQL) throw new Error("Table ".concat(diff.tableName, " has no createSQL in the template"));
   var isField = diff.type.endsWith('_field');
   var name = isField ? diff.field.Field : (_diff$indexName = diff.indexName) !== null && _diff$indexName !== void 0 ? _diff$indexName : (_diff$index = diff.index) === null || _diff$index === void 0 ? void 0 : _diff$index.Name;
-  var createSQL = replaceCreateSQLElement(templateTable.createSQL, currentTable.createSQL, "".concat(isField ? 'col' : 'idx', ":").concat(name));
+  var createSQL = replaceCreateSQLElement(templateTable.createSQL, currentTable.createSQL, "".concat(isField ? 'col' : 'idx', ":").concat(name), {
+    move: isField && !!((_diff$changes = diff.changes) !== null && _diff$changes !== void 0 && _diff$changes.includes('Position'))
+  });
   var parsed = parseCreateTableSQL(createSQL);
   templateTable.createSQL = createSQL;
   if (isField) {
@@ -5665,10 +6289,10 @@ var acceptTableElement = function acceptTableElement(template, current, diff, fi
   }
   files.set(tableFile(diff.tableName), createSQL);
 };
-var acceptDifference = function acceptDifference(template, current, diff, _ref2) {
-  var database = _ref2.database,
-    syncOptions = _ref2.syncOptions,
-    files = _ref2.files;
+var acceptDifference = function acceptDifference(template, current, diff, _ref3) {
+  var database = _ref3.database,
+    syncOptions = _ref3.syncOptions,
+    files = _ref3.files;
   switch (diff.type) {
     case 'extra_table':
       {
@@ -5765,7 +6389,7 @@ var describeDifference = function describeDifference(diff) {
  * whose `errors` lists each failure as { difference, error }.
  */
 var acceptCurrentIntoTemplate = /*#__PURE__*/function () {
-  var _ref3 = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee(connection, templateDir, database, differences) {
+  var _ref4 = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee(connection, templateDir, database, differences) {
     var dbDir, jsonPath, template, syncOptions, current, files, errors, _iterator2, _step2, diff, _iterator3, _step3, _step3$value, relativePath, content, filePath, error;
     return _regeneratorRuntime().wrap(function _callee$(_context) {
       while (1) switch (_context.prev = _context.next) {
@@ -5887,7 +6511,7 @@ var acceptCurrentIntoTemplate = /*#__PURE__*/function () {
     }, _callee, null, [[27, 45, 48, 51]]);
   }));
   return function acceptCurrentIntoTemplate(_x, _x2, _x3, _x4) {
-    return _ref3.apply(this, arguments);
+    return _ref4.apply(this, arguments);
   };
 }();
 
@@ -6140,6 +6764,10 @@ function inspectSample(sql, defaultSchema) {
     token.lastIndex = offset;
     var match = token.exec(text);
     if (!match) return null;
+    // Performance Schema samples do not carry their original sql_mode.
+    // Backslash escapes change string boundaries/values with
+    // NO_BACKSLASH_ESCAPES, so do not plan them in a different session.
+    if (match[0].startsWith("'") && match[0].includes('\\')) return null;
     offset = token.lastIndex;
     if (!/^\s+$/.test(match[0])) tokens.push(match[0]);
   }
@@ -6358,7 +6986,7 @@ function _assessQueryIndexes() {
             _context2.next = 4;
             break;
           }
-          return _context2.abrupt("return", unknown('No supported complete SELECT sample is available. Simple SELECTs and nested IN/EXISTS subqueries with distinct aliases are supported; functions, views, derived tables, repeated aliases, writes, and complex syntax are skipped.'));
+          return _context2.abrupt("return", unknown('No supported complete SELECT sample is available. Simple SELECTs and nested IN/EXISTS subqueries with distinct aliases are supported; functions, views, derived tables, repeated aliases, writes, mode-dependent string escapes, and complex syntax are skipped.'));
         case 4:
           _context2.prev = 4;
           existing = new Map();
@@ -7023,6 +7651,7 @@ function groupByTable(rows) {
           unique: !Number(row.NON_UNIQUE),
           primary: row.INDEX_NAME === 'PRIMARY',
           type: row.INDEX_TYPE,
+          visible: row.IS_VISIBLE !== 'NO' && row.COMMENT !== 'disabled',
           columns: [],
           functional: false
         });
@@ -7032,7 +7661,9 @@ function groupByTable(rows) {
       if (row.COLUMN_NAME === null || row.COLUMN_NAME === undefined) index.functional = true;
       index.columns.push({
         name: row.COLUMN_NAME,
-        prefixLength: row.SUB_PART === null || row.SUB_PART === undefined ? null : Number(row.SUB_PART)
+        prefixLength: row.SUB_PART === null || row.SUB_PART === undefined ? null : Number(row.SUB_PART),
+        direction: row.COLLATION || 'A',
+        sequence: Number(row.SEQ_IN_INDEX)
       });
     }
   } catch (err) {
@@ -7042,15 +7673,21 @@ function groupByTable(rows) {
   }
   return _toConsumableArray(tables.values()).map(function (t) {
     return _objectSpread2(_objectSpread2({}, t), {}, {
-      indexes: _toConsumableArray(t.indexes.values())
+      indexes: _toConsumableArray(t.indexes.values()).map(function (index) {
+        return _objectSpread2(_objectSpread2({}, index), {}, {
+          columns: index.columns.sort(function (a, b) {
+            return a.sequence - b.sequence;
+          })
+        });
+      })
     });
   });
 }
 var columnText = function columnText(column) {
-  return column.prefixLength ? "".concat(column.name, "(").concat(column.prefixLength, ")") : column.name;
+  return "".concat(column.prefixLength ? "".concat(column.name, "(").concat(column.prefixLength, ")") : column.name).concat(column.direction === 'D' ? ' DESC' : '');
 };
 var sameColumn = function sameColumn(a, b) {
-  return a.name.toLowerCase() === b.name.toLowerCase() && a.prefixLength === b.prefixLength;
+  return a.name.toLowerCase() === b.name.toLowerCase() && a.prefixLength === b.prefixLength && a.direction === b.direction;
 };
 
 // Is every column of `shorter` a left prefix of `longer`?
@@ -7089,20 +7726,20 @@ function findDuplicateIndexes(rows) {
           try {
             for (_iterator4.s(); !(_step4 = _iterator4.n()).done;) {
               var other = _step4.value;
-              if (other === candidate || flagged.has(other.name)) continue;
+              if (other === candidate || flagged.has(other.name) || !other.visible) continue;
               // FULLTEXT/SPATIAL/HASH only compare against indexes of the same type.
               if (candidate.type !== other.type) continue;
               if (!isLeftPrefix(candidate, other)) continue;
               var exact = candidate.columns.length === other.columns.length;
               if (exact) {
                 // Keep the stronger (or alphabetically first) of an identical pair.
-                var keepOther = keepRank(other) < keepRank(candidate) || keepRank(other) === keepRank(candidate) && other.name < candidate.name;
+                var keepOther = keepRank(other) < keepRank(candidate) || keepRank(other) === keepRank(candidate) && (!candidate.visible || other.name < candidate.name);
                 if (!keepOther) continue;
               } else {
                 // A unique/primary prefix enforces a constraint the longer index does not.
                 if (candidate.unique) continue;
-                // FULLTEXT indexes do not serve left-prefix lookups.
-                if (candidate.type === 'FULLTEXT' || candidate.type === 'SPATIAL') continue;
+                // Only ordered BTREE indexes serve left-prefix lookups.
+                if (candidate.type !== 'BTREE') continue;
               }
               flagged.add(candidate.name);
               findings.push({
@@ -7144,9 +7781,12 @@ function _collectDuplicateIndexes() {
     var database,
       scope,
       params,
+      query,
+      rows,
       _yield$connection$que,
       _yield$connection$que2,
-      rows,
+      _yield$connection$que3,
+      _yield$connection$que4,
       _args = arguments;
     return _regeneratorRuntime().wrap(function _callee$(_context) {
       while (1) switch (_context.prev = _context.next) {
@@ -7156,18 +7796,40 @@ function _collectDuplicateIndexes() {
             return '?';
           }).join(', '), ")");
           params = database ? [database] : SYSTEM_SCHEMAS;
-          _context.next = 5;
-          return connection.query("SELECT TABLE_SCHEMA, TABLE_NAME, INDEX_NAME, NON_UNIQUE, SEQ_IN_INDEX,\n        COLUMN_NAME, SUB_PART, INDEX_TYPE\n        FROM information_schema.STATISTICS\n        WHERE ".concat(scope, "\n        ORDER BY TABLE_SCHEMA, TABLE_NAME, INDEX_NAME, SEQ_IN_INDEX"), params);
-        case 5:
+          query = function query(visibility) {
+            return "SELECT TABLE_SCHEMA, TABLE_NAME, INDEX_NAME, NON_UNIQUE, SEQ_IN_INDEX,\n        COLUMN_NAME, SUB_PART, INDEX_TYPE, COLLATION, COMMENT".concat(visibility ? ', IS_VISIBLE' : '', "\n        FROM information_schema.STATISTICS\n        WHERE ").concat(scope, "\n        ORDER BY TABLE_SCHEMA, TABLE_NAME, INDEX_NAME, SEQ_IN_INDEX");
+          };
+          _context.prev = 4;
+          _context.next = 7;
+          return connection.query(query(true), params);
+        case 7:
           _yield$connection$que = _context.sent;
           _yield$connection$que2 = _slicedToArray(_yield$connection$que, 1);
           rows = _yield$connection$que2[0];
+          _context.next = 21;
+          break;
+        case 12:
+          _context.prev = 12;
+          _context.t0 = _context["catch"](4);
+          if (!(_context.t0.code !== 'ER_BAD_FIELD_ERROR')) {
+            _context.next = 16;
+            break;
+          }
+          throw _context.t0;
+        case 16:
+          _context.next = 18;
+          return connection.query(query(false), params);
+        case 18:
+          _yield$connection$que3 = _context.sent;
+          _yield$connection$que4 = _slicedToArray(_yield$connection$que3, 1);
+          rows = _yield$connection$que4[0];
+        case 21:
           return _context.abrupt("return", findDuplicateIndexes(rows));
-        case 9:
+        case 22:
         case "end":
           return _context.stop();
       }
-    }, _callee);
+    }, _callee, null, [[4, 12]]);
   }));
   return _collectDuplicateIndexes.apply(this, arguments);
 }
@@ -7177,7 +7839,9 @@ function _collectDuplicateIndexes() {
 // "current"/"pending" gauges describe right now.
 
 var num = function num(map, key) {
-  var value = Number(map[key.toLowerCase()]);
+  var raw = map[key.toLowerCase()];
+  if (raw === undefined || raw === null || raw === '') return null;
+  var value = Number(raw);
   return Number.isFinite(value) ? value : null;
 };
 var pct = function pct(value) {
@@ -7188,7 +7852,11 @@ var worst = function worst(checks) {
     return c.status === 'critical';
   }) ? 'critical' : checks.some(function (c) {
     return c.status === 'warning';
-  }) ? 'warning' : 'ok';
+  }) ? 'warning' : !checks.length || checks.some(function (c) {
+    return c.status === 'unknown';
+  }) || !checks.some(function (c) {
+    return c.status === 'ok';
+  }) ? 'unknown' : 'ok';
 };
 function toMap(rows) {
   var map = {};
@@ -7223,7 +7891,7 @@ function evaluateLockContention(status) {
   });
   var waited = num(status, 'Table_locks_waited'),
     immediate = num(status, 'Table_locks_immediate');
-  if (waited !== null && immediate) {
+  if (waited !== null && immediate !== null && waited + immediate > 0) {
     var ratio = waited / (waited + immediate);
     checks.push({
       status: ratio > 0.05 ? 'critical' : ratio > 0.01 ? 'warning' : 'ok',
@@ -7238,13 +7906,17 @@ function evaluateLockContention(status) {
 }
 function evaluateDiskIo(status) {
   var checks = [];
-  var pending = ['Innodb_data_pending_reads', 'Innodb_data_pending_writes', 'Innodb_data_pending_fsyncs', 'Innodb_os_log_pending_fsyncs'].reduce(function (sum, key) {
-    var _num2;
-    return sum + ((_num2 = num(status, key)) !== null && _num2 !== void 0 ? _num2 : 0);
+  var pendingValues = ['Innodb_data_pending_reads', 'Innodb_data_pending_writes', 'Innodb_data_pending_fsyncs', 'Innodb_os_log_pending_fsyncs'].map(function (key) {
+    return num(status, key);
+  }).filter(function (value) {
+    return value !== null;
+  });
+  var pending = pendingValues.reduce(function (sum, value) {
+    return sum + value;
   }, 0);
-  checks.push({
-    status: pending > 10 ? 'critical' : pending > 0 ? 'warning' : 'ok',
-    message: "".concat(pending, " InnoDB read/write/fsync operation(s) pending right now.")
+  if (pendingValues.length) checks.push({
+    status: pending > 10 ? 'critical' : pending > 0 ? 'warning' : pendingValues.length < 4 ? 'unknown' : 'ok',
+    message: "".concat(pending, " InnoDB read/write/fsync operation(s) reported pending right now.").concat(pendingValues.length < 4 ? ' Some pending-I/O counters are unavailable.' : '')
   });
   var logWaits = num(status, 'Innodb_log_waits');
   if (logWaits !== null) checks.push({
@@ -7266,8 +7938,8 @@ function evaluateMemory(status, variables) {
   var checks = [];
   var requests = num(status, 'Innodb_buffer_pool_read_requests'),
     reads = num(status, 'Innodb_buffer_pool_reads');
-  if (requests) {
-    var hit = 1 - (reads !== null && reads !== void 0 ? reads : 0) / requests;
+  if (requests && reads !== null) {
+    var hit = 1 - reads / requests;
     checks.push({
       status: hit < 0.95 ? 'critical' : hit < 0.99 ? 'warning' : 'ok',
       message: "Buffer pool hit ratio ".concat(pct(hit), " (reads served from memory).")
@@ -7289,7 +7961,7 @@ function evaluateMemory(status, variables) {
   }
   var size = num(variables, 'innodb_buffer_pool_size');
   if (size !== null) checks.push({
-    status: 'ok',
+    status: 'info',
     message: "innodb_buffer_pool_size is ".concat((size / Math.pow(1024, 3)).toFixed(2), " GiB.")
   });
   return checks;
@@ -7399,16 +8071,17 @@ function buildNotifications(report) {
     });
   };
   var dups = report.duplicateIndexes || [];
-  add('Duplicate indexes', dups.length ? 'warning' : 'ok', dups.length ? "".concat(dups.length, " duplicate or redundant index(es) found; they slow writes and waste memory.") : 'No duplicate or redundant indexes found.');
+  add('Duplicate indexes', report.duplicateIndexesAvailable === false ? 'unknown' : dups.length ? 'warning' : 'ok', report.duplicateIndexesAvailable === false ? 'Unavailable: index metadata could not be read.' : dups.length ? "".concat(dups.length, " duplicate or potentially redundant index(es) found; review plans, index hints and foreign keys before removing them.") : 'No duplicate or redundant indexes found.');
   var needed = (report.indexCandidates || []).filter(function (row) {
     var _row$indexAssessment;
     return ((_row$indexAssessment = row.indexAssessment) === null || _row$indexAssessment === void 0 ? void 0 : _row$indexAssessment.status) === 'index_may_help';
   });
   if (report.available) {
     var _report$indexCandidat, _report$indexCandidat2;
-    add('Needed indexes', needed.length ? 'warning' : (_report$indexCandidat = report.indexCandidates) !== null && _report$indexCandidat !== void 0 && _report$indexCandidat.length ? 'info' : 'ok', needed.length ? "".concat(needed.length, " query pattern(s) would likely benefit from a new index.") : (_report$indexCandidat2 = report.indexCandidates) !== null && _report$indexCandidat2 !== void 0 && _report$indexCandidat2.length ? "".concat(report.indexCandidates.length, " query pattern(s) scan many rows; review their execution plans.") : 'No queries flagged as needing an index.');
+    var incomplete = report.digestCoverage && (!report.digestCoverage.count || !report.digestCoverage.complete);
+    add('Needed indexes', needed.length ? 'warning' : (_report$indexCandidat = report.indexCandidates) !== null && _report$indexCandidat !== void 0 && _report$indexCandidat.length ? 'info' : incomplete ? 'unknown' : 'ok', needed.length ? "".concat(needed.length, " query pattern(s) would likely benefit from a new index.") : (_report$indexCandidat2 = report.indexCandidates) !== null && _report$indexCandidat2 !== void 0 && _report$indexCandidat2.length ? "".concat(report.indexCandidates.length, " query pattern(s) scan many rows; review their execution plans.") : incomplete ? 'Inconclusive: query statistics are empty or instrumentation is incomplete.' : 'No collected query patterns met the index-review thresholds.');
     var slow = report.slowQueries || [];
-    add('Slow queries', slow.length ? 'warning' : 'ok', slow.length ? "".concat(slow.length, " query pattern(s) exceeded ").concat(report.thresholds.slowMs / 1000, " s.") : "No query patterns exceeded ".concat(report.thresholds.slowMs / 1000, " s."));
+    add('Slow queries', slow.length ? 'warning' : incomplete ? 'unknown' : 'ok', slow.length ? "".concat(slow.length, " query pattern(s) exceeded ").concat(report.thresholds.slowMs / 1000, " s.") : incomplete ? 'Inconclusive: query statistics are empty or instrumentation is incomplete.' : "No collected query patterns met the duration and minimum-execution thresholds (".concat(report.thresholds.slowMs / 1000, " s)."));
   } else {
     add('Needed indexes', 'unknown', 'Unavailable: Performance Schema statistics could not be read.');
     add('Slow queries', 'unknown', 'Unavailable: Performance Schema statistics could not be read.');
@@ -7419,8 +8092,8 @@ function buildNotifications(report) {
       key = _arr$_i[0],
       label = _arr$_i[1];
     var area = health === null || health === void 0 ? void 0 : health[key];
-    if (!area) {
-      add(label, 'unknown', 'Unavailable: server status could not be read.');
+    if (!area || area.status === 'unknown') {
+      add(label, 'unknown', 'Unavailable: required server status metrics could not be read.');
       continue;
     }
     var problems = area.checks.filter(function (c) {
@@ -7478,6 +8151,8 @@ function _collectPerformanceReport() {
       _yield$connection$que4,
       _yield$connection$que5,
       consumers,
+      consumerEnabled,
+      parentsEnabled,
       _yield$connection$que6,
       _yield$connection$que7,
       instruments,
@@ -7526,6 +8201,11 @@ function _collectPerformanceReport() {
             database: database,
             thresholds: thresholds,
             available: false,
+            duplicateIndexesAvailable: false,
+            digestCoverage: {
+              count: 0,
+              complete: false
+            },
             warnings: [],
             slowQueries: [],
             indexCandidates: [],
@@ -7538,16 +8218,17 @@ function _collectPerformanceReport() {
           return collectDuplicateIndexes(connection, database);
         case 11:
           report.duplicateIndexes = _context.sent;
-          _context.next = 17;
+          report.duplicateIndexesAvailable = true;
+          _context.next = 18;
           break;
-        case 14:
-          _context.prev = 14;
+        case 15:
+          _context.prev = 15;
           _context.t0 = _context["catch"](8);
           report.warnings.push("Duplicate index check failed: ".concat(_context.t0.message));
-        case 17:
-          _context.next = 19;
+        case 18:
+          _context.next = 20;
           return collectServerHealth(connection, report.warnings);
-        case 19:
+        case 20:
           report.serverHealth = _context.sent;
           finish = function finish() {
             var _report$diagnostics;
@@ -7555,9 +8236,9 @@ function _collectPerformanceReport() {
             report.notifications = buildNotifications(report);
             return report;
           };
-          _context.next = 23;
+          _context.next = 24;
           return connection.query('SELECT @@performance_schema AS enabled, @@version AS version');
-        case 23:
+        case 24:
           _yield$connection$que = _context.sent;
           _yield$connection$que2 = _slicedToArray(_yield$connection$que, 1);
           _yield$connection$que3 = _slicedToArray(_yield$connection$que2[0], 1);
@@ -7565,83 +8246,94 @@ function _collectPerformanceReport() {
           report.serverVersion = status.version || null;
           _String$split$map = String(status.version || '').split('.').map(Number), _String$split$map2 = _slicedToArray(_String$split$map, 2), major = _String$split$map2[0], minor = _String$split$map2[1];
           if (!(major === 5 && minor < 6)) {
-            _context.next = 32;
+            _context.next = 33;
             break;
           }
           // Statement digests arrived in MySQL 5.6. Index and server health checks still apply.
           report.warnings.push("MySQL ".concat(status.version, " has no statement digest statistics (requires 5.6+). Slow query and needed-index checks are unavailable; duplicate index and server health checks still ran."));
           return _context.abrupt("return", finish());
-        case 32:
+        case 33:
           if (Number(status.enabled)) {
-            _context.next = 35;
+            _context.next = 36;
             break;
           }
           report.warnings.push('Performance Schema is disabled. Enable it in the MySQL server configuration and restart the server to collect query statistics.');
           return _context.abrupt("return", finish());
-        case 35:
-          _context.next = 37;
-          return connection.query("SELECT ENABLED FROM performance_schema.setup_consumers WHERE NAME = 'statements_digest'");
-        case 37:
+        case 36:
+          _context.next = 38;
+          return connection.query("SELECT NAME, ENABLED FROM performance_schema.setup_consumers WHERE NAME IN ('statements_digest', 'global_instrumentation', 'thread_instrumentation')");
+        case 38:
           _yield$connection$que4 = _context.sent;
           _yield$connection$que5 = _slicedToArray(_yield$connection$que4, 1);
           consumers = _yield$connection$que5[0];
-          if (!consumers.length || consumers[0].ENABLED !== 'YES') {
+          consumerEnabled = function consumerEnabled(name) {
+            return consumers.some(function (consumer) {
+              return consumer.NAME === name && consumer.ENABLED === 'YES';
+            });
+          };
+          if (!consumerEnabled('statements_digest')) {
             report.warnings.push('The statements_digest consumer is disabled; query statistics may be missing or stale.');
           }
-          _context.next = 43;
-          return connection.query("SELECT COUNT(*) AS enabled, COALESCE(SUM(TIMED = 'YES'), 0) AS timed FROM performance_schema.setup_instruments WHERE NAME LIKE 'statement/%' AND ENABLED = 'YES'");
-        case 43:
+          parentsEnabled = ['global_instrumentation', 'thread_instrumentation'].every(consumerEnabled);
+          if (!parentsEnabled) report.warnings.push('Global or thread instrumentation is disabled; query statistics may be missing or stale.');
+          _context.next = 47;
+          return connection.query("SELECT COUNT(*) AS total, COALESCE(SUM(ENABLED = 'YES'), 0) AS enabled, COALESCE(SUM(ENABLED = 'YES' AND TIMED = 'YES'), 0) AS timed FROM performance_schema.setup_instruments WHERE NAME LIKE 'statement/%'");
+        case 47:
           _yield$connection$que6 = _context.sent;
           _yield$connection$que7 = _slicedToArray(_yield$connection$que6, 1);
           instruments = _yield$connection$que7[0];
-          if (!Number(instruments[0].enabled)) report.warnings.push('Statement instruments are disabled; query statistics may be missing or stale.');else if (Number(instruments[0].timed) < Number(instruments[0].enabled)) report.warnings.push('Some enabled statement instruments are not timed; slow query results may be incomplete.');
+          if (!Number(instruments[0].enabled)) report.warnings.push('Statement instruments are disabled; query statistics may be missing or stale.');else if (Number(instruments[0].enabled) < Number(instruments[0].total)) report.warnings.push('Some statement instruments are disabled; query statistics may be incomplete.');else if (Number(instruments[0].timed) < Number(instruments[0].enabled)) report.warnings.push('Some enabled statement instruments are not timed; slow query results may be incomplete.');
           scope = database ? 'SCHEMA_NAME = ?' : "SCHEMA_NAME IS NOT NULL AND SCHEMA_NAME NOT IN ('mysql', 'sys', 'performance_schema', 'information_schema')";
           params = database ? [database] : [];
           applicationQueries = "DIGEST_TEXT NOT REGEXP '^(SHOW|EXPLAIN|DESCRIBE|DESC|SET|USE)[[:space:]]'\n        AND REPLACE(UPPER(DIGEST_TEXT), CHAR(96), '') NOT REGEXP '(^|[^A-Z0-9_])(INFORMATION_SCHEMA|PERFORMANCE_SCHEMA|MYSQL|SYS)[[:space:]]*[.]'";
           select = "SELECT SCHEMA_NAME AS database_name, DIGEST AS digest,\n        DIGEST_TEXT AS query_text, COUNT_STAR AS execution_count,\n        SUM_ROWS_EXAMINED AS rows_examined, SUM_ROWS_SENT AS rows_sent,\n        SUM_NO_INDEX_USED AS no_index_used, SUM_NO_GOOD_INDEX_USED AS no_good_index_used,\n        SUM_CREATED_TMP_TABLES AS tmp_tables, SUM_CREATED_TMP_DISK_TABLES AS disk_tmp_tables,\n        SUM_SORT_ROWS AS sort_rows, SUM_SORT_MERGE_PASSES AS sort_merge_passes,\n        SUM_SORT_SCAN AS sort_scans, SUM_SORT_RANGE AS sort_ranges,\n        AVG_TIMER_WAIT / 1000000000 AS avg_ms,\n        MAX_TIMER_WAIT / 1000000000 AS max_ms,\n        SUM_TIMER_WAIT / 1000000000 AS total_ms,\n        SUM_ROWS_EXAMINED / GREATEST(SUM_ROWS_SENT, 1) AS scan_ratio,\n        FIRST_SEEN AS first_seen, LAST_SEEN AS last_seen\n        FROM performance_schema.events_statements_summary_by_digest\n        WHERE DIGEST IS NOT NULL AND ".concat(scope, " AND ").concat(applicationQueries, " AND COUNT_STAR >= ?");
-          _context.next = 53;
+          _context.next = 57;
           return connection.query("".concat(select, "\n        AND MAX_TIMER_WAIT > ? ORDER BY SUM_TIMER_WAIT DESC LIMIT ?"), [].concat(params, [thresholds.minExecutions, thresholds.slowMs * 1000000000, thresholds.limit]));
-        case 53:
+        case 57:
           _yield$connection$que8 = _context.sent;
           _yield$connection$que9 = _slicedToArray(_yield$connection$que8, 1);
           slow = _yield$connection$que9[0];
-          _context.next = 58;
+          _context.next = 62;
           return connection.query("".concat(select, "\n        AND MAX_TIMER_WAIT > ? AND SUM_ROWS_EXAMINED >= ?\n        AND (SUM_NO_INDEX_USED > 0 OR SUM_NO_GOOD_INDEX_USED > 0\n            OR SUM_ROWS_EXAMINED > GREATEST(SUM_ROWS_SENT, 1) * ?)\n        ORDER BY SUM_ROWS_EXAMINED DESC LIMIT ?"), [].concat(params, [thresholds.minExecutions, thresholds.slowMs * 1000000000, thresholds.minRowsExamined, thresholds.scanRatio, thresholds.limit]));
-        case 58:
+        case 62:
           _yield$connection$que0 = _context.sent;
           _yield$connection$que1 = _slicedToArray(_yield$connection$que0, 1);
           indexes = _yield$connection$que1[0];
-          _context.next = 63;
+          _context.next = 67;
           return connection.query("SELECT COUNT(*) AS digest_count\n        FROM performance_schema.events_statements_summary_by_digest\n        WHERE DIGEST IS NOT NULL AND ".concat(scope, " AND ").concat(applicationQueries), params);
-        case 63:
+        case 67:
           _yield$connection$que10 = _context.sent;
           _yield$connection$que11 = _slicedToArray(_yield$connection$que10, 1);
           _yield$connection$que12 = _slicedToArray(_yield$connection$que11[0], 1);
           coverage = _yield$connection$que12[0];
+          report.digestCoverage = {
+            count: Number(coverage.digest_count),
+            complete: consumerEnabled('statements_digest') && parentsEnabled && Number(instruments[0].enabled) > 0 && Number(instruments[0].enabled) === Number(instruments[0].total) && Number(instruments[0].timed) === Number(instruments[0].enabled)
+          };
           if (!Number(coverage.digest_count)) report.warnings.push('No statement digests are available for this scope. This does not establish that queries are fast or indexes are adequate. Check instrumentation, permissions, and workload.');
           report.available = true;
           report.slowQueries = slow;
           report.indexCandidates = indexes;
-          _context.next = 73;
+          _context.next = 78;
           return connection.query("".concat(select, " AND MAX_TIMER_WAIT > ? ORDER BY SUM_TIMER_WAIT DESC LIMIT ?"), [].concat(params, [thresholds.minExecutions, thresholds.slowMs * 1000000000, thresholds.limit]));
-        case 73:
+        case 78:
           _yield$connection$que13 = _context.sent;
           _yield$connection$que14 = _slicedToArray(_yield$connection$que13, 1);
           highest = _yield$connection$que14[0];
           report.highestTotalTime = highest;
-          _context.next = 79;
+          _context.next = 84;
           return connection.query("".concat(select, "\n        AND MAX_TIMER_WAIT > ?\n        AND (SUM_CREATED_TMP_TABLES > 0 OR SUM_SORT_ROWS > 0 OR SUM_SORT_MERGE_PASSES > 0 OR SUM_SORT_SCAN > 0 OR SUM_SORT_RANGE > 0)\n        ORDER BY SUM_TIMER_WAIT DESC LIMIT ?"), [].concat(params, [thresholds.minExecutions, thresholds.slowMs * 1000000000, thresholds.limit]));
-        case 79:
+        case 84:
           _yield$connection$que15 = _context.sent;
           _yield$connection$que16 = _slicedToArray(_yield$connection$que15, 1);
           tempAndSort = _yield$connection$que16[0];
           report.tempAndSortQueries = tempAndSort;
-          _context.next = 85;
+          _context.next = 90;
           return collectDiagnostics(connection, report, select, params, options);
-        case 85:
-          _context.next = 87;
+        case 90:
+          _context.next = 92;
           return assessPerformanceRows(connection, [].concat(_toConsumableArray(slow), _toConsumableArray(indexes)), report.warnings);
-        case 87:
+        case 92:
           assessments = new Map([].concat(_toConsumableArray(slow), _toConsumableArray(indexes)).map(function (row) {
             return [JSON.stringify([row.database_name, row.digest]), row.indexAssessment];
           }));
@@ -7652,11 +8344,11 @@ function _collectPerformanceReport() {
           }
           report.warnings.push('Statistics are cumulative since collection began or was reset, not a recent time window. Index candidates require execution-plan review; scans can be appropriate.');
           return _context.abrupt("return", finish());
-        case 91:
+        case 96:
         case "end":
           return _context.stop();
       }
-    }, _callee, null, [[8, 14]]);
+    }, _callee, null, [[8, 15]]);
   }));
   return _collectPerformanceReport.apply(this, arguments);
 }
@@ -8188,30 +8880,89 @@ function _analyzePerformanceQuery() {
   return _analyzePerformanceQuery.apply(this, arguments);
 }
 
-var setConfig = function setConfig(config, argv) {
-  if (!config.host && argv.host) {
-    config.host = argv.host;
-  }
-  if (!config.port && argv.port) {
-    config.port = argv.port;
-  }
-  if (!config.user && argv.user) {
-    config.user = argv.user;
-  }
-  if (!config.password && argv.password) {
-    config.password = argv.password;
-  }
-  if (!config.output && argv.output !== '../db-dump') {
-    config.output = argv.output;
+var setConfig = function setConfig() {
+  var input = arguments.length > 0 && arguments[0] !== undefined ? arguments[0] : {};
+  var argv = arguments.length > 1 && arguments[1] !== undefined ? arguments[1] : {};
+  if (!input || _typeof(input) !== 'object' || Array.isArray(input)) throw new Error('config must be an object.');
+  var config = _objectSpread2({}, input);
+  for (var _i = 0, _arr = ['host', 'port', 'user', 'password', 'database', 'output']; _i < _arr.length; _i++) {
+    var key = _arr[_i];
+    if (config[key] == null && argv[key] != null) config[key] = argv[key];
   }
   return config;
 };
-var startApiServer = function startApiServer(port, argv) {
-  var app = express();
-  app.use(cors({
-    origin: '*'
+var withDatabase = /*#__PURE__*/function () {
+  var _ref = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee(config, action) {
+    var checker, operationError;
+    return _regeneratorRuntime().wrap(function _callee$(_context) {
+      while (1) switch (_context.prev = _context.next) {
+        case 0:
+          checker = new DBStructureChecker(config);
+          _context.prev = 1;
+          _context.next = 4;
+          return checker.ready();
+        case 4:
+          _context.next = 6;
+          return action(checker.connection);
+        case 6:
+          return _context.abrupt("return", _context.sent);
+        case 9:
+          _context.prev = 9;
+          _context.t0 = _context["catch"](1);
+          operationError = _context.t0;
+          throw _context.t0;
+        case 13:
+          _context.prev = 13;
+          _context.prev = 14;
+          _context.next = 17;
+          return checker.closeConnection();
+        case 17:
+          _context.next = 24;
+          break;
+        case 19:
+          _context.prev = 19;
+          _context.t1 = _context["catch"](14);
+          if (operationError) {
+            _context.next = 23;
+            break;
+          }
+          throw _context.t1;
+        case 23:
+          operationError.closeError = _context.t1.message;
+        case 24:
+          return _context.finish(13);
+        case 25:
+        case "end":
+          return _context.stop();
+      }
+    }, _callee, null, [[1, 9, 13, 25], [14, 19]]);
   }));
+  return function withDatabase(_x, _x2) {
+    return _ref.apply(this, arguments);
+  };
+}();
+var startApiServer = function startApiServer(port) {
+  var argv = arguments.length > 1 && arguments[1] !== undefined ? arguments[1] : {};
+  var app = express();
   var server = http.createServer(app);
+  // A web page must not borrow this local tool's startup DB credentials.
+  // Non-browser clients omit Origin; browser clients must use this UI origin.
+  app.use('/api', function (req, res, next) {
+    var localOnly = !argv.uiHost || ['127.0.0.1', 'localhost', '::1'].includes(argv.uiHost);
+    if (localOnly && !['127.0.0.1', 'localhost', '[::1]', '::1'].includes(req.hostname)) {
+      return res.status(403).json({
+        message: 'Use a loopback hostname to access this local mysqlsyncr server.'
+      });
+    }
+    var origin = req.get('origin');
+    if (origin) {
+      var sameOrigin = origin === "".concat(req.protocol, "://").concat(req.get('host'));
+      if (!sameOrigin) return res.status(403).json({
+        message: 'Use the mysqlsyncr UI on this server to access its API.'
+      });
+    }
+    next();
+  });
   app.use(express.json({
     limit: '50mb'
   }));
@@ -8219,702 +8970,360 @@ var startApiServer = function startApiServer(port, argv) {
     limit: '50mb',
     extended: true
   }));
+  app.use('/api', function (req, res, next) {
+    if (!req.body || _typeof(req.body) !== 'object' || Array.isArray(req.body)) {
+      return res.status(400).json({
+        message: 'Request body must be an object.'
+      });
+    }
+    if ('config' in (req.body || {}) && (!req.body.config || _typeof(req.body.config) !== 'object' || Array.isArray(req.body.config))) {
+      return res.status(400).json({
+        message: 'config must be an object.'
+      });
+    }
+    if (['/apply', '/acceptCurrent'].includes(req.path) && (typeof req.body.database !== 'string' || !req.body.database || !Array.isArray(req.body.diffs) || req.body.diffs.some(function (d) {
+      return !d || typeof d.type !== 'string';
+    }))) {
+      return res.status(400).json({
+        message: 'database and an array of diffs are required.'
+      });
+    }
+    if (['/apply', '/acceptCurrent'].includes(req.path) && req.body.diffs.some(function (diff) {
+      return diff.type === 'missing_database' && diff.database !== req.body.database;
+    })) {
+      return res.status(400).json({
+        message: 'A missing_database difference must match its database scope.'
+      });
+    }
+    next();
+  });
   console.log("Serving UI from ".concat(path.join(packageRoot, 'ui/dist/spa')));
   app.use(express["static"](path.join(packageRoot, 'ui/dist/spa')));
-  app.post('/api/performance/ai/status', /*#__PURE__*/function () {
-    var _ref = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee(req, res) {
-      var _req$body;
-      return _regeneratorRuntime().wrap(function _callee$(_context) {
-        while (1) switch (_context.prev = _context.next) {
-          case 0:
-            _context.prev = 0;
-            _context.t0 = res;
-            _context.next = 4;
-            return getAiStatus((_req$body = req.body) === null || _req$body === void 0 ? void 0 : _req$body.model);
-          case 4:
-            _context.t1 = _context.sent;
-            _context.t0.json.call(_context.t0, _context.t1);
-            _context.next = 11;
-            break;
-          case 8:
-            _context.prev = 8;
-            _context.t2 = _context["catch"](0);
-            res.status(_context.t2.code === 'INVALID_AI_REQUEST' ? 400 : 503).json({
-              message: _context.t2.message
-            });
-          case 11:
-          case "end":
-            return _context.stop();
-        }
-      }, _callee, null, [[0, 8]]);
-    }));
-    return function (_x, _x2) {
-      return _ref.apply(this, arguments);
-    };
-  }());
-  app.post('/api/performance/ai', /*#__PURE__*/function () {
-    var _ref2 = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee2(req, res) {
-      var _ref3, _ref3$config, config, database, digest, model;
+  var configFor = function configFor(body) {
+    var config = setConfig(body.config, argv);
+    if (body.database !== undefined) config.database = body.database;
+    return config;
+  };
+  // Express 4 does not forward rejected async route promises automatically.
+  var post = function post(url, action) {
+    return app.post(url, function (req, res, next) {
+      Promise.resolve().then(function () {
+        return action(req.body || {});
+      }).then(function (result) {
+        return res.json(result);
+      }, next);
+    });
+  };
+  var badRequest = function badRequest(message) {
+    return Object.assign(new Error(message), {
+      status: 400
+    });
+  };
+  post('/api/getDatabasesFromExistingDumps', function (body) {
+    return getDatabasesFromExistingDumps(configFor(body));
+  });
+  post('/api/dump', /*#__PURE__*/function () {
+    var _ref2 = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee2(body) {
+      var config;
       return _regeneratorRuntime().wrap(function _callee2$(_context2) {
         while (1) switch (_context2.prev = _context2.next) {
           case 0:
-            _context2.prev = 0;
-            _ref3 = req.body || {}, _ref3$config = _ref3.config, config = _ref3$config === void 0 ? {} : _ref3$config, database = _ref3.database, digest = _ref3.digest, model = _ref3.model;
-            if (!(!config || _typeof(config) !== 'object' || Array.isArray(config))) {
-              _context2.next = 4;
-              break;
-            }
-            return _context2.abrupt("return", res.status(400).json({
-              message: 'config must be an object.'
-            }));
+            config = configFor(body);
+            _context2.next = 3;
+            return withDatabase(config, function (connection) {
+              return dumpAllDatabases(connection, 'dump', config);
+            });
+          case 3:
+            return _context2.abrupt("return", {
+              message: 'Dump completed successfully'
+            });
           case 4:
-            _context2.t0 = res;
-            _context2.next = 7;
-            return analyzePerformanceQuery(setConfig(_objectSpread2({}, config), argv), {
-              database: database,
-              digest: digest,
-              model: model
-            });
-          case 7:
-            _context2.t1 = _context2.sent;
-            _context2.t0.json.call(_context2.t0, _context2.t1);
-            _context2.next = 14;
-            break;
-          case 11:
-            _context2.prev = 11;
-            _context2.t2 = _context2["catch"](0);
-            res.status(_context2.t2.code === 'INVALID_AI_REQUEST' ? 400 : 503).json({
-              message: _context2.t2.message
-            });
-          case 14:
           case "end":
             return _context2.stop();
         }
-      }, _callee2, null, [[0, 11]]);
+      }, _callee2);
     }));
-    return function (_x3, _x4) {
+    return function (_x3) {
       return _ref2.apply(this, arguments);
     };
   }());
-  app.post('/api/performance', /*#__PURE__*/function () {
-    var _ref4 = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee3(req, res) {
-      var _ref5, _ref5$config, config, _ref5$options, options;
+  post('/api/compare', function (body) {
+    var config = configFor(body);
+    return withDatabase(config, function (connection) {
+      return compareAllDatabases(connection, config.output, false, 'compare', config);
+    });
+  });
+  post('/api/apply', /*#__PURE__*/function () {
+    var _ref3 = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee3(body) {
+      var result;
       return _regeneratorRuntime().wrap(function _callee3$(_context3) {
         while (1) switch (_context3.prev = _context3.next) {
           case 0:
-            _context3.prev = 0;
-            _ref5 = req.body || {}, _ref5$config = _ref5.config, config = _ref5$config === void 0 ? {} : _ref5$config, _ref5$options = _ref5.options, options = _ref5$options === void 0 ? {} : _ref5$options;
-            if (!(!config || _typeof(config) !== 'object' || Array.isArray(config) || !options || _typeof(options) !== 'object' || Array.isArray(options))) {
-              _context3.next = 4;
+            _context3.next = 2;
+            return withDatabase(configFor(body), function (connection) {
+              return applyDifferences(connection, body.database, body.diffs);
+            });
+          case 2:
+            result = _context3.sent;
+            if (!result.failures.length) {
+              _context3.next = 5;
               break;
             }
-            return _context3.abrupt("return", res.status(400).json({
-              message: 'config and options must be objects.'
-            }));
-          case 4:
-            _context3.t0 = res;
-            _context3.next = 7;
-            return checkPerformance(setConfig(_objectSpread2({}, config), argv), options);
-          case 7:
-            _context3.t1 = _context3.sent;
-            _context3.t0.json.call(_context3.t0, _context3.t1);
-            _context3.next = 14;
-            break;
-          case 11:
-            _context3.prev = 11;
-            _context3.t2 = _context3["catch"](0);
-            res.status(_context3.t2.code === 'INVALID_PERFORMANCE_OPTIONS' ? 400 : 500).json({
-              message: _context3.t2.message
+            throw Object.assign(new Error("Applied ".concat(result.attempted - result.failures.length, " of ").concat(result.attempted, ". ").concat(result.failures.map(function (f) {
+              return "".concat(f.description, " (").concat(f.message, ")");
+            }).join('; '))), result);
+          case 5:
+            return _context3.abrupt("return", {
+              message: "Applied ".concat(result.attempted, " of ").concat(result.attempted, "."),
+              warnings: result.warnings
             });
-          case 14:
+          case 6:
           case "end":
             return _context3.stop();
         }
-      }, _callee3, null, [[0, 11]]);
+      }, _callee3);
     }));
-    return function (_x5, _x6) {
-      return _ref4.apply(this, arguments);
+    return function (_x4) {
+      return _ref3.apply(this, arguments);
     };
   }());
-  app.post('/api/getDatabasesFromExistingDumps', /*#__PURE__*/function () {
-    var _ref6 = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee4(req, res) {
-      var _ref7, _ref7$config, config;
+  post('/api/applyAll', /*#__PURE__*/function () {
+    var _ref4 = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee4(body) {
+      var differences, config, result;
       return _regeneratorRuntime().wrap(function _callee4$(_context4) {
         while (1) switch (_context4.prev = _context4.next) {
           case 0:
-            _context4.prev = 0;
-            _ref7 = req.body || {}, _ref7$config = _ref7.config, config = _ref7$config === void 0 ? {} : _ref7$config;
-            config = setConfig(config, argv);
-            _context4.t0 = res;
-            _context4.next = 6;
-            return getDatabasesFromExistingDumps(config);
+            differences = body.differences;
+            if (!(!differences || _typeof(differences) !== 'object' || Array.isArray(differences) || Object.values(differences).some(function (diffs) {
+              return !Array.isArray(diffs) || diffs.some(function (d) {
+                return !d || typeof d.type !== 'string';
+              });
+            }))) {
+              _context4.next = 3;
+              break;
+            }
+            throw badRequest('differences must map database names to arrays of differences.');
+          case 3:
+            config = configFor(body);
+            if (!(config.database && Object.keys(differences).some(function (db) {
+              return db !== config.database;
+            }))) {
+              _context4.next = 6;
+              break;
+            }
+            throw badRequest('Differences include a database outside the selected scope.');
           case 6:
-            _context4.t1 = _context4.sent;
-            _context4.t0.json.call(_context4.t0, _context4.t1);
-            _context4.next = 13;
-            break;
-          case 10:
-            _context4.prev = 10;
-            _context4.t2 = _context4["catch"](0);
-            res.status(500).json({
-              message: "Unable to read database dumps: ".concat(_context4.t2.message)
+            if (!Object.entries(differences).some(function (_ref5) {
+              var _ref6 = _slicedToArray(_ref5, 2),
+                database = _ref6[0],
+                diffs = _ref6[1];
+              return diffs.some(function (diff) {
+                return diff.type === 'missing_database' && diff.database !== database;
+              });
+            })) {
+              _context4.next = 8;
+              break;
+            }
+            throw badRequest('A missing_database difference must match its database scope.');
+          case 8:
+            _context4.next = 10;
+            return withDatabase(config, function (connection) {
+              return applyAllDifferences(connection, differences);
             });
-          case 13:
+          case 10:
+            result = _context4.sent;
+            return _context4.abrupt("return", _objectSpread2(_objectSpread2({}, result), {}, {
+              message: "Applied ".concat(result.attempted, " difference(s). Compare again to verify.")
+            }));
+          case 12:
           case "end":
             return _context4.stop();
         }
-      }, _callee4, null, [[0, 10]]);
+      }, _callee4);
     }));
-    return function (_x7, _x8) {
-      return _ref6.apply(this, arguments);
+    return function (_x5) {
+      return _ref4.apply(this, arguments);
     };
   }());
-
-  // API endpoint to dump the database
-  app.post('/api/dump', /*#__PURE__*/function () {
-    var _ref8 = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee6(req, res) {
-      var _req$body2, config, database, checker;
+  post('/api/versions', function (body) {
+    var config = configFor(body);
+    return withDatabase(config, function (connection) {
+      return getVersionInfo(connection, config.output);
+    });
+  });
+  post('/api/acceptCurrent', /*#__PURE__*/function () {
+    var _ref7 = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee5(body) {
+      var config;
+      return _regeneratorRuntime().wrap(function _callee5$(_context5) {
+        while (1) switch (_context5.prev = _context5.next) {
+          case 0:
+            config = configFor(body);
+            if (config.output) {
+              _context5.next = 3;
+              break;
+            }
+            throw badRequest('No template folder selected');
+          case 3:
+            assertOutsidePackage(config.output);
+            _context5.next = 6;
+            return withDatabase(config, function (connection) {
+              return acceptCurrentIntoTemplate(connection, config.output, body.database, body.diffs);
+            });
+          case 6:
+            return _context5.abrupt("return", {
+              message: 'Template updated with the current values'
+            });
+          case 7:
+          case "end":
+            return _context5.stop();
+        }
+      }, _callee5);
+    }));
+    return function (_x6) {
+      return _ref7.apply(this, arguments);
+    };
+  }());
+  post('/api/templateDrift', function (body) {
+    var config = configFor(body);
+    if (!config.output) throw badRequest('No template folder selected');
+    return findTemplateDrift(config.output);
+  });
+  post('/api/resolveTemplateDrift', /*#__PURE__*/function () {
+    var _ref8 = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee6(body) {
+      var config;
       return _regeneratorRuntime().wrap(function _callee6$(_context6) {
         while (1) switch (_context6.prev = _context6.next) {
           case 0:
-            _req$body2 = req.body, config = _req$body2.config, database = _req$body2.database;
-            config = setConfig(config, argv);
-            checker = new DBStructureChecker(config, database);
-            checker.connection.on('error', function (err) {
-              console.error('Database connection error in route dump:', err);
-              res.status(500).json({
-                message: 'Database connection failed',
-                error: err.message
-              });
-            });
-            checker.connection.on('connect', /*#__PURE__*/_asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee5() {
-              return _regeneratorRuntime().wrap(function _callee5$(_context5) {
-                while (1) switch (_context5.prev = _context5.next) {
-                  case 0:
-                    console.log('Connected to the database');
-                    checker.targetDatabase = database;
-                    checker.command = 'dump';
-                    checker.options = req.body;
-                    _context5.prev = 4;
-                    console.log('Dumping the database structure to files');
-                    _context5.next = 8;
-                    return dumpAllDatabases(checker.connection, 'dump', config);
-                  case 8:
-                    res.json({
-                      message: 'Dump completed successfully'
-                    });
-                    _context5.next = 14;
-                    break;
-                  case 11:
-                    _context5.prev = 11;
-                    _context5.t0 = _context5["catch"](4);
-                    res.status(500).json({
-                      message: _context5.t0.message
-                    });
-                  case 14:
-                    _context5.prev = 14;
-                    _context5.next = 17;
-                    return checker.closeConnection();
-                  case 17:
-                    return _context5.finish(14);
-                  case 18:
-                  case "end":
-                    return _context5.stop();
-                }
-              }, _callee5, null, [[4, 11, 14, 18]]);
-            })));
+            config = configFor(body);
+            if (config.output) {
+              _context6.next = 3;
+              break;
+            }
+            throw badRequest('No template folder selected');
+          case 3:
+            _context6.next = 5;
+            return resolveTemplateDrift(config.output, body.database, body.table, body.keep);
           case 5:
+            return _context6.abrupt("return", {
+              message: "".concat(body.database, ".").concat(body.table, ": kept the ").concat(body.keep === 'json' ? 'JSON' : '.sql file', " version")
+            });
+          case 6:
           case "end":
             return _context6.stop();
         }
       }, _callee6);
     }));
-    return function (_x9, _x0) {
+    return function (_x7) {
       return _ref8.apply(this, arguments);
     };
   }());
-
-  // API endpoint to compare the database
-  app.post('/api/compare', /*#__PURE__*/function () {
-    var _ref0 = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee8(req, res) {
-      var _req$body3, config, database, checker;
+  post('/api/performance', function (body) {
+    var _body$options;
+    var options = (_body$options = body.options) !== null && _body$options !== void 0 ? _body$options : {};
+    if (_typeof(options) !== 'object' || Array.isArray(options)) throw badRequest('options must be an object.');
+    return checkPerformance(configFor(body), options);
+  });
+  post('/api/performance/ai/status', function (body) {
+    return getAiStatus(body.model);
+  });
+  post('/api/performance/ai', function (body) {
+    return analyzePerformanceQuery(configFor(body), {
+      database: body.database,
+      digest: body.digest,
+      model: body.model
+    });
+  });
+  post('/api/browse-folders', /*#__PURE__*/function () {
+    var _ref9 = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee7(body) {
+      var currentPath, contents, items;
+      return _regeneratorRuntime().wrap(function _callee7$(_context7) {
+        while (1) switch (_context7.prev = _context7.next) {
+          case 0:
+            currentPath = path.resolve(body.currentPath || process.cwd());
+            _context7.next = 3;
+            return fs$1.readdir(currentPath, {
+              withFileTypes: true
+            });
+          case 3:
+            contents = _context7.sent;
+            items = contents.map(function (entry) {
+              return {
+                name: entry.name,
+                path: path.join(currentPath, entry.name),
+                isDirectory: entry.isDirectory(),
+                isParent: false
+              };
+            });
+            items.sort(function (a, b) {
+              return a.isDirectory === b.isDirectory ? a.name.localeCompare(b.name) : a.isDirectory ? -1 : 1;
+            });
+            if (currentPath !== path.resolve(currentPath, '..')) items.unshift({
+              name: '..',
+              path: path.resolve(currentPath, '..'),
+              isDirectory: true,
+              isParent: true
+            });
+            return _context7.abrupt("return", {
+              currentPath: currentPath,
+              items: items
+            });
+          case 8:
+          case "end":
+            return _context7.stop();
+        }
+      }, _callee7);
+    }));
+    return function (_x8) {
+      return _ref9.apply(this, arguments);
+    };
+  }());
+  post('/api/create-folder', /*#__PURE__*/function () {
+    var _ref0 = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee8(body) {
+      var folderPath;
       return _regeneratorRuntime().wrap(function _callee8$(_context8) {
         while (1) switch (_context8.prev = _context8.next) {
           case 0:
-            _req$body3 = req.body, config = _req$body3.config, database = _req$body3.database;
-            config = setConfig(config, argv);
-            checker = new DBStructureChecker(config, database);
-            checker.connection.on('error', function (err) {
-              console.error('Database connection error in route compare:', err);
-              res.status(500).json({
-                message: 'Database connection failed',
-                error: err.message
-              });
+            if (!(typeof body.folderPath !== 'string' || !body.folderPath)) {
+              _context8.next = 2;
+              break;
+            }
+            throw badRequest('folderPath is required.');
+          case 2:
+            folderPath = path.resolve(body.folderPath);
+            assertOutsidePackage(folderPath);
+            _context8.next = 6;
+            return fs$1.mkdir(folderPath, {
+              recursive: true
             });
-            checker.connection.on('connect', /*#__PURE__*/_asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee7() {
-              var diffs;
-              return _regeneratorRuntime().wrap(function _callee7$(_context7) {
-                while (1) switch (_context7.prev = _context7.next) {
-                  case 0:
-                    console.log('Connected to the database');
-                    checker.targetDatabase = config.database;
-                    checker.command = 'compare';
-                    checker.options = req.body;
-                    _context7.prev = 4;
-                    delete req.body.output;
-                    console.log('Comparing the database structure with JSON dumps (dry run)');
-                    _context7.next = 9;
-                    return compareAllDatabases(checker.connection, config.output, false, 'compare', config);
-                  case 9:
-                    diffs = _context7.sent;
-                    res.json(diffs);
-                    _context7.next = 17;
-                    break;
-                  case 13:
-                    _context7.prev = 13;
-                    _context7.t0 = _context7["catch"](4);
-                    console.log(_context7.t0);
-                    res.status(500).json({
-                      message: _context7.t0.message
-                    });
-                  case 17:
-                    _context7.prev = 17;
-                    _context7.next = 20;
-                    return checker.closeConnection();
-                  case 20:
-                    return _context7.finish(17);
-                  case 21:
-                  case "end":
-                    return _context7.stop();
-                }
-              }, _callee7, null, [[4, 13, 17, 21]]);
-            })));
-          case 5:
+          case 6:
+            return _context8.abrupt("return", {
+              success: true,
+              path: folderPath
+            });
+          case 7:
           case "end":
             return _context8.stop();
         }
       }, _callee8);
     }));
-    return function (_x1, _x10) {
+    return function (_x9) {
       return _ref0.apply(this, arguments);
     };
   }());
-
-  // API endpoint to apply differences
-  app.post('/api/apply', /*#__PURE__*/function () {
-    var _ref10 = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee0(req, res) {
-      var _req$body4, config, database, diffs, checker;
-      return _regeneratorRuntime().wrap(function _callee0$(_context0) {
-        while (1) switch (_context0.prev = _context0.next) {
-          case 0:
-            _req$body4 = req.body, config = _req$body4.config, database = _req$body4.database, diffs = _req$body4.diffs;
-            config = setConfig(config, argv);
-            console.log('Applying differences:', diffs);
-            checker = new DBStructureChecker(config, database);
-            checker.connection.on('error', function (err) {
-              console.error('Database connection error in route apply:', err);
-              res.status(500).json({
-                message: 'Database connection failed',
-                error: err.message
-              });
-            });
-            checker.connection.on('connect', /*#__PURE__*/_asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee9() {
-              var _yield$applyDifferenc, attempted, failures, warnings, warningText;
-              return _regeneratorRuntime().wrap(function _callee9$(_context9) {
-                while (1) switch (_context9.prev = _context9.next) {
-                  case 0:
-                    console.log('Connected to the database');
-                    checker.targetDatabase = database;
-                    checker.command = 'apply';
-                    checker.options = req.body;
-                    _context9.prev = 4;
-                    console.log('Applying the database structure based on JSON dumps');
-                    _context9.next = 8;
-                    return applyDifferences(checker.connection, database, diffs);
-                  case 8:
-                    _yield$applyDifferenc = _context9.sent;
-                    attempted = _yield$applyDifferenc.attempted;
-                    failures = _yield$applyDifferenc.failures;
-                    warnings = _yield$applyDifferenc.warnings;
-                    warningText = warnings.length ? " ".concat(warnings.length, " applied with changes: ") + warnings.map(function (w) {
-                      return "".concat(w.description, " (").concat(w.message, ")");
-                    }).join('; ') : '';
-                    if (failures.length) {
-                      // Reporting success here would be a lie: the same differences come
-                      // back on the next compare with no indication of why.
-                      res.status(500).json({
-                        message: "Applied ".concat(attempted - failures.length, " of ").concat(attempted, ". ").concat(failures.length, " failed: ") + failures.map(function (f) {
-                          return "".concat(f.description, " (").concat(f.message, ")");
-                        }).join('; ') + warningText,
-                        failures: failures,
-                        warnings: warnings
-                      });
-                    } else {
-                      res.json({
-                        message: "Applied ".concat(attempted, " of ").concat(attempted, ".") + warningText,
-                        warnings: warnings
-                      });
-                    }
-                    _context9.next = 19;
-                    break;
-                  case 16:
-                    _context9.prev = 16;
-                    _context9.t0 = _context9["catch"](4);
-                    res.status(500).json({
-                      message: _context9.t0.message
-                    });
-                  case 19:
-                    _context9.prev = 19;
-                    _context9.next = 22;
-                    return checker.closeConnection();
-                  case 22:
-                    return _context9.finish(19);
-                  case 23:
-                  case "end":
-                    return _context9.stop();
-                }
-              }, _callee9, null, [[4, 16, 19, 23]]);
-            })));
-          case 6:
-          case "end":
-            return _context0.stop();
-        }
-      }, _callee0);
-    }));
-    return function (_x11, _x12) {
-      return _ref10.apply(this, arguments);
-    };
-  }());
-
-  // API endpoint for tables whose tables/<table>.sql disagrees with the createSQL in the
-  // template's JSON. Reads only the template, so no database connection is needed
-  app.post('/api/templateDrift', /*#__PURE__*/function () {
-    var _ref12 = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee1(req, res) {
-      var config;
-      return _regeneratorRuntime().wrap(function _callee1$(_context1) {
-        while (1) switch (_context1.prev = _context1.next) {
-          case 0:
-            config = setConfig(req.body.config || {}, argv);
-            if (config.output) {
-              _context1.next = 3;
-              break;
-            }
-            return _context1.abrupt("return", res.status(400).json({
-              message: 'No template folder selected'
-            }));
-          case 3:
-            _context1.prev = 3;
-            _context1.t0 = res;
-            _context1.next = 7;
-            return findTemplateDrift(config.output);
-          case 7:
-            _context1.t1 = _context1.sent;
-            _context1.t0.json.call(_context1.t0, _context1.t1);
-            _context1.next = 14;
-            break;
-          case 11:
-            _context1.prev = 11;
-            _context1.t2 = _context1["catch"](3);
-            res.status(500).json({
-              message: _context1.t2.message
-            });
-          case 14:
-          case "end":
-            return _context1.stop();
-        }
-      }, _callee1, null, [[3, 11]]);
-    }));
-    return function (_x13, _x14) {
-      return _ref12.apply(this, arguments);
-    };
-  }());
-
-  // API endpoint to make one table's JSON createSQL and .sql file agree, keeping 'json' or 'sql'
-  app.post('/api/resolveTemplateDrift', /*#__PURE__*/function () {
-    var _ref13 = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee10(req, res) {
-      var _req$body5, database, table, keep, config;
-      return _regeneratorRuntime().wrap(function _callee10$(_context10) {
-        while (1) switch (_context10.prev = _context10.next) {
-          case 0:
-            _req$body5 = req.body, database = _req$body5.database, table = _req$body5.table, keep = _req$body5.keep;
-            config = setConfig(req.body.config || {}, argv);
-            if (config.output) {
-              _context10.next = 4;
-              break;
-            }
-            return _context10.abrupt("return", res.status(400).json({
-              message: 'No template folder selected'
-            }));
-          case 4:
-            _context10.prev = 4;
-            _context10.next = 7;
-            return resolveTemplateDrift(config.output, database, table, keep);
-          case 7:
-            res.json({
-              message: "".concat(database, ".").concat(table, ": kept the ").concat(keep === 'json' ? 'JSON' : '.sql file', " version")
-            });
-            _context10.next = 13;
-            break;
-          case 10:
-            _context10.prev = 10;
-            _context10.t0 = _context10["catch"](4);
-            res.status(500).json({
-              message: _context10.t0.message
-            });
-          case 13:
-          case "end":
-            return _context10.stop();
-        }
-      }, _callee10, null, [[4, 10]]);
-    }));
-    return function (_x15, _x16) {
-      return _ref13.apply(this, arguments);
-    };
-  }());
-
-  // API endpoint for the server's and the template's MySQL versions
-  app.post('/api/versions', /*#__PURE__*/function () {
-    var _ref14 = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee12(req, res) {
-      var config, checker;
-      return _regeneratorRuntime().wrap(function _callee12$(_context12) {
-        while (1) switch (_context12.prev = _context12.next) {
-          case 0:
-            config = req.body.config;
-            config = setConfig(config || {}, argv);
-            checker = new DBStructureChecker(config);
-            checker.connection.on('error', function (err) {
-              if (!res.headersSent) res.status(500).json({
-                message: 'Database connection failed',
-                error: err.message
-              });
-            });
-            checker.connection.on('connect', /*#__PURE__*/_asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee11() {
-              return _regeneratorRuntime().wrap(function _callee11$(_context11) {
-                while (1) switch (_context11.prev = _context11.next) {
-                  case 0:
-                    _context11.prev = 0;
-                    _context11.t0 = res;
-                    _context11.next = 4;
-                    return getVersionInfo(checker.connection, config.output);
-                  case 4:
-                    _context11.t1 = _context11.sent;
-                    _context11.t0.json.call(_context11.t0, _context11.t1);
-                    _context11.next = 11;
-                    break;
-                  case 8:
-                    _context11.prev = 8;
-                    _context11.t2 = _context11["catch"](0);
-                    res.status(500).json({
-                      message: _context11.t2.message
-                    });
-                  case 11:
-                    _context11.prev = 11;
-                    _context11.next = 14;
-                    return checker.closeConnection();
-                  case 14:
-                    return _context11.finish(11);
-                  case 15:
-                  case "end":
-                    return _context11.stop();
-                }
-              }, _callee11, null, [[0, 8, 11, 15]]);
-            })));
-          case 5:
-          case "end":
-            return _context12.stop();
-        }
-      }, _callee12);
-    }));
-    return function (_x17, _x18) {
-      return _ref14.apply(this, arguments);
-    };
-  }());
-
-  // API endpoint to overwrite the template with the database's current values
-  app.post('/api/acceptCurrent', /*#__PURE__*/function () {
-    var _ref16 = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee14(req, res) {
-      var _req$body6, config, database, diffs, checker;
-      return _regeneratorRuntime().wrap(function _callee14$(_context14) {
-        while (1) switch (_context14.prev = _context14.next) {
-          case 0:
-            _req$body6 = req.body, config = _req$body6.config, database = _req$body6.database, diffs = _req$body6.diffs;
-            config = setConfig(config, argv);
-            if (config.output) {
-              _context14.next = 4;
-              break;
-            }
-            return _context14.abrupt("return", res.status(400).json({
-              message: 'No template folder selected'
-            }));
-          case 4:
-            _context14.prev = 4;
-            assertOutsidePackage(config.output);
-            _context14.next = 11;
-            break;
-          case 8:
-            _context14.prev = 8;
-            _context14.t0 = _context14["catch"](4);
-            return _context14.abrupt("return", res.status(400).json({
-              message: _context14.t0.message
-            }));
-          case 11:
-            checker = new DBStructureChecker(config, database);
-            checker.connection.on('error', function (err) {
-              console.error('Database connection error in route acceptCurrent:', err);
-              if (!res.headersSent) res.status(500).json({
-                message: 'Database connection failed',
-                error: err.message
-              });
-            });
-            checker.connection.on('connect', /*#__PURE__*/_asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee13() {
-              var _diffs$length;
-              return _regeneratorRuntime().wrap(function _callee13$(_context13) {
-                while (1) switch (_context13.prev = _context13.next) {
-                  case 0:
-                    _context13.prev = 0;
-                    console.log("Keeping current values in the template for ".concat((_diffs$length = diffs === null || diffs === void 0 ? void 0 : diffs.length) !== null && _diffs$length !== void 0 ? _diffs$length : 0, " difference(s) in ").concat(database));
-                    _context13.next = 4;
-                    return acceptCurrentIntoTemplate(checker.connection, config.output, database, diffs || []);
-                  case 4:
-                    res.json({
-                      message: 'Template updated with the current values'
-                    });
-                    _context13.next = 10;
-                    break;
-                  case 7:
-                    _context13.prev = 7;
-                    _context13.t0 = _context13["catch"](0);
-                    res.status(500).json({
-                      message: _context13.t0.message
-                    });
-                  case 10:
-                    _context13.prev = 10;
-                    _context13.next = 13;
-                    return checker.closeConnection();
-                  case 13:
-                    return _context13.finish(10);
-                  case 14:
-                  case "end":
-                    return _context13.stop();
-                }
-              }, _callee13, null, [[0, 7, 10, 14]]);
-            })));
-          case 14:
-          case "end":
-            return _context14.stop();
-        }
-      }, _callee14, null, [[4, 8]]);
-    }));
-    return function (_x19, _x20) {
-      return _ref16.apply(this, arguments);
-    };
-  }());
-  app.post('/api/browse-folders', /*#__PURE__*/function () {
-    var _ref18 = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee15(req, res) {
-      var _req$body$currentPath, currentPath, resolvedPath, contents, items, sortedItems;
-      return _regeneratorRuntime().wrap(function _callee15$(_context15) {
-        while (1) switch (_context15.prev = _context15.next) {
-          case 0:
-            _context15.prev = 0;
-            // Start where mysqlsyncr was run from, not in the package folder
-            _req$body$currentPath = req.body.currentPath, currentPath = _req$body$currentPath === void 0 ? process.cwd() : _req$body$currentPath;
-            console.log('Browsing folder:', currentPath);
-            resolvedPath = currentPath.startsWith('/') || currentPath.match(/^[A-Z]:\\/) ? path.resolve(currentPath) : path.resolve(currentPath);
-            console.log('Resolved path:', resolvedPath);
-            _context15.next = 7;
-            return fs$1.readdir(resolvedPath, {
-              withFileTypes: true
-            });
-          case 7:
-            contents = _context15.sent;
-            // Separate directories and files
-            items = contents.map(function (dirent) {
-              return {
-                name: dirent.name,
-                path: path.join(resolvedPath, dirent.name),
-                isDirectory: dirent.isDirectory(),
-                isParent: false
-              };
-            }); // Sort items: directories first, then files, both alphabetically
-            sortedItems = items.sort(function (a, b) {
-              if (a.isDirectory === b.isDirectory) {
-                return a.name.localeCompare(b.name);
-              }
-              return a.isDirectory ? -1 : 1;
-            }); // Add parent directory option if not at root
-            if (resolvedPath !== path.resolve(resolvedPath, '..')) {
-              sortedItems.unshift({
-                name: '..',
-                path: path.resolve(resolvedPath, '..'),
-                isDirectory: true,
-                isParent: true
-              });
-            }
-            res.json({
-              currentPath: resolvedPath,
-              items: sortedItems
-            });
-            _context15.next = 17;
-            break;
-          case 14:
-            _context15.prev = 14;
-            _context15.t0 = _context15["catch"](0);
-            res.status(500).json({
-              error: _context15.t0.message
-            });
-          case 17:
-          case "end":
-            return _context15.stop();
-        }
-      }, _callee15, null, [[0, 14]]);
-    }));
-    return function (_x21, _x22) {
-      return _ref18.apply(this, arguments);
-    };
-  }());
-  app.post('/api/create-folder', /*#__PURE__*/function () {
-    var _ref19 = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee16(req, res) {
-      var folderPath, resolvedPath;
-      return _regeneratorRuntime().wrap(function _callee16$(_context16) {
-        while (1) switch (_context16.prev = _context16.next) {
-          case 0:
-            _context16.prev = 0;
-            folderPath = req.body.folderPath;
-            console.log('Creating folder:', folderPath);
-            resolvedPath = folderPath.startsWith('/') || folderPath.match(/^[A-Z]:\\/) ? path.resolve(folderPath) : path.resolve(process.cwd(), folderPath);
-            assertOutsidePackage(resolvedPath);
-            _context16.next = 7;
-            return fs$1.mkdir(resolvedPath, {
-              recursive: true
-            });
-          case 7:
-            res.json({
-              success: true,
-              path: resolvedPath
-            });
-            _context16.next = 13;
-            break;
-          case 10:
-            _context16.prev = 10;
-            _context16.t0 = _context16["catch"](0);
-            res.status(500).json({
-              error: _context16.t0.message
-            });
-          case 13:
-          case "end":
-            return _context16.stop();
-        }
-      }, _callee16, null, [[0, 10]]);
-    }));
-    return function (_x23, _x24) {
-      return _ref19.apply(this, arguments);
-    };
-  }());
-
-  // Start the server
-  server.listen(port, function () {
-    console.log("Server is running on http://localhost:".concat(port));
+  app.use(function (error, req, res, next) {
+    if (res.headersSent) return next(error);
+    var status = error.status || (['INVALID_PERFORMANCE_OPTIONS', 'INVALID_AI_REQUEST'].includes(error.code) ? 400 : 500);
+    res.status(status).json({
+      message: error.message,
+      error: error.message,
+      failures: error.failures,
+      warnings: error.warnings
+    });
   });
+  server.listen(port, argv.uiHost || '127.0.0.1', function () {
+    return console.log("Server is running on http://".concat(argv.uiHost || '127.0.0.1', ":").concat(server.address().port));
+  });
+  return server;
 };
 
 var describeColumn = function describeColumn(col) {
@@ -9727,212 +10136,149 @@ defineLazyProperty(apps, 'browser', () => 'browser');
 defineLazyProperty(apps, 'browserPrivate', () => 'browserPrivate');
 
 var compare = /*#__PURE__*/function () {
-  var _ref = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee3(config, output) {
-    return _regeneratorRuntime().wrap(function _callee3$(_context3) {
-      while (1) switch (_context3.prev = _context3.next) {
+  var _ref = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee(config, output) {
+    var checker, failure, diffs, _checker;
+    return _regeneratorRuntime().wrap(function _callee$(_context) {
+      while (1) switch (_context.prev = _context.next) {
         case 0:
-          return _context3.abrupt("return", new Promise(/*#__PURE__*/function () {
-            var _ref2 = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee2(resolve, reject) {
-              var checker;
-              return _regeneratorRuntime().wrap(function _callee2$(_context2) {
-                while (1) switch (_context2.prev = _context2.next) {
-                  case 0:
-                    _context2.prev = 0;
-                    checker = new DBStructureChecker(config);
-                    // Without this a refused connection is an unhandled 'error' event and the promise never settles
-                    checker.connection.on('error', function (err) {
-                      reject({
-                        type: 'error',
-                        error: err.message
-                      });
-                    });
-                    checker.connection.on('connect', /*#__PURE__*/_asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee() {
-                      var diffs;
-                      return _regeneratorRuntime().wrap(function _callee$(_context) {
-                        while (1) switch (_context.prev = _context.next) {
-                          case 0:
-                            _context.prev = 0;
-                            _context.next = 3;
-                            return compareAllDatabases(checker.connection, output, false, 'compare', {
-                              output: output
-                            });
-                          case 3:
-                            diffs = _context.sent;
-                            resolve({
-                              type: 'success',
-                              diffs: diffs
-                            });
-                            _context.next = 10;
-                            break;
-                          case 7:
-                            _context.prev = 7;
-                            _context.t0 = _context["catch"](0);
-                            // e.g. an invalid syncOptions.json
-                            reject({
-                              type: 'error',
-                              error: _context.t0.message
-                            });
-                          case 10:
-                            _context.prev = 10;
-                            _context.next = 13;
-                            return checker.closeConnection();
-                          case 13:
-                            return _context.finish(10);
-                          case 14:
-                          case "end":
-                            return _context.stop();
-                        }
-                      }, _callee, null, [[0, 7, 10, 14]]);
-                    })));
-                    _context2.next = 12;
-                    break;
-                  case 6:
-                    _context2.prev = 6;
-                    _context2.t0 = _context2["catch"](0);
-                    reject({
-                      type: 'error',
-                      error: _context2.t0.message
-                    });
-                    if (!checker) {
-                      _context2.next = 12;
-                      break;
-                    }
-                    _context2.next = 12;
-                    return checker.closeConnection();
-                  case 12:
-                  case "end":
-                    return _context2.stop();
-                }
-              }, _callee2, null, [[0, 6]]);
-            }));
-            return function (_x3, _x4) {
-              return _ref2.apply(this, arguments);
-            };
-          }()));
-        case 1:
+          _context.prev = 0;
+          checker = new DBStructureChecker(config);
+          _context.next = 4;
+          return checker.ready();
+        case 4:
+          _context.next = 6;
+          return compareAllDatabases(checker.connection, output, false, 'compare', {
+            output: output,
+            database: config.database
+          });
+        case 6:
+          diffs = _context.sent;
+          return _context.abrupt("return", {
+            type: 'success',
+            diffs: diffs
+          });
+        case 10:
+          _context.prev = 10;
+          _context.t0 = _context["catch"](0);
+          failure = {
+            type: 'error',
+            error: _context.t0.message
+          };
+          throw failure;
+        case 14:
+          _context.prev = 14;
+          _context.prev = 15;
+          _context.next = 18;
+          return (_checker = checker) === null || _checker === void 0 ? void 0 : _checker.closeConnection();
+        case 18:
+          _context.next = 25;
+          break;
+        case 20:
+          _context.prev = 20;
+          _context.t1 = _context["catch"](15);
+          if (failure) {
+            _context.next = 24;
+            break;
+          }
+          throw {
+            type: 'error',
+            error: _context.t1.message
+          };
+        case 24:
+          failure.closeError = _context.t1.message;
+        case 25:
+          return _context.finish(14);
+        case 26:
         case "end":
-          return _context3.stop();
+          return _context.stop();
       }
-    }, _callee3);
+    }, _callee, null, [[0, 10, 14, 26], [15, 20]]);
   }));
   return function compare(_x, _x2) {
     return _ref.apply(this, arguments);
   };
 }();
 var apply = /*#__PURE__*/function () {
-  var _ref4 = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee6(config, database, diffs) {
-    return _regeneratorRuntime().wrap(function _callee6$(_context6) {
-      while (1) switch (_context6.prev = _context6.next) {
+  var _ref2 = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee2(config, database, diffs) {
+    var checker, failure, result, _checker2;
+    return _regeneratorRuntime().wrap(function _callee2$(_context2) {
+      while (1) switch (_context2.prev = _context2.next) {
         case 0:
-          return _context6.abrupt("return", new Promise(function (resolve, reject) {
-            var checker;
-            try {
-              checker = new DBStructureChecker(config, database);
-              checker.connection.on('error', /*#__PURE__*/function () {
-                var _ref5 = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee4(err) {
-                  return _regeneratorRuntime().wrap(function _callee4$(_context4) {
-                    while (1) switch (_context4.prev = _context4.next) {
-                      case 0:
-                        console.error('Database connection error in route apply:', err);
-                        reject({
-                          type: 'error',
-                          error: err.message
-                        });
-                        _context4.next = 4;
-                        return checker.closeConnection();
-                      case 4:
-                      case "end":
-                        return _context4.stop();
-                    }
-                  }, _callee4);
-                }));
-                return function (_x8) {
-                  return _ref5.apply(this, arguments);
-                };
-              }());
-              checker.connection.on('connect', /*#__PURE__*/_asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee5() {
-                var result;
-                return _regeneratorRuntime().wrap(function _callee5$(_context5) {
-                  while (1) switch (_context5.prev = _context5.next) {
-                    case 0:
-                      console.log('Connected to the database');
-                      checker.targetDatabase = database;
-                      checker.command = 'apply';
-                      checker.options = {
-                        config: config,
-                        database: database,
-                        diffs: diffs
-                      };
-                      _context5.prev = 4;
-                      console.log('Applying the database structure based on JSON dumps');
-                      _context5.next = 8;
-                      return applyDifferences(checker.connection, database, diffs);
-                    case 8:
-                      result = _context5.sent;
-                      if (result.failures.length > 0) {
-                        // Callers treat a resolved apply as done, so anything that failed rejects
-                        reject({
-                          type: 'error',
-                          error: describeFailures(result),
-                          failures: result.failures,
-                          warnings: result.warnings
-                        });
-                      } else {
-                        resolve({
-                          type: 'success',
-                          message: "Applied ".concat(result.attempted, " of ").concat(result.attempted),
-                          warnings: result.warnings
-                        });
-                      }
-                      _context5.next = 12;
-                      return checker.closeConnection();
-                    case 12:
-                      _context5.next = 19;
-                      break;
-                    case 14:
-                      _context5.prev = 14;
-                      _context5.t0 = _context5["catch"](4);
-                      reject({
-                        type: 'error',
-                        error: _context5.t0.message
-                      });
-                      _context5.next = 19;
-                      return checker.closeConnection();
-                    case 19:
-                    case "end":
-                      return _context5.stop();
-                  }
-                }, _callee5, null, [[4, 14]]);
-              })));
-            } catch (e) {
-              reject({
-                type: 'error',
-                error: e.message
-              });
-            }
-          }));
-        case 1:
+          _context2.prev = 0;
+          checker = new DBStructureChecker(config, database);
+          _context2.next = 4;
+          return checker.ready();
+        case 4:
+          _context2.next = 6;
+          return applyDifferences(checker.connection, database, diffs);
+        case 6:
+          result = _context2.sent;
+          if (!result.failures.length) {
+            _context2.next = 9;
+            break;
+          }
+          throw Object.assign(new Error(describeFailures(result)), result);
+        case 9:
+          return _context2.abrupt("return", {
+            type: 'success',
+            message: "Applied ".concat(result.attempted, " of ").concat(result.attempted),
+            warnings: result.warnings
+          });
+        case 12:
+          _context2.prev = 12;
+          _context2.t0 = _context2["catch"](0);
+          failure = {
+            type: 'error',
+            error: _context2.t0.message,
+            failures: _context2.t0.failures,
+            warnings: _context2.t0.warnings
+          };
+          throw failure;
+        case 16:
+          _context2.prev = 16;
+          _context2.prev = 17;
+          _context2.next = 20;
+          return (_checker2 = checker) === null || _checker2 === void 0 ? void 0 : _checker2.closeConnection();
+        case 20:
+          _context2.next = 27;
+          break;
+        case 22:
+          _context2.prev = 22;
+          _context2.t1 = _context2["catch"](17);
+          if (failure) {
+            _context2.next = 26;
+            break;
+          }
+          throw {
+            type: 'error',
+            error: _context2.t1.message
+          };
+        case 26:
+          failure.closeError = _context2.t1.message;
+        case 27:
+          return _context2.finish(16);
+        case 28:
         case "end":
-          return _context6.stop();
+          return _context2.stop();
       }
-    }, _callee6);
+    }, _callee2, null, [[0, 12, 16, 28], [17, 22]]);
   }));
-  return function apply(_x5, _x6, _x7) {
-    return _ref4.apply(this, arguments);
+  return function apply(_x3, _x4, _x5) {
+    return _ref2.apply(this, arguments);
   };
 }();
 
 // Show which MySQL versions are being compared, and what that means
 var printVersions = /*#__PURE__*/function () {
-  var _ref7 = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee7(connection, templateDir) {
+  var _ref3 = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee3(connection, templateDir) {
     var _yield$getVersionInfo, server, template, notes, templateText, _iterator, _step, note;
-    return _regeneratorRuntime().wrap(function _callee7$(_context7) {
-      while (1) switch (_context7.prev = _context7.next) {
+    return _regeneratorRuntime().wrap(function _callee3$(_context3) {
+      while (1) switch (_context3.prev = _context3.next) {
         case 0:
-          _context7.next = 2;
+          _context3.next = 2;
           return getVersionInfo(connection, templateDir);
         case 2:
-          _yield$getVersionInfo = _context7.sent;
+          _yield$getVersionInfo = _context3.sent;
           server = _yield$getVersionInfo.server;
           template = _yield$getVersionInfo.template;
           notes = _yield$getVersionInfo.notes;
@@ -9951,12 +10297,12 @@ var printVersions = /*#__PURE__*/function () {
           }
         case 10:
         case "end":
-          return _context7.stop();
+          return _context3.stop();
       }
-    }, _callee7);
+    }, _callee3);
   }));
-  return function printVersions(_x9, _x0) {
-    return _ref7.apply(this, arguments);
+  return function printVersions(_x6, _x7) {
+    return _ref3.apply(this, arguments);
   };
 }();
 
@@ -9974,52 +10320,52 @@ var isMain = function () {
   }
 }();
 if (isMain) {
-  _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee9() {
-    var _yield$cli, command, config, argv, problem, PORT, _yield$rebuildTemplat, report, notes, _i, _Object$entries, _Object$entries$_i, table, changes, _iterator2, _step2, change, count, _i2, _Object$entries2, _Object$entries2$_i, _table, note, _report, _iterator3, _step3, warning, icons, _iterator4, _step4, _note, _i3, _arr, _report$diagnostics, _report$diagnostics2, _arr$_i, label, rows, checker;
-    return _regeneratorRuntime().wrap(function _callee9$(_context9) {
-      while (1) switch (_context9.prev = _context9.next) {
+  _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee4() {
+    var _yield$cli, command, config, argv, problem, PORT, _yield$rebuildTemplat, report, notes, _i, _Object$entries, _Object$entries$_i, table, changes, _iterator2, _step2, change, count, _i2, _Object$entries2, _Object$entries2$_i, _table, note, _report, _iterator3, _step3, warning, icons, _iterator4, _step4, _note, _i3, _arr, _report$diagnostics, _report$diagnostics2, _arr$_i, label, rows, checker, diffs, totalDiffs, seen, run, before, remaining, total, signature;
+    return _regeneratorRuntime().wrap(function _callee4$(_context4) {
+      while (1) switch (_context4.prev = _context4.next) {
         case 0:
-          _context9.next = 2;
+          _context4.next = 2;
           return cli();
         case 2:
-          _yield$cli = _context9.sent;
+          _yield$cli = _context4.sent;
           command = _yield$cli.command;
           config = _yield$cli.config;
           argv = _yield$cli.argv;
           if (command) {
-            _context9.next = 9;
+            _context4.next = 9;
             break;
           }
           process.exitCode = 1;
-          return _context9.abrupt("return");
+          return _context4.abrupt("return");
         case 9:
           if (!(command === 'dump' || command === 'compare' || command === 'rebuild' && argv.write)) {
-            _context9.next = 19;
+            _context4.next = 19;
             break;
           }
-          _context9.prev = 10;
+          _context4.prev = 10;
           assertOutsidePackage(argv.output);
-          _context9.next = 19;
+          _context4.next = 19;
           break;
         case 14:
-          _context9.prev = 14;
-          _context9.t0 = _context9["catch"](10);
-          console.error(_context9.t0.message);
+          _context4.prev = 14;
+          _context4.t0 = _context4["catch"](10);
+          console.error(_context4.t0.message);
           process.exitCode = 1;
-          return _context9.abrupt("return");
+          return _context4.abrupt("return");
         case 19:
           if (!(command === 'compare' || command === 'update' || command === 'rebuild')) {
-            _context9.next = 25;
+            _context4.next = 25;
             break;
           }
           problem = templateFolderProblem(argv.output);
           if (!problem) {
-            _context9.next = 25;
+            _context4.next = 25;
             break;
           }
           console.error("Template folder: ".concat(problem));
           process.exitCode = 1;
-          return _context9.abrupt("return");
+          return _context4.abrupt("return");
         case 25:
           if (command === 'dump' && !fs.existsSync(argv.output)) {
             fs.mkdirSync(argv.output, {
@@ -10029,7 +10375,7 @@ if (isMain) {
           }
           if (!(command === 'performance' && argv.json)) console.log("MySQLsyncr started via command line");
           if (!(command === 'ui')) {
-            _context9.next = 37;
+            _context4.next = 37;
             break;
           }
           PORT = argv.uiPort;
@@ -10037,26 +10383,26 @@ if (isMain) {
           console.log('Server started on port', PORT);
           console.log('Open http://localhost:' + PORT + ' in your browser to use the UI');
           if (!(argv.openUI && argv.openUI === true || argv.openUI === 'true')) {
-            _context9.next = 35;
+            _context4.next = 35;
             break;
           }
-          _context9.next = 35;
+          _context4.next = 35;
           return open("http://localhost:".concat(PORT));
         case 35:
-          _context9.next = 75;
+          _context4.next = 132;
           break;
         case 37:
           if (!(command === 'rebuild')) {
-            _context9.next = 56;
+            _context4.next = 56;
             break;
           }
-          _context9.prev = 38;
-          _context9.next = 41;
+          _context4.prev = 38;
+          _context4.next = 41;
           return rebuildTemplate(argv.output, {
             write: argv.write
           });
         case 41:
-          _yield$rebuildTemplat = _context9.sent;
+          _yield$rebuildTemplat = _context4.sent;
           report = _yield$rebuildTemplat.changes;
           notes = _yield$rebuildTemplat.notes;
           for (_i = 0, _Object$entries = Object.entries(report); _i < _Object$entries.length; _i++) {
@@ -10083,26 +10429,26 @@ if (isMain) {
               console.log("  ".concat(_table, ": ").concat(note));
             }
           }
-          _context9.next = 54;
+          _context4.next = 54;
           break;
         case 50:
-          _context9.prev = 50;
-          _context9.t1 = _context9["catch"](38);
-          console.error(_context9.t1.message);
+          _context4.prev = 50;
+          _context4.t1 = _context4["catch"](38);
+          console.error(_context4.t1.message);
           process.exitCode = 1;
         case 54:
-          _context9.next = 75;
+          _context4.next = 132;
           break;
         case 56:
           if (!(command === 'performance')) {
-            _context9.next = 71;
+            _context4.next = 71;
             break;
           }
-          _context9.prev = 57;
-          _context9.next = 60;
+          _context4.prev = 57;
+          _context4.next = 60;
           return checkPerformance(config, argv);
         case 60:
-          _report = _context9.sent;
+          _report = _context4.sent;
           if (argv.json) console.log(JSON.stringify(_report, null, 2));else {
             console.log("Performance report: ".concat(_report.database || 'all application schemas'));
             _iterator3 = _createForOfIteratorHelper(_report.warnings);
@@ -10143,136 +10489,130 @@ if (isMain) {
             }
           }
           if (!_report.available) process.exitCode = 1;
-          _context9.next = 69;
+          _context4.next = 69;
           break;
         case 65:
-          _context9.prev = 65;
-          _context9.t2 = _context9["catch"](57);
-          console.error(_context9.t2.message);
+          _context4.prev = 65;
+          _context4.t2 = _context4["catch"](57);
+          console.error(_context4.t2.message);
           process.exitCode = 1;
         case 69:
-          _context9.next = 75;
+          _context4.next = 132;
           break;
         case 71:
           // Handle other commands (dump, compare, update) as before
           console.log("Connecting to MySQL as ".concat(config.user, "@").concat(config.host, ":").concat(config.port).concat(config.password ? '' : ' with no password'));
           checker = new DBStructureChecker(config, argv.database);
-          checker.connection.on('error', function (err) {
-            console.error("MySQL connection error (".concat(config.user, "@").concat(config.host, ":").concat(config.port, "): ").concat(err.message));
-            if (err.code === 'ER_ACCESS_DENIED_ERROR') {
-              // e.g. 'root'@'172.17.0.1' when MySQL runs in Docker
-              console.error("The user and password were rejected. The address in MySQL's message is where the server saw the connection come from, not the host connected to.");
-            }
-            process.exitCode = 1;
-          });
-          checker.connection.on('connect', /*#__PURE__*/_asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee8() {
-            var diffs, totalDiffs, _totalDiffs, previousDiffs, runCount, maxRuns, _diffs;
-            return _regeneratorRuntime().wrap(function _callee8$(_context8) {
-              while (1) switch (_context8.prev = _context8.next) {
-                case 0:
-                  console.log('Connected to the database');
-                  checker.targetDatabase = argv.database;
-                  checker.command = command;
-                  checker.options = argv;
-                  _context8.prev = 4;
-                  if (!(command === 'dump')) {
-                    _context8.next = 11;
-                    break;
-                  }
-                  console.log('Dumping the database structure to files');
-                  _context8.next = 9;
-                  return dumpAllDatabases(checker.connection, command, argv);
-                case 9:
-                  _context8.next = 46;
-                  break;
-                case 11:
-                  if (!(command === 'compare')) {
-                    _context8.next = 23;
-                    break;
-                  }
-                  _context8.next = 14;
-                  return printVersions(checker.connection, argv.output);
-                case 14:
-                  console.log('Comparing the database structure with JSON dumps (dry run)');
-                  _context8.next = 17;
-                  return compareAllDatabases(checker.connection, argv.output, false, command, argv);
-                case 17:
-                  diffs = _context8.sent;
-                  // Dry run
-                  totalDiffs = Object.values(diffs).reduce(function (acc, arr) {
-                    return acc + arr.length;
-                  }, 0);
-                  console.log('Total differences count:', totalDiffs);
-                  fs.writeFileSync(path.join(argv.output, 'diffs.json'), JSON.stringify(diffs, null, 4));
-                  _context8.next = 46;
-                  break;
-                case 23:
-                  if (!(command === 'update')) {
-                    _context8.next = 46;
-                    break;
-                  }
-                  _context8.next = 26;
-                  return printVersions(checker.connection, argv.output);
-                case 26:
-                  console.log('Updating the database structure based on JSON dumps');
-                  _totalDiffs = Infinity; // Initialize with a large number
-                  previousDiffs = _totalDiffs; // Store previous differences
-                  runCount = 0; // Counter for the number of runs
-                  maxRuns = 6;
-                case 31:
-                  if (!(runCount < maxRuns && _totalDiffs > 0 && (_totalDiffs < previousDiffs || previousDiffs === Infinity))) {
-                    _context8.next = 46;
-                    break;
-                  }
-                  console.log('Running update command. Run count:', runCount);
-                  _context8.next = 35;
-                  return compareAllDatabases(checker.connection, argv.output, true, command, argv);
-                case 35:
-                  _diffs = _context8.sent;
-                  // Apply updates
-                  previousDiffs = _totalDiffs; // Update previous differences
-                  _totalDiffs = Object.values(_diffs).reduce(function (acc, arr) {
-                    return acc + arr.length;
-                  }, 0);
-                  console.log('Total differences count:', _totalDiffs);
-                  runCount++;
-                  if (!(_totalDiffs > 0 && runCount < maxRuns)) {
-                    _context8.next = 44;
-                    break;
-                  }
-                  console.log('Total differences count is still greater than 0. Waiting 1 second before next run. Run count:', runCount);
-                  _context8.next = 44;
-                  return new Promise(function (resolve) {
-                    return setTimeout(resolve, 1000);
-                  });
-                case 44:
-                  _context8.next = 31;
-                  break;
-                case 46:
-                  _context8.next = 51;
-                  break;
-                case 48:
-                  _context8.prev = 48;
-                  _context8.t0 = _context8["catch"](4);
-                  console.error(_context8.t0.message);
-                case 51:
-                  _context8.prev = 51;
-                  _context8.next = 54;
-                  return checker.closeConnection();
-                case 54:
-                  return _context8.finish(51);
-                case 55:
-                case "end":
-                  return _context8.stop();
-              }
-            }, _callee8, null, [[4, 48, 51, 55]]);
-          })));
-        case 75:
+          _context4.prev = 73;
+          _context4.next = 76;
+          return checker.ready();
+        case 76:
+          console.log('Connected to the database');
+          checker.targetDatabase = argv.database;
+          checker.command = command;
+          checker.options = argv;
+          if (!(command === 'dump')) {
+            _context4.next = 86;
+            break;
+          }
+          console.log('Dumping the database structure to files');
+          _context4.next = 84;
+          return dumpAllDatabases(checker.connection, command, argv);
+        case 84:
+          _context4.next = 122;
+          break;
+        case 86:
+          if (!(command === 'compare')) {
+            _context4.next = 98;
+            break;
+          }
+          _context4.next = 89;
+          return printVersions(checker.connection, argv.output);
+        case 89:
+          console.log('Comparing the database structure with JSON dumps (dry run)');
+          _context4.next = 92;
+          return compareAllDatabases(checker.connection, argv.output, false, command, argv);
+        case 92:
+          diffs = _context4.sent;
+          // Dry run
+          totalDiffs = Object.values(diffs).reduce(function (acc, arr) {
+            return acc + arr.length;
+          }, 0);
+          console.log('Total differences count:', totalDiffs);
+          fs.writeFileSync(path.join(argv.output, 'diffs.json'), JSON.stringify(diffs, null, 4));
+          _context4.next = 122;
+          break;
+        case 98:
+          if (!(command === 'update')) {
+            _context4.next = 122;
+            break;
+          }
+          _context4.next = 101;
+          return printVersions(checker.connection, argv.output);
+        case 101:
+          console.log('Updating the database structure based on JSON dumps');
+          seen = new Set();
+          run = 0;
+        case 104:
+          if (!(run < 6)) {
+            _context4.next = 122;
+            break;
+          }
+          _context4.next = 107;
+          return compareAllDatabases(checker.connection, argv.output, true, command, argv);
+        case 107:
+          before = _context4.sent;
+          _context4.next = 110;
+          return compareAllDatabases(checker.connection, argv.output, false, 'compare', _objectSpread2(_objectSpread2({}, argv), {}, {
+            quiet: true
+          }));
+        case 110:
+          remaining = _context4.sent;
+          total = Object.values(remaining).reduce(function (n, diffs) {
+            return n + diffs.length;
+          }, 0);
+          console.log('Remaining differences after verification:', total);
+          if (total) {
+            _context4.next = 115;
+            break;
+          }
+          return _context4.abrupt("break", 122);
+        case 115:
+          signature = JSON.stringify(remaining);
+          if (!(signature === JSON.stringify(before) || seen.has(signature) || run === 5)) {
+            _context4.next = 118;
+            break;
+          }
+          throw new Error("Update incomplete: ".concat(total, " difference(s) remain after verification. Review the reported differences before retrying."));
+        case 118:
+          seen.add(signature);
+        case 119:
+          run++;
+          _context4.next = 104;
+          break;
+        case 122:
+          _context4.next = 128;
+          break;
+        case 124:
+          _context4.prev = 124;
+          _context4.t3 = _context4["catch"](73);
+          console.error(_context4.t3.message);
+          process.exitCode = 1;
+        case 128:
+          _context4.prev = 128;
+          _context4.next = 131;
+          return checker.closeConnection();
+        case 131:
+          return _context4.finish(128);
+        case 132:
         case "end":
-          return _context9.stop();
+          return _context4.stop();
       }
-    }, _callee9, null, [[10, 14], [38, 50], [57, 65]]);
-  }))();
+    }, _callee4, null, [[10, 14], [38, 50], [57, 65], [73, 124, 128, 132]]);
+  }))()["catch"](function (error) {
+    console.error(error.message);
+    process.exitCode = 1;
+  });
 }
 
 exports.DBStructureChecker = DBStructureChecker;

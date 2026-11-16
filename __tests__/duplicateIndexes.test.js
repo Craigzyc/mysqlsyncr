@@ -42,3 +42,36 @@ test('queries STATISTICS with a bound schema', async () => {
     expect(sql).not.toContain("app' OR 1=1");
     expect(params).toEqual(["app' OR 1=1"]);
 });
+
+test('does not treat mixed descending key parts as duplicate indexes', () => {
+    const ascending = idx('t', 'ascending', ['a', 'b']).map(row => ({ ...row, COLLATION: 'A' }));
+    const mixed = idx('t', 'mixed', ['a', 'b']).map((row, i) => ({ ...row, COLLATION: i ? 'D' : 'A' }));
+    expect(findDuplicateIndexes([...ascending, ...mixed])).toEqual([]);
+});
+
+test('never recommends replacing a visible index with an invisible one', () => {
+    const invisible = idx('t', 'a_invisible', ['a']).map(row => ({ ...row, IS_VISIBLE: 'NO' }));
+    const visible = idx('t', 'z_visible', ['a']).map(row => ({ ...row, IS_VISIBLE: 'YES' }));
+    const result = findDuplicateIndexes([...invisible, ...visible]);
+    expect(result).toEqual([expect.objectContaining({ index_name: 'a_invisible', covered_by: 'z_visible' })]);
+});
+
+test('only BTREE indexes support a left-prefix replacement', () => {
+    expect(findDuplicateIndexes([...idx('t', 'a', ['a'], { type: 'HASH' }), ...idx('t', 'ab', ['a', 'b'], { type: 'HASH' })])).toEqual([]);
+});
+
+test('preserves a unique invisible index instead of replacing it with a visible nonunique one', () => {
+    const invisible = idx('t', 'u', ['a'], { unique: true }).map(row => ({ ...row, IS_VISIBLE: 'NO' }));
+    const visible = idx('t', 'a', ['a']).map(row => ({ ...row, IS_VISIBLE: 'YES' }));
+    expect(findDuplicateIndexes([...invisible, ...visible])).toEqual([]);
+});
+
+test('reads MySQL 8 visibility and falls back for the absent 5.7 metadata column', async () => {
+    const connection = { query: jest.fn()
+        .mockRejectedValueOnce(Object.assign(new Error('Unknown IS_VISIBLE'), { code: 'ER_BAD_FIELD_ERROR' }))
+        .mockResolvedValueOnce([[]]) };
+    await collectDuplicateIndexes(connection, 'app');
+    expect(connection.query.mock.calls[0][0]).toContain('IS_VISIBLE');
+    expect(connection.query.mock.calls[1][0]).not.toContain('IS_VISIBLE');
+    expect(connection.query.mock.calls[1][0]).toContain('COLLATION');
+});

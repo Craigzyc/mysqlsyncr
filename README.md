@@ -76,6 +76,7 @@ You can configure the following options when running the commands:
 | Option      | Alias | Description                                                                 | Default Value                  |
 |-------------|-------|-----------------------------------------------------------------------------|--------------------------------|
 | `uiPort`    | `-U`  | UI port                                                                     | `3600`                         |
+| `uiHost`    |       | UI listen address; remote access requires an explicit bind address | `127.0.0.1` |
 | `openUI`    | `-O`  | Open UI in default browser (boolean)                                      | `true`                         |
 | `host`      | `-h`  | Database host                                                              | `localhost`                   |
 | `port`      | `-P`  | Database port                                                              | `3306`                         |
@@ -157,10 +158,49 @@ When applying a template from 8.0 to a 5.7 server, the `utf8mb4_0900_*` collatio
    ```
 
 4. **Open the database browser interface**:
-   *Note: This does not work with PowerShell. Must use Command Prompt in windows*
    ```bash
    mysqlsyncr ui --host localhost --user root --password yourpassword
    ```
+
+The UI listens on loopback by default. To use it from another computer, explicitly
+set `--uiHost` to the intended interface (for example `--uiHost 0.0.0.0` on a
+trusted network). The UI has database repair privileges and no user login; do not
+expose it publicly. Browser API requests must come from the UI's own origin.
+Connection passwords stay in memory for the current page session and are no
+longer stored in the browser's local storage.
+
+`update` creates databases and tables before adding foreign keys across schemas,
+then restores procedures, views, triggers and configured seed rows. It checks the
+result again and exits nonzero on a failed or incomplete update. Comparison and
+dump errors are reported instead of being treated as an empty, synchronized
+database. Extra objects can still be removed when applying differences, as in
+previous versions; review the differences first.
+
+Database dumps contain schema definitions and optional configured seed rows.
+They are not backups of all deployed row data.
+
+### Repeatable validation
+
+```sh
+npm ci
+npm ci --prefix ui
+npm test -- --runInBand
+npm run test:ui
+npm run build
+npm run build --prefix ui
+npm run test:browser
+npm run test:integration -- --template /absolute/path/to/CAM/sql/DBTemplate
+```
+
+The integration command creates labeled, disposable MySQL 5.7 and 8.0 Docker
+containers on dynamically allocated loopback ports. It refuses unowned containers,
+copies the template, restores all schemas, deliberately changes test schemas,
+checks repairs and data preservation, tests performance/CLI/API behavior, and
+restores dumps across versions. It never reads `.env` or application credentials.
+Docker and permission to create and mutate disposable test databases are required.
+Use `--artifacts /path/outside/mysqlsyncr` to retain the JSON report and dumps.
+The original template's hash is checked for changes at the end. Browser tests use
+mocked APIs and installed Chrome; see [UI test instructions](ui/tests/README.md).
 
 ### Query performance and index assessment
 
@@ -216,7 +256,7 @@ The UI uses `POST /api/performance` with `{ config, options }` and the same repo
 If you want to use MySQLSync as a module in your own Node.js application, you can require it in your code:
 
 ```javascript
-import mysqlsyncr from 'mysqlsyncr';
+import * as mysqlsyncr from 'mysqlsyncr';
 
 // Example usage
 const config = {
@@ -229,7 +269,7 @@ const config = {
 
 ```javascript
 // app.js
-import mysqlsyncr from 'mysqlsyncr';
+import * as mysqlsyncr from 'mysqlsyncr';
 import fs from 'fs';
 import path from 'path';
 
@@ -243,23 +283,29 @@ const config = {
 
 // Function to dump the database structure
 async function dumpDatabase() {
+    const checker = new mysqlsyncr.DBStructureChecker(config);
     try {
         console.log('Dumping the database structure...');
-        await mysqlsyncr.dump(config);
+        await checker.ready();
+        const output = path.resolve('db-dump');
+        fs.mkdirSync(output, { recursive: true });
+        await mysqlsyncr.dumpAllDatabases(checker.connection, 'dump', { output, database: config.database });
         console.log('Database structure dumped successfully.');
     } catch (error) {
         console.error('Error dumping database:', error.message);
+    } finally {
+        await checker.closeConnection();
     }
 }
 
 // Function to compare the database structure with JSON dumps
 async function compareDatabase() {
     try {
-        const inputDir = path.join(__dirname, 'db-dump'); // Directory where JSON dumps are stored
+        const inputDir = path.resolve('db-dump');
         console.log('Comparing the database structure with JSON dumps...');
-        const differences = await mysqlsyncr.compare(config, inputDir);
+        const { diffs: differences } = await mysqlsyncr.compare(config, inputDir);
         
-        if (differences.length > 0) {
+        if (Object.values(differences).some(items => items.length > 0)) {
             console.log('Differences found:');
             console.log(differences);
         } else {

@@ -3,13 +3,18 @@ import { checkPerformance, collectPerformanceReport, performanceOptions } from '
 
 jest.mock('mysql2', () => ({ createConnection: jest.fn() }));
 
-function connection({ enabled = 1, consumer = 'YES', count = 2 } = {}) {
+function connection({ enabled = 1, consumer = 'YES', count = 2, parentConsumer = 'YES', instrumentCount = 10 } = {}) {
     return {
         query: jest.fn(async (sql) => {
             if (sql.includes('information_schema.STATISTICS') || sql.startsWith('SHOW GLOBAL')) return [[]];
             if (sql.includes('@@performance_schema')) return [[{ enabled }]];
+            if (sql.includes('setup_consumers') && sql.includes('statements_digest')) return [[
+                { NAME: 'statements_digest', ENABLED: consumer },
+                { NAME: 'global_instrumentation', ENABLED: parentConsumer },
+                { NAME: 'thread_instrumentation', ENABLED: parentConsumer },
+            ]];
             if (sql.includes('setup_consumers')) return [[{ ENABLED: consumer }]];
-            if (sql.includes('setup_instruments')) return [[{ enabled: 10, timed: 10 }]];
+            if (sql.includes('setup_instruments')) return [[{ total: 10, enabled: instrumentCount, timed: instrumentCount }]];
             if (sql.includes('digest_count')) return [[{ digest_count: count }]];
             return [[{ digest: 'abc', database_name: 'app', query_text: 'SELECT * FROM `t` WHERE `id` = ?' }]];
         }),
@@ -78,6 +83,25 @@ test('warns about disabled digest collection and empty coverage', async () => {
     const report = await collectPerformanceReport(connection({ consumer: 'NO', count: 0 }));
     expect(report.warnings.join(' ')).toMatch(/missing or stale/);
     expect(report.warnings.join(' ')).toMatch(/does not establish/);
+    expect(report.digestCoverage).toEqual({ count: 0, complete: false });
+});
+
+test('reports failed duplicate-index metadata as unavailable', async () => {
+    const db = connection();
+    const original = db.query.getMockImplementation();
+    db.query.mockImplementation(async sql => {
+        if (sql.includes('information_schema.STATISTICS')) throw new Error('Metadata denied');
+        return original(sql);
+    });
+    const report = await collectPerformanceReport(db);
+    expect(report.duplicateIndexesAvailable).toBe(false);
+    expect(report.notifications.find(note => note.area === 'Duplicate indexes').status).toBe('unknown');
+});
+
+test.each([{ parentConsumer: 'NO' }, { instrumentCount: 9 }])('detects disabled parent consumers or statement classes: %p', async settings => {
+    const report = await collectPerformanceReport(connection(settings));
+    expect(report.digestCoverage.complete).toBe(false);
+    expect(report.warnings.join(' ')).toMatch(/instrumentation|instruments/);
 });
 
 test.each([{ limit: '5' }, { limit: 101 }, { minExecutions: 0 }, { slowMs: -1 }, { slowMs: 999 }, { scanRatio: NaN }, { minRowsExamined: 1.2 }])('rejects invalid thresholds: %p', (options) => {

@@ -50,7 +50,7 @@ export default {
     data() {
         return {
             changesOnly: true,
-            ignoreWhitespace: true,
+            ignoreWhitespace: false,
             marks: { same: ' ', removed: '−', added: '+', skip: '' },
         }
     },

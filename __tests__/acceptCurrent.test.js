@@ -48,6 +48,17 @@ describe('replaceCreateSQLElement', () => {
         expect(parseCreateTableSQL(result).indexes.map(i => i.Name)).toEqual(['PRIMARY', 'IndexIID']);
     });
 
+    test('moves a column to its position in the database so an order difference is resolved', () => {
+        const swapped = templateSQL.replace('  `IID` varchar(25) DEFAULT NULL,\n  `DeviceId` varchar(45) NOT NULL,', '  `DeviceId` varchar(45) NOT NULL,\n  `IID` varchar(25) DEFAULT NULL,');
+        const table = sql => ({ tables: { E2Data: { ...parseCreateTableSQL(sql), triggers: [], createSQL: sql } }, procedures: [], views: {} });
+        const order = findDifferences(table(templateSQL), table(swapped)).filter(diff => diff.changes?.includes('Position'));
+        expect(order.length).toBeGreaterThan(0);
+        let result = templateSQL;
+        for (const diff of order) result = replaceCreateSQLElement(result, swapped, `col:${diff.field.Field}`, { move: true });
+        expect(parseCreateTableSQL(result).columns.map(c => c.Field)).toEqual(['DeviceId', 'IID', 'oldColumn']);
+        expect(findDifferences(table(result), table(swapped))).toEqual([]);
+    });
+
     test('leaves the AUTO_INCREMENT counter of the template alone', () => {
         expect(replaceCreateSQLElement(templateSQL, liveSQL, 'col:DeviceId')).not.toContain('AUTO_INCREMENT=');
     });
@@ -84,7 +95,7 @@ describe('acceptCurrentIntoTemplate', () => {
         const dir = writeTemplate();
         const live = { tables: { E2Data: { ...parseCreateTableSQL(liveSQL), triggers: [], createSQL: liveSQL } }, procedures: [] };
         const diffs = findDifferences(readTemplate(dir), live);
-        expect(diffs.map(d => d.type).sort()).toEqual(['extra_field', 'extra_index', 'extra_index', 'missing_field', 'missing_table', 'mismatched_field'].sort());
+        expect(diffs.map(d => d.type).sort()).toEqual(['extra_field', 'extra_index', 'mismatched_index', 'missing_field', 'missing_table', 'mismatched_field'].sort());
 
         await acceptCurrentIntoTemplate(liveConnection(), dir, 'currentCOMPortData', diffs);
 

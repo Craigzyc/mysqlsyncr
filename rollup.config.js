@@ -22,5 +22,5 @@ export default {
     resolve(),
     commonjs()
   ],
-  external: ['cors', 'express', 'mysql2',  'yargs']
+  external: ['express', 'mysql2',  'yargs']
 }; 

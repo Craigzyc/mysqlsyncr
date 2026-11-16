@@ -36,12 +36,13 @@ export async function collectPerformanceReport(connection, options = {}) {
     }
     const report = {
         checkedAt: new Date().toISOString(), database, thresholds,
-        available: false, warnings: [], slowQueries: [], indexCandidates: [],
+        available: false, duplicateIndexesAvailable: false, digestCoverage: { count: 0, complete: false }, warnings: [], slowQueries: [], indexCandidates: [],
         highestTotalTime: [], tempAndSortQueries: [], duplicateIndexes: [],
     };
     // Index metadata does not depend on Performance Schema, so check it first.
     try {
         report.duplicateIndexes = await collectDuplicateIndexes(connection, database);
+        report.duplicateIndexesAvailable = true;
     } catch (error) {
         report.warnings.push(`Duplicate index check failed: ${error.message}`);
     }
@@ -63,12 +64,16 @@ export async function collectPerformanceReport(connection, options = {}) {
         report.warnings.push('Performance Schema is disabled. Enable it in the MySQL server configuration and restart the server to collect query statistics.');
         return finish();
     }
-    const [consumers] = await connection.query("SELECT ENABLED FROM performance_schema.setup_consumers WHERE NAME = 'statements_digest'");
-    if (!consumers.length || consumers[0].ENABLED !== 'YES') {
+    const [consumers] = await connection.query("SELECT NAME, ENABLED FROM performance_schema.setup_consumers WHERE NAME IN ('statements_digest', 'global_instrumentation', 'thread_instrumentation')");
+    const consumerEnabled = name => consumers.some(consumer => consumer.NAME === name && consumer.ENABLED === 'YES');
+    if (!consumerEnabled('statements_digest')) {
         report.warnings.push('The statements_digest consumer is disabled; query statistics may be missing or stale.');
     }
-    const [instruments] = await connection.query("SELECT COUNT(*) AS enabled, COALESCE(SUM(TIMED = 'YES'), 0) AS timed FROM performance_schema.setup_instruments WHERE NAME LIKE 'statement/%' AND ENABLED = 'YES'");
+    const parentsEnabled = ['global_instrumentation', 'thread_instrumentation'].every(consumerEnabled);
+    if (!parentsEnabled) report.warnings.push('Global or thread instrumentation is disabled; query statistics may be missing or stale.');
+    const [instruments] = await connection.query("SELECT COUNT(*) AS total, COALESCE(SUM(ENABLED = 'YES'), 0) AS enabled, COALESCE(SUM(ENABLED = 'YES' AND TIMED = 'YES'), 0) AS timed FROM performance_schema.setup_instruments WHERE NAME LIKE 'statement/%'");
     if (!Number(instruments[0].enabled)) report.warnings.push('Statement instruments are disabled; query statistics may be missing or stale.');
+    else if (Number(instruments[0].enabled) < Number(instruments[0].total)) report.warnings.push('Some statement instruments are disabled; query statistics may be incomplete.');
     else if (Number(instruments[0].timed) < Number(instruments[0].enabled)) report.warnings.push('Some enabled statement instruments are not timed; slow query results may be incomplete.');
 
     const scope = database ? 'SCHEMA_NAME = ?' : "SCHEMA_NAME IS NOT NULL AND SCHEMA_NAME NOT IN ('mysql', 'sys', 'performance_schema', 'information_schema')";
@@ -101,6 +106,12 @@ export async function collectPerformanceReport(connection, options = {}) {
     const [[coverage]] = await connection.query(`SELECT COUNT(*) AS digest_count
         FROM performance_schema.events_statements_summary_by_digest
         WHERE DIGEST IS NOT NULL AND ${scope} AND ${applicationQueries}`, params);
+    report.digestCoverage = {
+        count: Number(coverage.digest_count),
+        complete: consumerEnabled('statements_digest') && parentsEnabled && Number(instruments[0].enabled) > 0
+            && Number(instruments[0].enabled) === Number(instruments[0].total)
+            && Number(instruments[0].timed) === Number(instruments[0].enabled),
+    };
     if (!Number(coverage.digest_count)) report.warnings.push('No statement digests are available for this scope. This does not establish that queries are fast or indexes are adequate. Check instrumentation, permissions, and workload.');
     report.available = true;
     report.slowQueries = slow;

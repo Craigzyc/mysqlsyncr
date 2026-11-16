@@ -2,104 +2,86 @@ import fs from 'fs/promises';
 import path from 'path';
 import { getDatabases, getDatabaseStructure } from './getters.js';
 import { findDifferences } from './differences.js';
-import { logDifferences, logger } from './loggers.js';
-import { applyDifferences, describeFailures } from './apply.js';
+import { logDifferences } from './loggers.js';
+import { applyDifferences, applyViewsAcrossDatabases, describeFailures } from './apply.js';
 import { loadSyncOptions, getTableOptions, applyDefinerOption } from './options.js';
 import { findMissingRows } from './rows.js';
 import { getDatabaseDumpNames } from './dumpFiles.js';
+import { getServerVersion, getDefaultCollations } from './versions.js';
 
-export const compareAllDatabases = async (connection, inputDir, update = false, command, options) => {
-    if (connection.state === 'disconnected') {
-        await connection.reconnect(); // Ensure the connection is open
+// Dependencies can cross schema boundaries. Finish each phase in ALL schemas
+// before starting the next; never disable foreign-key validation to restore.
+const phase = ({ type }) => {
+    if (type === 'missing_database') return 0;
+    if (type === 'extra_constraint') return 1;
+    if (type.endsWith('_constraint')) return 3;
+    if (type.endsWith('_procedure')) return 4;
+    if (type.endsWith('_view')) return 5;
+    if (type.endsWith('_trigger')) return 6;
+    if (type === 'missing_row') return 7;
+    return 2;
+};
+
+export const applyAllDifferences = async (connection, allDifferences) => {
+    const result = { attempted: 0, failures: [], warnings: [] };
+    for (let step = 0; step <= 7; step++) {
+        if (step === 5 && Object.values(allDifferences).some(diffs => diffs.some(diff => phase(diff) === 5))) {
+            const applied = await applyViewsAcrossDatabases(connection, allDifferences);
+            result.attempted += applied.attempted;
+            result.failures.push(...applied.failures);
+            result.warnings.push(...applied.warnings);
+        } else for (const [database, differences] of Object.entries(allDifferences)) {
+            const batch = differences.filter(diff => phase(diff) === step);
+            if (!batch.length) continue;
+            const applied = await applyDifferences(connection, database, batch);
+            result.attempted += applied.attempted;
+            result.failures.push(...applied.failures.map(f => ({ database, ...f })));
+            result.warnings.push(...applied.warnings.map(w => ({ database, ...w })));
+        }
+        if (result.failures.length) {
+            const error = new Error(describeFailures(result));
+            Object.assign(error, result, { differences: allDifferences });
+            throw error;
+        }
     }
-    const expectedDatabases = await getDatabaseDumpNames(inputDir);
+    return result;
+};
+
+export const compareAllDatabases = async (connection, inputDir, update = false, command, options = {}) => {
+    const names = await getDatabaseDumpNames(inputDir);
+    const databases = names.filter(name => !options.database || options.database === name);
+    if (!databases.length) throw new Error(options.database
+        ? `Database ${options.database} is not in the template.`
+        : 'No database manifests found in the template folder.');
     const syncOptions = await loadSyncOptions(inputDir);
-    logger('Expected databases from input directory:', expectedDatabases);
-
-    // Check existing databases
-    const existingDatabases = await getDatabases(connection);
-    // console.log('Existing databases:', existingDatabases);
+    const expected = {};
+    // A corrupt/empty manifest must never look like an empty desired schema.
+    // Validate ALL files before the first mutation, including missing databases.
+    for (const database of databases) {
+        const filename = path.join(inputDir, database, `${database}.json`);
+        const structure = JSON.parse(await fs.readFile(filename, 'utf8'));
+        if (!structure || typeof structure !== 'object' || !structure.tables || Array.isArray(structure.tables)
+            || typeof structure.tables !== 'object') throw new Error(`Invalid template manifest: ${filename}`);
+        expected[database] = applyDefinerOption(structure, syncOptions.definer);
+    }
+    const existing = await getDatabases(connection);
+    // A missing schema needs no live metadata; skip the version query in that case.
+    const serverVersion = databases.some(db => existing.includes(db)) || update ? await getServerVersion(connection) : null;
+    const defaultCollations = serverVersion ? await getDefaultCollations(connection, serverVersion) : {};
     const allDifferences = {};
-    const missingDatabases = [];
-    logger('All differences:', allDifferences);
-
-    // Note missing databases and prepare to create them
-    for (const database of expectedDatabases) {
-        if(options && options.database && options.database !== database){
-            continue;
-        }
-
-        if (!existingDatabases.includes(database)) {
-            allDifferences[database] = [{
-                database: database,
-                type: 'missing_database',
-                message: 'Database not found'
-            }];
-            missingDatabases.push(database);
-        }
+    for (const database of databases) {
+        const missing = !existing.includes(database);
+        const current = missing ? { tables: {}, procedures: [], views: {} }
+            : await getDatabaseStructure(connection, database, 'compare', { ...options, output: inputDir });
+        const differences = missing ? [{ database, type: 'missing_database', message: 'Database not found' }] : [];
+        differences.push(...findDifferences(expected[database], current,
+            table => getTableOptions(syncOptions, database, table), { serverVersion, database, defaultCollations }));
+        differences.push(...await findMissingRows(connection, database, expected[database], current, syncOptions));
+        allDifferences[database] = differences;
+        if (!options.quiet) logDifferences(differences, database, !update);
     }
-
-    // Create missing databases at the beginning
-    if (missingDatabases.length > 0 && update) {
-        logger('Creating missing databases:');
-        for (const database of missingDatabases) {
-            logger(`Creating database ${database}...`);
-            await connection.query(`CREATE DATABASE \`${database}\`;`);
-            logger(`Database ${database} created.`);
-        }
-    }else if (missingDatabases.length > 0 && !update){
-        logger('Missing databases found but update is not enabled. Please enable update to create missing databases.');
-        logger('Please run the command again with the --update flag to create missing databases.'); 
-        logger('Missing databases:');
-        logger(missingDatabases);
-    } else {
-        logger('All expected databases exist.');
-    }
-
-    for (const database of expectedDatabases) {
-        if(options && options.database && options.database !== database){
-            continue;
-        }
-        if(missingDatabases.includes(database)){
-            logger('Skipping database', database, 'because it is missing');
-            continue;
-        }
-        const filePath = path.join(inputDir, database, `${database}.json`);
-
-        try {
-            const fileContent = await fs.readFile(filePath, 'utf-8');
-            const expectedStructure = applyDefinerOption(JSON.parse(fileContent), syncOptions.definer);
-            logger('Getting database structure for', database);
-            const currentStructure = await getDatabaseStructure(connection, database, command, options);
-            logger('Database structure for', database, 'obtained');
-            const differences = findDifferences(expectedStructure, currentStructure, (tableName) => getTableOptions(syncOptions, database, tableName));
-            // A seed-row problem shouldn't hide this database's structure differences
-            try {
-                differences.push(...await findMissingRows(connection, database, expectedStructure, currentStructure, syncOptions));
-            } catch (err) {
-                console.error(`Could not check seed rows for ${database}: ${err.message}`);
-            }
-            logger('Differences for', database, 'obtained');
-            if (!update) {
-                logger('Logging differences for', database);
-                logDifferences(differences, database, true);
-            } else {
-                logger('Logging differences for', database);
-                logDifferences(differences, database, false);
-                logger('Applying differences for', database);
-                try {
-                    const result = await applyDifferences(connection, database, differences);
-                    if (result.failures.length > 0) {
-                        console.error(`Error applying differences for ${database}: ${describeFailures(result)}`);
-                    }
-                } catch (err) {
-                    console.error(`Error applying differences for ${database}: ${err.message}`);
-                }
-            }
-            allDifferences[database] = differences;
-        } catch (err) {
-            console.error(`Error processing database ${database}: ${err.message}`);
-        }
+    if (update) {
+        await applyAllDifferences(connection, allDifferences);
     }
     return allDifferences;
-}
+};

@@ -127,7 +127,7 @@ describe('Create Table Parser', () => {
                 "OnUpdate": "NO ACTION"
               },
               {
-                "Name": "AlertRule",
+                "Name": "Asset",
                 "Type": "FOREIGN KEY",
                 "ColumnName": [
                   "idAsset"
@@ -140,7 +140,7 @@ describe('Create Table Parser', () => {
                 "OnUpdate": "NO ACTION"
               },
               {
-                "Name": "AlertRule",
+                "Name": "CaseDX",
                 "Type": "FOREIGN KEY",
                 "ColumnName": [
                   "idCaseDX"
@@ -157,12 +157,12 @@ describe('Create Table Parser', () => {
             "charset": "latin1",
             "collate": null
           }
-    
-        
+
+
 
         const result = parseCreateTableSQL(input);
         expect(result).toEqual(expectedOutput);
     });
 
 
-}); 
+});

@@ -29,14 +29,11 @@ export const findMissingRows = async (connection, database, expected, current, s
             if (tableExists) {
                 const where = key.map(col => row[col] === null ? `\`${col}\` IS NULL` : `\`${col}\` = ?`).join(' AND ');
                 const values = key.filter(col => row[col] !== null).map(col => row[col]);
-                let found;
-                try {
-                    found = await connection.query(`SELECT 1 FROM \`${database}\`.\`${tableName}\` WHERE ${where} LIMIT 1`, values);
-                } catch (err) {
-                    // e.g. a key column the table doesn't have yet; checked again once the structure is fixed
-                    console.error(`Could not check seed rows for ${database}.${tableName}: ${err.message}`);
-                    break;
-                }
+                // A structural difference already records a missing key column;
+                // the verification pass checks seed rows after that column exists.
+                const columns = current.tables[tableName].columns;
+                if (Array.isArray(columns) && key.some(name => !columns.some(col => col.Field === name))) break;
+                const found = await connection.query(`SELECT 1 FROM \`${database}\`.\`${tableName}\` WHERE ${where} LIMIT 1`, values);
                 if (found.length > 0) continue;
             }
             differences.push({ type: 'missing_row', tableName, key: rowKey, row });

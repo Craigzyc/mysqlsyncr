@@ -1,259 +1,161 @@
-import { logger } from './loggers.js'; // Import the logger
-import { normalizeSQLDefinition, normalizeColumnType } from './normalizers.js';
-import { parseCreateTableSQL } from './parsers.js';
-import { applyAutoIncrementOption, removeAutoIncrementCounter } from './options.js';
+import { normalizeSQLDefinition, normalizeColumnType, normalizeVersionFormatting } from './normalizers.js';
+import { parseCreateTableSQL, splitTableForeignKeys } from './parsers.js';
+import { applyAutoIncrementOption } from './options.js';
+import { adaptSQLForServer } from './versions.js';
 
-// Column attributes that aren't compared but are needed to rebuild a column
-// exactly; null means the template's column doesn't have it.
 const COLUMN_DETAILS = ['OnUpdate', 'Charset', 'Collate', 'Comment', 'Generated'];
+export const normalizedDefault = field => field.Default === undefined && !field.NotNull ? 'NULL' : field.Default;
+const isPrimaryIndex = index => !!index.Primary || index.Name === 'PRIMARY';
+const indexKey = index => JSON.stringify([index.ColumnName, !!index.Unique || isPrimaryIndex(index), isPrimaryIndex(index), index.Type || 'BTREE', index.Visible !== false]);
+const normalizeAction = action => !action || action === 'RESTRICT' ? 'NO ACTION' : action;
+const constraintKey = (constraint, database) => JSON.stringify([
+    constraint.ColumnName,
+    constraint.References.Database === database ? '' : constraint.References.Database || '',
+    constraint.References.Table, constraint.References.Columns || [].concat(constraint.References.Column),
+    normalizeAction(constraint.OnDelete), normalizeAction(constraint.OnUpdate)
+]);
 
-// A nullable column with no default defaults to NULL, and MySQL doesn't print
-// DEFAULT NULL for TEXT/BLOB columns, so treat both forms as the same
-export const normalizedDefault = (field) => field.Default === undefined && !field.NotNull ? 'NULL' : field.Default;
+// Re-parse authoritative CREATE SQL instead of trusting stale arrays in old dumps.
+const parseTable = (contents, serverVersion) => {
+    if (!contents.createSQL) return { columns: [], indexes: [], constraints: [], triggers: [], ...contents };
+    const parsed = parseCreateTableSQL(adaptSQLForServer(contents.createSQL, serverVersion));
+    const columns = parsed.columns.map(column => {
+        const details = { ...column };
+        for (const key of COLUMN_DETAILS) if (details[key] === undefined) details[key] = null;
+        return details;
+    });
+    const indexes = parsed.indexes.map(index => {
+        if (Number(String(serverVersion).split('.')[0]) < 8 && index.Visible === false) {
+            const compatible = { ...index };
+            delete compatible.Visible;
+            return compatible;
+        }
+        return index;
+    });
+    return { ...contents, ...parsed, columns, indexes, triggers: contents.triggers || [] };
+};
+const textColumn = field => /^(?:var)?char\b|^(?:tiny|medium|long)?text\b|^enum\b|^set\b/i.test(field.Type);
+const charsetOf = (field, table) => normalizeVersionFormatting(field.Charset || field.Collate?.split('_')[0] || table.charset || null);
+const collationOf = (field, table, defaults) => normalizeVersionFormatting(field.Collate
+    || (!field.Charset ? table.collate : null)
+    || defaults[charsetOf(field, table)] || null);
+const normalizedExpression = expression => expression ? normalizeSQLDefinition(expression) : null;
 
-const isPrimaryIndex = (index) => !!index.Primary || index.Name === 'PRIMARY';
-
-// Compare index columns ignoring order and prefix lengths: `col` and `col`(255) index the same column
-const indexKey = (index) => index.ColumnName.map(col => col.replace(/\(\d+\)$/, '')).sort().join(', ');
-
-/**
- * The template table as its createSQL describes it. The stored columns and
- * indexes arrays were derived from createSQL by whichever parser version wrote
- * the dump, and older versions cut some values short ('System Generated' as
- * System, enum(...) as enum). Re-parsing compares both sides with the same
- * parser. The stored arrays are used only when there's no createSQL.
- */
-const parseExpectedTable = (tableName, contents) => {
-    if (!contents.createSQL) return contents;
-    try {
-        const parsed = parseCreateTableSQL(contents.createSQL);
-        if (!parsed) return contents;
-        const columns = parsed.columns.map(column => {
-            const withDetails = { ...column };
-            for (const key of COLUMN_DETAILS) {
-                if (withDetails[key] === undefined) withDetails[key] = null;
-            }
-            return withDetails;
-        });
-        return { ...contents, columns, indexes: parsed.indexes };
-    } catch (e) {
-        logger(`Could not re-parse createSQL for table ${tableName}, using stored structure`, e.message);
-        return contents;
-    }
-}
-
-/**
- * @param getTableOptions  tableName => that table's sync options ({ autoIncrement, rows, ... })
- */
-export const findDifferences = (expected, current, getTableOptions = () => ({})) => {
-    const differences = [];
-
-    // Detect extra tables
+/** The fourth argument supplies serverVersion for 8.0 -> 5.7 compatibility. */
+export const findDifferences = (expected, current, getTableOptions = () => ({}), { serverVersion, database, defaultCollations = {} } = {}) => {
+    const defaults = Object.fromEntries(Object.entries(defaultCollations).map(([charset, collation]) => [normalizeVersionFormatting(charset), normalizeVersionFormatting(collation)]));
+    if (!expected.tables) throw new Error('No tables found in expected');
     if (!current.tables) throw new Error('No tables found in current');
+    const differences = [];
     for (const tableName of Object.keys(current.tables)) {
         if (!expected.tables[tableName]) {
+            // Remove references owned by tables being dropped before dropping
+            // any table. This also handles cycles without disabling FK checks.
+            for (const constraint of parseTable(current.tables[tableName]).constraints) {
+                differences.push({ type: 'extra_constraint', tableName, constraintName: constraint.Name, constraint });
+            }
             differences.push({ type: 'extra_table', tableName });
         }
     }
-
-    // Compare tables and fields
-    if (!expected.tables) throw new Error('No tables found in expected');
-    for (const [tableName, storedContents] of Object.entries(expected.tables)) {
-        //check if craete table matches from json, if so, we dont need to compare indexes, triggers, or fields
-        const contents = parseExpectedTable(tableName, storedContents);
-        const { columns, indexes, triggers, createSQL, name, engine, charset, collate } = contents;
-
-
+    for (const [tableName, stored] of Object.entries(expected.tables)) {
+        const contents = parseTable(stored, serverVersion);
+        const { columns, indexes, constraints, triggers } = contents;
         if (!current.tables[tableName]) {
-            logger('missing_table', contents);
-            differences.push({ type: 'missing_table', tableName, createSQL: applyAutoIncrementOption(contents.createSQL, getTableOptions(tableName).autoIncrement) });
+            const createSQL = applyAutoIncrementOption(stored.createSQL, getTableOptions(tableName).autoIncrement);
+            const plan = splitTableForeignKeys(createSQL);
+            differences.push({ type: 'missing_table', tableName, createSQL: plan.createSQL });
+            // Add references after all tables exist, including cycles and other
+            // databases. MySQL still validates existing rows when adding the FK.
+            for (const constraint of plan.constraints) differences.push({ type: 'missing_constraint', tableName, constraintName: constraint.Name, constraint });
+            for (const trigger of triggers) differences.push({ type: 'missing_trigger', tableName, trigger });
             continue;
         }
-        try {
-            //verify triggers
-            logger('Verifying triggers for table', tableName);
-            for (const trigger of triggers) {
-                const currentTrigger = current.tables[tableName].triggers.find(t => t.Name === trigger.Name);
-                if (!currentTrigger) {
-                    logger('Missing trigger', trigger);
-                    differences.push({ type: 'missing_trigger', tableName, trigger });
-                } else {
-                    // Compare additional properties if needed
-                    // Compared like procedures: runs of whitespace count as one space
-                    if (trigger.Definition !== undefined && normalizeSQLDefinition(currentTrigger.Definition ?? '') !== normalizeSQLDefinition(trigger.Definition)) {
-                        logger('Mismatched trigger', { expected: trigger, current: currentTrigger });
-                        differences.push({ type: 'mismatched_trigger', tableName, trigger, currentTrigger });
-                    }
-                }
-            }
-            for (const trigger of current.tables[tableName].triggers) {
-                if (!triggers.some(t => t.Name === trigger.Name)) {
-                    logger('Extra trigger', trigger);
-                    differences.push({ type: 'extra_trigger', tableName, trigger });
-                }
-            }
-        } catch (e) {
-            logger(`Error verifying triggers for table ${tableName}`, e);
+        const live = parseTable(current.tables[tableName]);
+        for (const trigger of triggers) {
+            const currentTrigger = live.triggers.find(t => t.Name === trigger.Name);
+            if (!currentTrigger) differences.push({ type: 'missing_trigger', tableName, trigger });
+            else if (trigger.Definition !== undefined && normalizeSQLDefinition(currentTrigger.Definition ?? '') !== normalizeSQLDefinition(adaptSQLForServer(trigger.Definition, serverVersion))) differences.push({ type: 'mismatched_trigger', tableName, trigger, currentTrigger });
         }
-
-        const createTableSql = current.tables[tableName].createSQL;
-        // The AUTO_INCREMENT=N counter changes with every insert, so it isn't part of the structure
-        if (createTableSql && contents.createSQL && removeAutoIncrementCounter(createTableSql) === removeAutoIncrementCounter(contents.createSQL)) {
-            logger(`Table ${tableName} createSQL matches from json, skipping indexes, triggers, and fields`);
-            continue;
-        } else {
-            logger(`Table ${tableName} createSQL does not match from json, comparing indexes, triggers, and fields`);
-            logger(createTableSql);
-            logger(contents.createSQL);
+        for (const trigger of live.triggers) {
+            if (!triggers.some(t => t.Name === trigger.Name)) differences.push({ type: 'extra_trigger', tableName, trigger });
         }
-
-
-        const currentFieldNames = current.tables[tableName].columns.map(f => f.Field);
-        const expectedFieldNames = columns.map(f => f.Field);
-
-        logger('Detecting missing fields for table', tableName);
-        // // Detect missing fields
-        // for (const field of columns) {
-        //     if (!currentFieldNames.includes(field.Field)) {
-        //         differences.push({ type: 'missing_field', tableName, field });
-        //     }
-        // }
-
-        logger('Detecting extra fields for table', tableName);
-        // Detect extra fields
-        for (const field of current.tables[tableName].columns) {
-            if (!expectedFieldNames.includes(field.Field)) {
-                differences.push({ type: 'extra_field', tableName, field });
-            }
+        const tableOptions = {};
+        for (const key of ['engine', 'charset', 'collate']) {
+            if (contents[key] && normalizeVersionFormatting(contents[key]).toLowerCase() !== normalizeVersionFormatting(live[key] || (key === 'collate' ? defaults[normalizeVersionFormatting(live.charset)] : '') || '').toLowerCase()) tableOptions[key] = contents[key];
         }
-
-
-        // verify Type Null and Default
-        logger('Verifying Type Null and Default for table', tableName);
-        for (const field of columns) {
-
-            const currentField = current.tables[tableName].columns.find(f => f.Field === field.Field);
+        if (Object.keys(tableOptions).length) {
+            if (tableOptions.collate && contents.charset) tableOptions.charset = contents.charset;
+            differences.push({ type: 'mismatched_table_options', tableName, options: tableOptions, currentOptions: { engine: live.engine, charset: live.charset, collate: live.collate } });
+        }
+        const expectedNames = columns.map(field => field.Field);
+        const currentNames = live.columns.map(field => field.Field);
+        const expectedCommon = expectedNames.filter(name => currentNames.includes(name));
+        const currentCommon = currentNames.filter(name => expectedNames.includes(name));
+        for (const field of live.columns) {
+            if (!expectedNames.includes(field.Field)) differences.push({ type: 'extra_field', tableName, field });
+        }
+        for (const [position, field] of columns.entries()) {
+            const after = position ? columns[position - 1].Field : null;
+            const currentField = live.columns.find(f => f.Field === field.Field);
             if (!currentField) {
-                logger('Current field not found for', field.Field, 'in table', tableName);
-                differences.push({ type: 'missing_field', tableName, field });
+                differences.push({ type: 'missing_field', tableName, field, after });
                 continue;
             }
-            if (!!field.NotNull !== !!currentField.NotNull) {
-                differences.push({ type: 'mismatched_field', info: "Null", tableName, field, currentField });
+            const changed = [];
+            if (!!field.NotNull !== !!currentField.NotNull) changed.push('Null');
+            if (normalizedDefault(field) !== normalizedDefault(currentField) || !!field.DefaultQuoted !== !!currentField.DefaultQuoted) changed.push('Default');
+            if (normalizeColumnType(field.Type) !== normalizeColumnType(currentField.Type) && !(field.Type === 'varchar' && currentField.Type.startsWith('varchar('))) changed.push('Type');
+            if (!!field.AutoIncrement !== !!currentField.AutoIncrement) changed.push('AutoIncrement');
+            if (normalizedExpression(field.OnUpdate) !== normalizedExpression(currentField.OnUpdate)) changed.push('OnUpdate');
+            if (normalizedExpression(field.Generated) !== normalizedExpression(currentField.Generated)) changed.push('Generated');
+            if ((field.Comment || '') !== (currentField.Comment || '')) changed.push('Comment');
+            if (textColumn(field)) {
+                if (charsetOf(field, contents) && charsetOf(field, contents) !== charsetOf(currentField, live)) changed.push('Charset');
+                if (collationOf(field, contents, defaults) && collationOf(field, contents, defaults) !== collationOf(currentField, live, defaults)) changed.push('Collate');
             }
-            if (normalizedDefault(field) !== normalizedDefault(currentField)) {
-                differences.push({ type: 'mismatched_field', info: "Default", tableName, field, currentField });
-            }
-            if (field.Type !== currentField.Type) {
-                // int(11) in 5.7 is int in 8.0, year(4) is year, utf8 is utf8mb3: formatting, not structure
-                if (normalizeColumnType(field.Type) === normalizeColumnType(currentField.Type)) continue;
-                if (field.Type == 'varchar' && currentField.Type.startsWith('varchar(')) continue; // varchar(255) is the default for varchar and used on older versions of mysql
-                differences.push({ type: 'mismatched_field', info: "Type", tableName, field, currentField });
+            if (expectedCommon.indexOf(field.Field) !== currentCommon.indexOf(field.Field)) changed.push('Position');
+            if (changed.length) {
+                // Restate effective defaults so CHANGE cannot inherit a drifted charset.
+                const desired = { ...field };
+                if (textColumn(field) && charsetOf(field, contents)) desired.Charset = charsetOf(field, contents);
+                if (textColumn(field) && collationOf(field, contents, defaults)) desired.Collate = collationOf(field, contents, defaults);
+                differences.push({ type: 'mismatched_field', info: changed[0], changes: changed, tableName, field: desired, currentField, after });
             }
         }
-
-        // verify indexes
-        logger('Verifying indexes for table', tableName);
+        const matchedIndexes = new Set();
         for (const index of indexes) {
-            // Check if the current index matches the expected index structure, preferring the same name
-            const sameColumns = current.tables[tableName].indexes.filter(i => indexKey(i) === indexKey(index));
-            const currentIndex = sameColumns.find(i => i.Name === index.Name) ?? sameColumns[0];
-            if (!currentIndex) {
-                logger('Missing index', index);
-                differences.push({ type: 'missing_index', tableName, indexName: index.Name, index });
-            } else {
-                // If needed, you can add further checks for uniqueness or other properties here
-                if (currentIndex.Name == index.Name) {
-                    if (!!currentIndex.Unique !== !!index.Unique) {
-                        differences.push({ type: 'mismatched_index', from: 'unique', tableName, indexName: index.Name, index });
-                    } else if (isPrimaryIndex(currentIndex) !== isPrimaryIndex(index)) {
-                        differences.push({ type: 'mismatched_index', from: 'primary', tableName, indexName: index.Name, index });
-                    }
-                }
+            const sameName = live.indexes.find(i => i.Name === index.Name);
+            const equivalent = live.indexes.find(i => !matchedIndexes.has(i) && indexKey(i) === indexKey(index));
+            const currentIndex = sameName || equivalent;
+            if (!currentIndex) differences.push({ type: 'missing_index', tableName, indexName: index.Name, index });
+            else {
+                matchedIndexes.add(currentIndex);
+                if (indexKey(currentIndex) !== indexKey(index)) differences.push({ type: 'mismatched_index', tableName, indexName: index.Name, index, currentIndex });
             }
         }
-
-        for (const index of current.tables[tableName].indexes) {
-            logger('Checking index', index);
-            let indexFound = false
-
-            // Compare sorted copies; sorting ColumnName in place would reorder composite index columns
-            if (!indexes.some(i => indexKey(i) === indexKey(index))) {
-                differences.push({ type: 'extra_index', tableName, indexName: index.Name, index });
-            }
+        for (const index of live.indexes) {
+            if (!matchedIndexes.has(index)) differences.push({ type: 'extra_index', tableName, indexName: index.Name, index });
         }
-
-
-    }
-
-
-
-
-    // Compare stored procedures
-    if (!expected.procedures) {
-        logger('No procedures found in expected');
-    } else {
-        for (const [position, contents] of Object.entries(expected.procedures)) {
-            let procName = contents.Name;
-            let currentProc = current.procedures.find(p => p.Name === procName);
-            if (!currentProc) {
-                logger('missing_procedure', contents);
-                differences.push({ type: 'missing_procedure', ...contents });
-                continue;
-            }
-
-
-            // Check if the procedure definition matches
-            if (currentProc.Definition !== contents.Definition) {
-                const normalizedCurrentDef = normalizeSQLDefinition(currentProc.Definition);
-                const normalizedNewDef = normalizeSQLDefinition(contents.Definition);
-
-                if (normalizedCurrentDef !== normalizedNewDef) {
-                    // currentDefinition lets the difference be shown side by side with the template's
-                    differences.push({ type: 'mismatched_procedure', ...contents, currentDefinition: currentProc.Definition });
-                }
-            }
+        for (const constraint of constraints) {
+            const currentConstraint = live.constraints.find(c => c.Name === constraint.Name);
+            if (!currentConstraint) differences.push({ type: 'missing_constraint', tableName, constraintName: constraint.Name, constraint });
+            else if (constraintKey(constraint, database) !== constraintKey(currentConstraint, database)) differences.push({ type: 'mismatched_constraint', tableName, constraintName: constraint.Name, constraint, currentConstraint });
+        }
+        for (const constraint of live.constraints) {
+            if (!constraints.some(c => c.Name === constraint.Name)) differences.push({ type: 'extra_constraint', tableName, constraintName: constraint.Name, constraint });
         }
     }
-
-    // Compare views
-    if (expected.views || current.views) {
-        // Handle missing views (when expected has views but current doesn't have them)
-        if (expected.views && !current.views) {
-            for (const [viewName, expectedDefinition] of Object.entries(expected.views)) {
-                differences.push({ type: 'missing_view', viewName, definition: expectedDefinition });
-            }
-        }
-        // Handle extra views (when current has views but expected doesn't have them)
-        else if (current.views && !expected.views) {
-            for (const viewName of Object.keys(current.views)) {
-                differences.push({ type: 'extra_view', viewName });
-            }
-        }
-        // Compare views when both exist
-        else if (expected.views && current.views) {
-            // Check for missing and mismatched views
-            for (const [viewName, expectedDefinition] of Object.entries(expected.views)) {
-                if (!current.views[viewName]) {
-                    differences.push({ type: 'missing_view', viewName, definition: expectedDefinition });
-                } else if (normalizeSQLDefinition(current.views[viewName]) !== normalizeSQLDefinition(expectedDefinition)) {
-                    differences.push({
-                        type: 'mismatched_view',
-                        viewName,
-                        definition: expectedDefinition,
-                        current: current.views[viewName]
-                    });
-                }
-            }
-
-            // Check for extra views
-            for (const viewName of Object.keys(current.views)) {
-                if (!expected.views[viewName]) {
-                    differences.push({ type: 'extra_view', viewName });
-                }
-            }
-        }
+    for (const procedure of expected.procedures || []) {
+        const currentProcedure = (current.procedures || []).find(p => p.Name === procedure.Name);
+        if (!currentProcedure) differences.push({ type: 'missing_procedure', ...procedure });
+        else if (normalizeSQLDefinition(currentProcedure.Definition) !== normalizeSQLDefinition(adaptSQLForServer(procedure.Definition, serverVersion))) differences.push({ type: 'mismatched_procedure', ...procedure, currentDefinition: currentProcedure.Definition });
     }
-
+    for (const [viewName, definition] of Object.entries(expected.views || {})) {
+        if (!current.views?.[viewName]) differences.push({ type: 'missing_view', viewName, definition });
+        else if (normalizeSQLDefinition(current.views[viewName]) !== normalizeSQLDefinition(adaptSQLForServer(definition, serverVersion))) differences.push({ type: 'mismatched_view', viewName, definition, current: current.views[viewName] });
+    }
+    for (const viewName of Object.keys(current.views || {})) {
+        if (!expected.views?.[viewName]) differences.push({ type: 'extra_view', viewName });
+    }
     return differences;
-}
+};

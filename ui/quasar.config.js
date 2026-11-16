@@ -73,7 +73,16 @@ export default defineConfig((/* ctx */) => {
     // Full list of options: https://v2.quasar.dev/quasar-cli-vite/quasar-config-file#devserver
     devServer: {
       // https: true,
-      open: true // opens browser window automatically
+      open: true, // opens browser window automatically
+      // Forward API calls to a local `mysqlsyncr ui` server. The server rejects
+      // other origins, so present the request as coming from the server itself.
+      proxy: {
+        '/api': {
+          target: 'http://localhost:3600',
+          changeOrigin: true,
+          configure: (proxy) => proxy.on('proxyReq', (proxyReq) => proxyReq.removeHeader('origin')),
+        },
+      },
     },
 
     // https://v2.quasar.dev/quasar-cli-vite/quasar-config-file#framework

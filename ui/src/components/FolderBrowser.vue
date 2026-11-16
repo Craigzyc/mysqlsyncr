@@ -3,7 +3,7 @@
         <q-card class="folder-browser-card">
             <q-card-section class="header-section row items-center justify-between">
                 <div class="text-h6 text-white">Select Folder</div>
-                <q-btn icon="close" flat round dense v-close-popup class="text-white" />
+                <q-btn icon="close" flat round dense v-close-popup class="text-white" aria-label="Close folder browser" />
             </q-card-section>
 
             <q-card-section>
@@ -70,6 +70,7 @@
                     label="Select"
                     color="primary"
                     @click="selectCurrentFolder"
+                    :disable="loading || !currentPath"
                     class="q-px-md q-ml-sm"
                 />
             </q-card-actions>
@@ -105,6 +106,7 @@
 
 export default {
     name: 'FolderBrowser',
+    emits: ['update:modelValue', 'folder-selected'],
     props: {
         modelValue: {
             type: Boolean,
@@ -118,6 +120,7 @@ export default {
     data() {
         return {
             currentPath: '',
+            loading: false,
             items: [],
             newFolderDialog: false,
             newFolderName: ''
@@ -142,6 +145,8 @@ export default {
         },
 
         async loadFolderContents(path) {
+            if (this.loading) return;
+            this.loading = true;
             try {
                 const response = await this.$api.post('/api/browse-folders', {
                     currentPath: path
@@ -157,7 +162,7 @@ export default {
                     type: 'negative',
                     message: 'Error loading folder contents'
                 });
-            }
+            } finally { this.loading = false; }
         },
 
         selectCurrentFolder() {
@@ -217,8 +222,8 @@ export default {
 
 <style scoped>
 .folder-browser-card {
-    min-width: 600px;
-    max-width: 900px;
+    width: 720px;
+    max-width: 95vw;
     border-radius: 4px;
     box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
 }

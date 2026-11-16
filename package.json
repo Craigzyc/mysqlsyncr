@@ -1,9 +1,9 @@
 {
   "name": "mysqlsyncr",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "",
-  "main": "dist/index.cjs.js",
-  "module": "dist/index.esm.js",
+  "main": "dist/index.cjs",
+  "module": "dist/index.js",
   "exports": {
     ".": {
       "import": "./dist/index.js",
@@ -14,6 +14,9 @@
   "scripts": {
     "test": "jest",
     "test:watch": "jest --watch",
+    "test:ui": "node --test ui/tests/*.test.mjs",
+    "test:browser": "playwright test",
+    "test:integration": "node integration/docker-matrix.mjs",
     "start": "node src/index.js",
     "build": "rollup -c"
   },
@@ -27,7 +30,6 @@
     "url": "git+https://github.com/Craigzyc/mysqlsyncr.git"
   },
   "dependencies": {
-    "cors": "^2.8.5",
     "express": "^4.22.3",
     "mysql2": "^3.24.6",
     "open": "^10.1.0",
@@ -36,6 +38,7 @@
   "devDependencies": {
     "@babel/core": "^7.18.10",
     "@babel/preset-env": "^7.26.0",
+    "@playwright/test": "^1.65.1",
     "@rollup/plugin-babel": "^6.0.4",
     "@rollup/plugin-commonjs": "^25.0.0",
     "@rollup/plugin-node-resolve": "^15.0.0",
@@ -58,6 +61,12 @@
     }
   },
   "jest": {
+    "roots": [
+      "<rootDir>/__tests__"
+    ],
+    "testMatch": [
+      "**/*.test.js"
+    ],
     "transform": {
       "^.+\\.js$": "babel-jest"
     },

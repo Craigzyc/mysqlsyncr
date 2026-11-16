@@ -1,5 +1,6 @@
 import fs from 'fs/promises';
 import path from 'path';
+import { transformSQLCode } from './normalizers.js';
 
 // '8.0.36-log' -> { major: 8, minor: 0 }; also takes '5.7'
 const parseVersion = (version) => {
@@ -25,6 +26,30 @@ export const getServerVersion = async (connection) => {
         return null;
     }
 }
+
+// Defaults are server/session metadata, not constants inferred from a version.
+// In particular, an 8.0 session can still select the old utf8mb4_general_ci default.
+export const getDefaultCollations = async (connection, serverVersion) => {
+    const unavailable = error => {
+        if (error.fatal || /^(?:PROTOCOL_|ECONN|EPIPE|ETIMEDOUT)/.test(error.code || '')) throw error;
+    };
+    let defaults;
+    try {
+        const rows = await connection.query('SHOW CHARACTER SET');
+        defaults = Object.fromEntries(rows.filter(row => row.Charset && row['Default collation'])
+            .map(row => [row.Charset, row['Default collation']]));
+    } catch (error) {
+        unavailable(error);
+        return {};
+    }
+    if (majorMinor(serverVersion) === '8.0') {
+        try {
+            const rows = await connection.query('SELECT @@SESSION.default_collation_for_utf8mb4 AS collation');
+            if (rows[0]?.collation) defaults.utf8mb4 = rows[0].collation;
+        } catch (error) { unavailable(error); }
+    }
+    return defaults;
+};
 
 /**
  * The MySQL version a template was dumped from: recorded in dumpInfo.json by
@@ -76,7 +101,8 @@ export const versionNotes = (templateVersion, serverVersion) => {
         `The template is from MySQL ${template} and the server is MySQL ${server}. Integer display widths (int(11) vs int), YEAR(4) and utf8 vs utf8mb3 are printed differently by these versions and are ignored when comparing.`
     ];
     if (isBefore80(serverVersion) && !isBefore80(templateVersion)) {
-        notes.push(`MySQL ${server} has no utf8mb4_0900 collations, so tables and columns are created with utf8mb4_unicode_ci (utf8mb4_bin for accent- or case-sensitive ones) instead.`);
+        notes.push(`MySQL ${server} has no utf8mb4_0900 collations. Compatibility replacements are approximations: ai_ci and as_ci use utf8mb4_unicode_ci, and other suffixes use utf8mb4_bin. Sort order and trailing-space comparisons can differ; as_ci also loses accent sensitivity.`);
+        notes.push(`MySQL ${server} does not support index visibility. Invisible template indexes are created and compared as visible indexes on this server.`);
         notes.push(`Expression defaults such as DEFAULT (...) need MySQL 8.0.13 or later and fail on MySQL ${server}.`);
     }
     return notes;
@@ -88,11 +114,9 @@ export const getVersionInfo = async (connection, templateDir) => {
     return { server, template, notes: versionNotes(template?.version, server) };
 }
 
-// MySQL 8 added the _0900_ collation family, which does not exist on 5.7. The _unicode_ci
-// collation of the same charset is accent- and case-insensitive like _0900_ai_ci and is
-// present on both versions, so a table created with it means the same thing either way.
-// Accent- or case-sensitive _0900_ collations map to the charset's _bin. Null if collation
-// isn't a _0900_ one.
+// Preserve the existing compatibility mapping, while reporting it as an
+// approximation rather than semantic equivalence. In particular as_ci loses
+// accent sensitivity with unicode_ci; binary fallbacks also change ordering.
 export const portableCollation = (collation) => {
     const match = /^(\w+?)_0900_(\w+)$/i.exec(collation || '');
     if (!match) return null;
@@ -106,7 +130,7 @@ export const portableCollation = (collation) => {
  */
 export const adaptSQLForServer = (sql, serverVersion) => {
     if (typeof sql !== 'string' || !isBefore80(serverVersion)) return sql;
-    return sql
+    return transformSQLCode(sql, code => code
         .replace(/\b\w+?_0900_\w+/gi, (collation) => portableCollation(collation) ?? collation)
-        .replace(/\butf8mb3_(\w+)/gi, 'utf8_$1');
+        .replace(/\butf8mb3_(\w+)/gi, 'utf8_$1'));
 }

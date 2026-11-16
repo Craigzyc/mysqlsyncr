@@ -49,3 +49,24 @@ test('reports unavailable areas when status cannot be read', async () => {
     const notes = buildNotifications({ available: false, serverHealth: null });
     expect(notes.filter(n => n.status === 'unknown')).toHaveLength(6);
 });
+
+test('absent server metrics are unknown, never healthy zeroes', async () => {
+    expect(evaluateDiskIo({})).toEqual([]);
+    expect(evaluateMemory(m({ Innodb_buffer_pool_read_requests: 1000 }), {})).toEqual([]);
+    const health = await collectServerHealth({ query: jest.fn().mockResolvedValue([[]]) }, []);
+    finalizeLockContention(health, []);
+    for (const key of ['diskIo', 'lockContention', 'memory', 'connections']) expect(health[key].status).toBe('unknown');
+    const notes = buildNotifications({ available: true, thresholds: { slowMs: 2000 }, serverHealth: health });
+    expect(notes.find(note => note.area === 'Memory & buffer pool')).toMatchObject({ status: 'unknown', message: expect.stringMatching(/unavailable/i) });
+});
+
+test('failed index metadata and empty or incomplete digests never get a clean notification', () => {
+    const notes = buildNotifications({ available: true, duplicateIndexesAvailable: false, digestCoverage: { count: 0, complete: false },
+        thresholds: { slowMs: 2000 }, duplicateIndexes: [], slowQueries: [], indexCandidates: [] });
+    for (const area of ['Duplicate indexes', 'Needed indexes', 'Slow queries']) expect(notes.find(note => note.area === area).status).toBe('unknown');
+});
+
+test('table lock waits are included when no requests acquired the lock immediately', () => {
+    expect(evaluateLockContention(m({ Table_locks_waited: 3, Table_locks_immediate: 0 })))
+        .toEqual([expect.objectContaining({ status: 'critical', message: expect.stringContaining('100.0%') })]);
+});

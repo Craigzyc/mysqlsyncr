@@ -87,7 +87,7 @@ describe('template and server versions', () => {
     test('explains what differs between versions', () => {
         expect(majorMinor('5.7.44-log')).toBe('5.7');
         expect(versionNotes('8.0.36', '8.0.19')).toEqual([]);
-        expect(versionNotes('8.0', '5.7.44')).toHaveLength(3);
+        expect(versionNotes('8.0', '5.7.44')).toHaveLength(4);
         expect(versionNotes('5.7.44', '8.0.36')).toHaveLength(1);
         expect(versionNotes(undefined, '8.0.36')).toEqual([]);
     });

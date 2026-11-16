@@ -19,6 +19,7 @@ function groupByTable(rows) {
                 unique: !Number(row.NON_UNIQUE),
                 primary: row.INDEX_NAME === 'PRIMARY',
                 type: row.INDEX_TYPE,
+                visible: row.IS_VISIBLE !== 'NO' && row.COMMENT !== 'disabled',
                 columns: [],
                 functional: false,
             });
@@ -26,13 +27,13 @@ function groupByTable(rows) {
         const index = indexes.get(row.INDEX_NAME);
         // Functional (expression) indexes have no COLUMN_NAME; they cannot be compared safely.
         if (row.COLUMN_NAME === null || row.COLUMN_NAME === undefined) index.functional = true;
-        index.columns.push({ name: row.COLUMN_NAME, prefixLength: row.SUB_PART === null || row.SUB_PART === undefined ? null : Number(row.SUB_PART) });
+        index.columns.push({ name: row.COLUMN_NAME, prefixLength: row.SUB_PART === null || row.SUB_PART === undefined ? null : Number(row.SUB_PART), direction: row.COLLATION || 'A', sequence: Number(row.SEQ_IN_INDEX) });
     }
-    return [...tables.values()].map(t => ({ ...t, indexes: [...t.indexes.values()] }));
+    return [...tables.values()].map(t => ({ ...t, indexes: [...t.indexes.values()].map(index => ({ ...index, columns: index.columns.sort((a, b) => a.sequence - b.sequence) })) }));
 }
 
-const columnText = column => column.prefixLength ? `${column.name}(${column.prefixLength})` : column.name;
-const sameColumn = (a, b) => a.name.toLowerCase() === b.name.toLowerCase() && a.prefixLength === b.prefixLength;
+const columnText = column => `${column.prefixLength ? `${column.name}(${column.prefixLength})` : column.name}${column.direction === 'D' ? ' DESC' : ''}`;
+const sameColumn = (a, b) => a.name.toLowerCase() === b.name.toLowerCase() && a.prefixLength === b.prefixLength && a.direction === b.direction;
 
 // Is every column of `shorter` a left prefix of `longer`?
 function isLeftPrefix(shorter, longer) {
@@ -50,7 +51,7 @@ export function findDuplicateIndexes(rows) {
         const flagged = new Set();
         for (const candidate of comparable) {
             for (const other of comparable) {
-                if (other === candidate || flagged.has(other.name)) continue;
+                if (other === candidate || flagged.has(other.name) || !other.visible) continue;
                 // FULLTEXT/SPATIAL/HASH only compare against indexes of the same type.
                 if (candidate.type !== other.type) continue;
                 if (!isLeftPrefix(candidate, other)) continue;
@@ -58,13 +59,13 @@ export function findDuplicateIndexes(rows) {
                 if (exact) {
                     // Keep the stronger (or alphabetically first) of an identical pair.
                     const keepOther = keepRank(other) < keepRank(candidate)
-                        || (keepRank(other) === keepRank(candidate) && other.name < candidate.name);
+                        || (keepRank(other) === keepRank(candidate) && (!candidate.visible || other.name < candidate.name));
                     if (!keepOther) continue;
                 } else {
                     // A unique/primary prefix enforces a constraint the longer index does not.
                     if (candidate.unique) continue;
-                    // FULLTEXT indexes do not serve left-prefix lookups.
-                    if (candidate.type === 'FULLTEXT' || candidate.type === 'SPATIAL') continue;
+                    // Only ordered BTREE indexes serve left-prefix lookups.
+                    if (candidate.type !== 'BTREE') continue;
                 }
                 flagged.add(candidate.name);
                 findings.push({
@@ -87,10 +88,18 @@ export function findDuplicateIndexes(rows) {
 export async function collectDuplicateIndexes(connection, database = null) {
     const scope = database ? 'TABLE_SCHEMA = ?' : `TABLE_SCHEMA NOT IN (${SYSTEM_SCHEMAS.map(() => '?').join(', ')})`;
     const params = database ? [database] : SYSTEM_SCHEMAS;
-    const [rows] = await connection.query(`SELECT TABLE_SCHEMA, TABLE_NAME, INDEX_NAME, NON_UNIQUE, SEQ_IN_INDEX,
-        COLUMN_NAME, SUB_PART, INDEX_TYPE
+    const query = visibility => `SELECT TABLE_SCHEMA, TABLE_NAME, INDEX_NAME, NON_UNIQUE, SEQ_IN_INDEX,
+        COLUMN_NAME, SUB_PART, INDEX_TYPE, COLLATION, COMMENT${visibility ? ', IS_VISIBLE' : ''}
         FROM information_schema.STATISTICS
         WHERE ${scope}
-        ORDER BY TABLE_SCHEMA, TABLE_NAME, INDEX_NAME, SEQ_IN_INDEX`, params);
+        ORDER BY TABLE_SCHEMA, TABLE_NAME, INDEX_NAME, SEQ_IN_INDEX`;
+    let rows;
+    try {
+        [rows] = await connection.query(query(true), params);
+    } catch (error) {
+        // MySQL 5.7 has no invisible indexes or IS_VISIBLE metadata column.
+        if (error.code !== 'ER_BAD_FIELD_ERROR') throw error;
+        [rows] = await connection.query(query(false), params);
+    }
     return findDuplicateIndexes(rows);
 }

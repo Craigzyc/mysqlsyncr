@@ -140,8 +140,8 @@ describe('Create Table Parser', () => {
               }
             ],
             "constraints": [],
-            "engine": null,
-            "charset": null,
+            "engine": "InnoDB",
+            "charset": "latin1",
             "collate": null
           }
     

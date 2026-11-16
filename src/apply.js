@@ -1,19 +1,40 @@
 import { logger } from './loggers.js';
 import { adaptSQLForServer, getServerVersion, portableCollation } from './versions.js';
+import { transformSQLCode } from './normalizers.js';
+import { randomBytes } from 'node:crypto';
+
+// Cross-schema scheduling is internal: a caller-supplied JSON property cannot
+// redirect an operation outside the database selected by the API.
+const targetDatabase = Symbol('targetDatabase');
+const isViewDependencyError = error => ['ER_NO_SUCH_TABLE', 'ER_VIEW_INVALID'].includes(error.code) || [1146, 1356].includes(error.errno);
 
 const quoteString = (value) => `'${String(value).replace(/\\/g, '\\\\').replace(/'/g, "''")}'`;
+const quoteIdentifier = value => `\`${String(value).replace(/`/g, '``')}\``;
+const columnPosition = diff => 'after' in diff ? (diff.after === null ? ' FIRST' : ` AFTER ${quoteIdentifier(diff.after)}`) : '';
+
+const addConstraintClause = constraint => {
+    const columns = constraint.ColumnName.map(quoteIdentifier).join(', ');
+    const referenced = (constraint.References.Columns || [].concat(constraint.References.Column)).map(quoteIdentifier).join(', ');
+    const table = (constraint.References.Database ? `${quoteIdentifier(constraint.References.Database)}.` : '') + quoteIdentifier(constraint.References.Table);
+    const action = value => {
+        if (!['NO ACTION', 'RESTRICT', 'CASCADE', 'SET NULL', 'SET DEFAULT'].includes(value)) throw new Error(`Unsupported foreign key action: ${value}`);
+        return value;
+    };
+    return `ADD CONSTRAINT ${quoteIdentifier(constraint.Name)} FOREIGN KEY (${columns}) REFERENCES ${table} (${referenced}) ON DELETE ${action(constraint.OnDelete || 'NO ACTION')} ON UPDATE ${action(constraint.OnUpdate || 'NO ACTION')}`;
+};
 
 // Types MySQL won't give a literal default
 const noLiteralDefaultRegex = /^(tiny|medium|long)?(text|blob)$|^json$|^geometry|^point$|^linestring$|^polygon$/i;
 
 const defaultClause = (field) => {
     const value = field.Default;
+    if (field.DefaultQuoted) return `DEFAULT ${quoteString(value)}`;
     if (value === undefined || value === null || value === 'NULL') {
         // A NOT NULL column can't default to NULL; leave it without a default
         return field.NotNull ? '' : 'DEFAULT NULL';
     }
     // Functions, expressions, and bit/hex literals such as b'0' are written as they were read
-    if (/^(CURRENT_TIMESTAMP|now)(\(\d*\))?$/i.test(value) || value.startsWith('(') || /^[bx]'[0-9a-f]*'$/i.test(value) || /^0x[0-9a-f]+$/i.test(value)) {
+    if (/^(CURRENT_TIMESTAMP|now)(\(\d*\))?$/i.test(value) || String(value).startsWith('(') || /^[bx]'[0-9a-f]*'$/i.test(value) || /^0x[0-9a-f]+$/i.test(value)) {
         return `DEFAULT ${value}`;
     }
     if (noLiteralDefaultRegex.test(field.Type)) {
@@ -65,22 +86,24 @@ export const columnDefinition = (field, currentField) => {
 
 // `col`, or `col`(255) for a prefix index on a text column
 const formatIndexColumns = (columns) => columns.map(col => {
-    const match = col.match(/^`?([^`(]+)`?(?:\((\d+)\))?$/);
-    if (!match) return `\`${col}\``;
-    return `\`${match[1]}\`${match[2] ? `(${match[2]})` : ''}`;
+    if (col.startsWith('(')) return col;
+    const match = col.match(/^`?([^`(]+?)`?(?:\((\d+)\))?(?:\s+(ASC|DESC))?$/i);
+    if (!match) throw new Error(`Invalid index column: ${col}`);
+    return `${quoteIdentifier(match[1])}${match[2] ? `(${match[2]})` : ''}${match[3] ? ` ${match[3].toUpperCase()}` : ''}`;
 }).join(', ');
 
 const isPrimaryIndex = (index) => !!index.Primary || index.Name === 'PRIMARY';
+const indexStructure = index => JSON.stringify([index.ColumnName, !!index.Unique || isPrimaryIndex(index), isPrimaryIndex(index), index.Type || 'BTREE']);
 
 const addIndexClause = (index) => isPrimaryIndex(index)
     ? `ADD PRIMARY KEY (${formatIndexColumns(index.ColumnName)})`
-    : `ADD ${index.Unique ? 'UNIQUE ' : ''}INDEX \`${index.Name}\` (${formatIndexColumns(index.ColumnName)})`;
+    : `ADD ${index.Unique ? 'UNIQUE ' : ['FULLTEXT', 'SPATIAL'].includes(index.Type) ? `${index.Type} ` : ''}INDEX ${quoteIdentifier(index.Name)} (${formatIndexColumns(index.ColumnName)})${index.Type === 'HASH' ? ' USING HASH' : ''}${index.Visible === false ? ' INVISIBLE' : ''}`;
 
 const dropIndexClause = (index) => isPrimaryIndex(index) ? 'DROP PRIMARY KEY' : `DROP INDEX \`${index.Name}\``;
 
 const describeDifference = (diff) => {
     const name = diff.tableName || diff.viewName || diff.Name || diff.database || '';
-    const detail = diff.field?.Field || diff.indexName || diff.trigger?.Name || (diff.key ? JSON.stringify(diff.key) : '');
+    const detail = diff.field?.Field || diff.indexName || diff.constraintName || diff.trigger?.Name || (diff.key ? JSON.stringify(diff.key) : '');
     return `${diff.type} ${name}${detail ? '.' + detail : ''}`;
 }
 
@@ -88,9 +111,9 @@ const describeDifference = (diff) => {
 // column attribute (COLLATE x). Passing null for `to` removes the clause entirely.
 const replaceCollation = (sql, from, to) => {
     const escaped = from.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    return sql
+    return transformSQLCode(sql, code => code
         .replace(new RegExp('COLLATE(\\s*)=(\\s*)' + escaped, 'gi'), to ? `COLLATE$1=$2${to}` : '')
-        .replace(new RegExp('COLLATE(\\s+)' + escaped, 'gi'), to ? `COLLATE$1${to}` : '');
+        .replace(new RegExp('COLLATE(\\s+)' + escaped, 'gi'), to ? `COLLATE$1${to}` : ''));
 };
 
 // Rewrites that let DDL dumped from a newer server run on an older one. Each inspects the
@@ -133,10 +156,22 @@ const compatRewrites = [
 export const applyDifferences = async (connection, database, differences) => {
     const failures = [];
     const warnings = [];
+    let deferredViews = [];
+    let completedViews = 0;
+    const scope = diff => diff[targetDatabase] ? { database: diff[targetDatabase] } : {};
+    const fail = (diff, error) => {
+        console.error(`Failed to apply ${describeDifference(diff)}: ${error.message}`);
+        logger(diff);
+        failures.push({ ...scope(diff), type: diff.type, tableName: diff.tableName, description: describeDifference(diff), message: error.message, ...(error.recoverySQL ? { recoverySQL: error.recoverySQL } : {}) });
+    };
+    const appliedTogether = new Set();
+    const removedColumns = new Map();
+    const indexRemovedWithColumns = (tableName, index) => index?.ColumnName?.length && index.ColumnName.every(column =>
+        removedColumns.get(tableName)?.has(column.replace(/\s+(?:ASC|DESC)$/i, '').replace(/\(\d+\)$/, '')));
     let current = null; // the difference being applied, for warnings from query()
     const warn = (diff, message) => {
         console.warn(`Applied ${describeDifference(diff)} with a change: ${message}`);
-        warnings.push({ type: diff.type, tableName: diff.tableName, description: describeDifference(diff), message });
+        warnings.push({ ...scope(diff), type: diff.type, tableName: diff.tableName, description: describeDifference(diff), message });
     };
 
     // Template SQL from MySQL 8.0 can name collations a 5.7 server doesn't have
@@ -145,9 +180,44 @@ export const applyDifferences = async (connection, database, differences) => {
         const adapted = adaptSQLForServer(sql, serverVersion);
         if (adapted !== sql) {
             console.log(`Adapted for MySQL ${serverVersion}: ${adapted}`);
-            if (current) warn(current, `MySQL ${serverVersion} has no utf8mb4_0900 collations, so the closest one it has was used`);
+            if (current) warn(current, `MySQL ${serverVersion} required a charset/collation compatibility replacement; collation replacements are approximations and can change sort, accent/case and trailing-space comparisons`);
         }
         return connection.query(adapted, values);
+    };
+
+    // MySQL has no atomic CREATE OR REPLACE for procedures/triggers. Preserve
+    // the live definition before dropping it, and recover it if CREATE fails.
+    const replaceStoredObject = async (kind, name, definition, definitionKey) => {
+        const [original] = await query(`SHOW CREATE ${kind} ${quoteIdentifier(name)}`);
+        const previous = original?.[definitionKey];
+        if (!previous) throw new Error(`Cannot replace ${kind.toLowerCase()} ${name}: its current definition could not be read`);
+        await query(`DROP ${kind} ${quoteIdentifier(name)}`);
+        try {
+            await query(definition);
+        } catch (error) {
+            let session;
+            try {
+                if (original.sql_mode !== undefined) {
+                    [session] = await query('SELECT @@SESSION.sql_mode AS sql_mode, @@SESSION.character_set_client AS character_set_client, @@SESSION.collation_connection AS collation_connection');
+                    for (const setting of ['sql_mode', 'character_set_client', 'collation_connection']) {
+                        if (original[setting] !== undefined) await query(`SET SESSION ${setting} = ?`, [original[setting]]);
+                    }
+                }
+                await query(previous);
+                error.message += `; original ${kind.toLowerCase()} restored`;
+            } catch (restoreError) {
+                error.message += `; restoring the original ${kind.toLowerCase()} also failed: ${restoreError.message}`;
+                error.recoverySQL = previous;
+            } finally {
+                if (session) {
+                    for (const setting of ['sql_mode', 'character_set_client', 'collation_connection']) {
+                        try { await query(`SET SESSION ${setting} = ?`, [session[setting]]); }
+                        catch (restoreError) { error.message += `; could not restore session ${setting}: ${restoreError.message}`; }
+                    }
+                }
+            }
+            throw error;
+        }
     };
 
     // A dump written by MySQL 8 assumes explicit_defaults_for_timestamp is on, where a
@@ -169,12 +239,16 @@ export const applyDifferences = async (connection, database, differences) => {
             'missing_database': 1,
             'missing_table': 2,
             'extra_table': 2,
+            'extra_constraint': 1.5,
+            'mismatched_table_options': 2.5,
             'missing_field': 3,
             'extra_field': 3,
             'mismatched_field': 3,
             'missing_index': 4,
             'extra_index': 4,
             'mismatched_index': 4,
+            'missing_constraint': 4.5,
+            'mismatched_constraint': 4.5,
             'missing_procedure': 5,
             'mismatched_procedure': 5,
             'missing_view': 6,
@@ -192,6 +266,7 @@ export const applyDifferences = async (connection, database, differences) => {
 
 
     for (const diff of differences) {
+        if (appliedTogether.has(diff)) continue;
         current = diff;
         try {
 
@@ -203,7 +278,7 @@ export const applyDifferences = async (connection, database, differences) => {
             }
 
 
-            await query(`USE \`${database}\``);
+            await query(`USE ${quoteIdentifier(diff[targetDatabase] || database)}`);
             if (diff.type === 'missing_table') {
                 const { tableName, createSQL } = diff;
                 logger(`Creating missing table ${tableName}`);
@@ -249,125 +324,36 @@ export const applyDifferences = async (connection, database, differences) => {
 
             } else if (diff.type === 'missing_field') {
                 // Existing rows get the column's default, or the type's implicit default for NOT NULL without one
-                const addFieldSQL = `ALTER TABLE \`${diff.tableName}\` ADD COLUMN \`${diff.field.Field}\` ${columnDefinition(diff.field)};`;
+                const requiredKey = diff.field.AutoIncrement && differences.find(candidate => candidate.type === 'missing_index' && candidate.tableName === diff.tableName && candidate.index.ColumnName[0]?.replace(/\(\d+\)$/, '') === diff.field.Field);
+                const addFieldSQL = `ALTER TABLE ${quoteIdentifier(diff.tableName)} ADD COLUMN ${quoteIdentifier(diff.field.Field)} ${columnDefinition(diff.field)}${columnPosition(diff)}${requiredKey ? `, ${addIndexClause(requiredKey.index)}` : ''};`;
                 console.log(`Executing: ${addFieldSQL}`);
                 await query(addFieldSQL);
+                if (requiredKey) appliedTogether.add(requiredKey);
 
             } else if (diff.type === 'extra_field') {
                 const dropFieldSQL = `ALTER TABLE \`${diff.tableName}\` DROP COLUMN \`${diff.field.Field}\`;`;
                 console.log(`Executing: ${dropFieldSQL}`);
                 await query(dropFieldSQL);
+                if (!removedColumns.has(diff.tableName)) removedColumns.set(diff.tableName, new Set());
+                removedColumns.get(diff.tableName).add(diff.field.Field);
 
             } else if (diff.type === 'mismatched_field') {
                 const { tableName, field, currentField } = diff;
 
-                // use alter table rather than adding fields
-                
-                // // Helper function to determine if we need batch processing
-                // const needsBatchProcessing = () => {
-                //     const currentType = currentField.Type.toLowerCase();
-                //     const newType = field.Type.toLowerCase();
-                    
-                //     // Decimal changes
-                //     if (currentType.includes('decimal') && newType.includes('decimal')) {
-                //         return true;
-                //     }
-                    
-                //     // VARCHAR/CHAR length reductions
-                //     if ((currentType.includes('varchar') || currentType.includes('char')) &&
-                //         (newType.includes('varchar') || newType.includes('char'))) {
-                //         const currentLength = parseInt(currentType.match(/\((\d+)\)/)?.[1] || '0');
-                //         const newLength = parseInt(newType.match(/\((\d+)\)/)?.[1] || '0');
-                //         return newLength < currentLength;
-                //     }
-                    
-                //     // TEXT to VARCHAR conversions
-                //     if (currentType.includes('text') && newType.includes('varchar')) {
-                //         return true;
-                //     }
-                    
-                //     // Numeric type downgrades
-                //     const numericDowngrades = {
-                //         'bigint': ['int', 'mediumint', 'smallint', 'tinyint'],
-                //         'int': ['mediumint', 'smallint', 'tinyint'],
-                //         'mediumint': ['smallint', 'tinyint'],
-                //         'smallint': ['tinyint'],
-                //         'double': ['float', 'decimal'],
-                //         'float': ['decimal']
-                //     };
-                    
-                //     for (const [larger, smaller] of Object.entries(numericDowngrades)) {
-                //         if (currentType.includes(larger) && smaller.some(t => newType.includes(t))) {
-                //             return true;
-                //         }
-                //     }
-                    
-                //     return false;
-                // };
-
-                // if (needsBatchProcessing()) {
-                //     // Step 1: Add new column
-                //     const addColumnSQL = `ALTER TABLE \`${tableName}\` ADD COLUMN \`${field.Field}_new\` ${field.Type} DEFAULT NULL;`;
-                //     console.log(`Adding new column for type conversion: ${addColumnSQL}`);
-                //     await query(addColumnSQL);
-
-                //     // Step 2: Copy data in batches
-                //     let totalUpdated = 0;
-                //     let batchSize = 10000;
-                //     let batchCount = 0;
-                    
-                //     while (true) {
-                //         const updateSQL = `
-                //             UPDATE \`${tableName}\` 
-                //             SET \`${field.Field}_new\` = \`${field.Field}\`
-                //             WHERE \`${field.Field}_new\` IS NULL 
-                //             AND \`${field.Field}\` IS NOT NULL
-                //             LIMIT ${batchSize};
-                //         `;
-                //         const result = await query(updateSQL);
-                //         const rowsAffected = result.affectedRows;
-                        
-                //         if (rowsAffected === 0) break;
-                        
-                //         totalUpdated += rowsAffected;
-                //         batchCount++;
-                //         console.log(`Batch ${batchCount}: Converted ${rowsAffected} rows. Total converted: ${totalUpdated}`);
-                //     }
-
-                //     // Step 3: Verify data (optional)
-                //     const verifySQL = `
-                //         SELECT COUNT(*) as mismatch FROM \`${tableName}\`
-                //         WHERE \`${field.Field}\` IS NOT NULL 
-                //         AND \`${field.Field}_new\` IS NULL;
-                //     `;
-                //     const [verifyResult] = await query(verifySQL);
-                //     if (verifyResult.mismatch > 0) {
-                //         console.log(`Warning: ${verifyResult.mismatch} rows may have failed conversion`);
-                //     }
-
-                //     // Step 4: Swap columns
-                //     const swapColumnsSQL = `
-                //         ALTER TABLE \`${tableName}\`
-                //         DROP COLUMN \`${field.Field}\`,
-                //         RENAME COLUMN \`${field.Field}_new\` TO \`${field.Field}\`
-                //     `;
-                //     console.log(`Executing: ${swapColumnsSQL}`);
-                //     await query(swapColumnsSQL);
-                    
-                //     console.log(`Completed type conversion for ${field.Field}. Total rows converted: ${totalUpdated}`);
-                // } else {
-                    // Original mismatched field handling for simple changes
-                    const modifyFieldSQL = `ALTER TABLE \`${tableName}\` CHANGE \`${field.Field}\` \`${field.Field}\` ${columnDefinition(field, currentField)};`;
-                    console.log(`Executing: ${modifyFieldSQL}`);
-                    await query(modifyFieldSQL);
-                // }
+                // MySQL requires AUTO_INCREMENT to be indexed in the same
+                // ALTER that introduces it. A separate later ADD KEY fails.
+                const requiredKey = field.AutoIncrement && differences.find(candidate => candidate.type === 'missing_index' && candidate.tableName === tableName && candidate.index.ColumnName[0]?.replace(/\(\d+\)$/, '') === field.Field);
+                const modifyFieldSQL = `ALTER TABLE ${quoteIdentifier(tableName)} CHANGE ${quoteIdentifier(field.Field)} ${quoteIdentifier(field.Field)} ${columnDefinition(field, currentField)}${columnPosition(diff)}${requiredKey ? `, ${addIndexClause(requiredKey.index)}` : ''};`;
+                console.log(`Executing: ${modifyFieldSQL}`);
+                await query(modifyFieldSQL);
+                if (requiredKey) appliedTogether.add(requiredKey);
 
             } else if (diff.type === 'missing_index') {
                 const existingColumns = await query(`SHOW COLUMNS FROM \`${diff.tableName}\``);
                 const columnNames = existingColumns.map(col => col.Field);
 
                 // Check if all columns for the index exist
-                const missingColumns = Array.isArray(diff.index.ColumnName) ? diff.index.ColumnName.filter(col => !columnNames.includes(col) && !columnNames.includes(col.split("(")?.[0])) : [];
+                const missingColumns = Array.isArray(diff.index.ColumnName) ? diff.index.ColumnName.filter(col => !col.startsWith('(') && !columnNames.includes(col.replace(/\s+(?:ASC|DESC)$/i, '').replace(/\(\d+\)$/, ''))) : [];
 
                 if (missingColumns.length > 0) {
                     throw new Error(`Cannot create index ${diff.index.Name} on ${diff.tableName}. Missing columns: ${missingColumns.join(', ')}`);
@@ -381,48 +367,75 @@ export const applyDifferences = async (connection, database, differences) => {
                 await query(addIndexSQL);
 
             } else if (diff.type === 'extra_index') {
+                // MySQL automatically removes an index when its final indexed
+                // column is dropped. That completed the index removal too.
+                if (indexRemovedWithColumns(diff.tableName, diff.index)) continue;
                 const dropIndexSQL = `ALTER TABLE \`${diff.tableName}\` ${dropIndexClause(diff.index)};`;
                 console.log(`Executing: ${dropIndexSQL}`);
                 await query(dropIndexSQL);
 
             } else if (diff.type === 'mismatched_index') {
                 const { tableName, index } = diff;
+                if (diff.currentIndex && indexStructure(diff.currentIndex) === indexStructure(index)
+                    && (diff.currentIndex.Visible !== false) !== (index.Visible !== false)) {
+                    await query(`ALTER TABLE ${quoteIdentifier(tableName)} ALTER INDEX ${quoteIdentifier(index.Name)} ${index.Visible === false ? 'INVISIBLE' : 'VISIBLE'};`);
+                    continue;
+                }
                 // Drop and re-add in one statement: the index is never missing if the add fails,
                 // and a primary key on an AUTO_INCREMENT column can be replaced
-                const replaceIndexSQL = `ALTER TABLE \`${tableName}\` ${dropIndexClause(index)}, ${addIndexClause(index)};`;
+                const replaceIndexSQL = `ALTER TABLE \`${tableName}\` ${indexRemovedWithColumns(tableName, diff.currentIndex) ? '' : `${dropIndexClause(index)}, `}${addIndexClause(index)};`;
                 console.log(`Executing: ${replaceIndexSQL}`);
                 await query(replaceIndexSQL);
+                // MySQL can optimize a same-name DROP+ADD and retain the old
+                // visibility. Explicitly apply the requested state afterwards.
+                if (index.Visible === false) await query(`ALTER TABLE ${quoteIdentifier(tableName)} ALTER INDEX ${quoteIdentifier(index.Name)} INVISIBLE;`);
+
+            } else if (diff.type === 'missing_constraint' || diff.type === 'mismatched_constraint' || diff.type === 'extra_constraint') {
+                if (diff.type === 'mismatched_constraint') {
+                    // With FK checks enabled MySQL uses a table-copy ALTER and
+                    // rejects DROP+ADD of the same FK name. Use a distinct name
+                    // for the validated replacement, then restore the template
+                    // name in a second validated ALTER. A constraint remains
+                    // enforced throughout; a failed first ALTER keeps the old one.
+                    const temporary = { ...diff.constraint, Name: `mysqlsyncr_fk_${randomBytes(12).toString('hex')}` };
+                    await query(`ALTER TABLE ${quoteIdentifier(diff.tableName)} DROP FOREIGN KEY ${quoteIdentifier(diff.currentConstraint?.Name || diff.constraint.Name)}, ${addConstraintClause(temporary)};`);
+                    const finalize = `ALTER TABLE ${quoteIdentifier(diff.tableName)} DROP FOREIGN KEY ${quoteIdentifier(temporary.Name)}, ${addConstraintClause(diff.constraint)};`;
+                    try { await query(finalize); }
+                    catch (error) {
+                        error.message += `; replacement remains enforced as ${temporary.Name}, but its final name could not be restored`;
+                        error.recoverySQL = finalize;
+                        throw error;
+                    }
+                    continue;
+                }
+                const clauses = [];
+                if (diff.type !== 'missing_constraint') clauses.push(`DROP FOREIGN KEY ${quoteIdentifier(diff.currentConstraint?.Name || diff.constraint.Name)}`);
+                if (diff.type !== 'extra_constraint') clauses.push(addConstraintClause(diff.constraint));
+                await query(`ALTER TABLE ${quoteIdentifier(diff.tableName)} ${clauses.join(', ')};`);
+
+            } else if (diff.type === 'mismatched_table_options') {
+                const clauses = [];
+                for (const [key, value] of Object.entries(diff.options || {})) {
+                    if (!/^[a-zA-Z0-9_]+$/.test(value)) throw new Error(`Invalid table option ${key}: ${value}`);
+                    const keyword = { engine: 'ENGINE', charset: 'DEFAULT CHARACTER SET', collate: 'COLLATE' }[key];
+                    if (!keyword) throw new Error(`Unknown table option ${key}`);
+                    clauses.push(`${keyword}=${value}`);
+                }
+                if (!clauses.length) throw new Error('No table options to apply');
+                await query(`ALTER TABLE ${quoteIdentifier(diff.tableName)} ${clauses.join(' ')};`);
 
             } else if (diff.type === 'missing_procedure' || diff.type === 'mismatched_procedure') {
-
-                // Drop the procedure if it exists
-                const dropCurrentProcSQL = `DROP PROCEDURE IF EXISTS \`${diff.Name}\`;`;
-                console.log(`Executing: ${dropCurrentProcSQL}`);
-                await query(dropCurrentProcSQL);
-
-                // Create the procedure
-                const createProcSQL = diff.Definition;
-                console.log(`Executing: ${createProcSQL}`); // Log the SQL statement
-                await query(createProcSQL);
+                if (diff.type === 'mismatched_procedure') await replaceStoredObject('PROCEDURE', diff.Name, diff.Definition, 'Create Procedure');
+                else await query(diff.Definition);
 
 
 
-            } else if (diff.type === 'missing_view') {
-                const dropViewSQL = `DROP VIEW IF EXISTS \`${diff.viewName}\`;`;
-                console.log(`Executing: ${dropViewSQL}`);
-                await query(dropViewSQL);
-                const createViewSQL = diff.definition; // Use the expected definition to create the view
+            } else if (diff.type === 'missing_view' || diff.type === 'mismatched_view') {
+                // An invalid replacement must leave the existing view intact.
+                const createViewSQL = diff.definition.replace(/^\s*CREATE\s+(?:OR\s+REPLACE\s+)?/i, 'CREATE OR REPLACE ');
                 console.log(`Executing: ${createViewSQL}`);
                 await query(createViewSQL);
-
-
-            } else if (diff.type === 'mismatched_view') {
-                const dropViewSQL = `DROP VIEW IF EXISTS \`${diff.viewName}\`;`;
-                console.log(`Executing: ${dropViewSQL}`);
-                await query(dropViewSQL);
-                const createViewSQL = diff.definition; // Use the expected definition to create the view
-                console.log(`Executing: ${createViewSQL}`);
-                await query(createViewSQL);
+                completedViews++;
 
 
             } else if (diff.type === 'extra_view') {
@@ -439,12 +452,7 @@ export const applyDifferences = async (connection, database, differences) => {
 
 
             } else if (diff.type === 'mismatched_trigger') {
-                const dropTriggerSQL = `DROP TRIGGER IF EXISTS \`${diff.trigger.Name}\`;`;
-                console.log(`Executing: ${dropTriggerSQL}`);
-                await query(dropTriggerSQL);
-                const createTriggerSQL = diff.trigger.Definition;
-                console.log(`Executing: ${createTriggerSQL}`);
-                await query(createTriggerSQL);
+                await replaceStoredObject('TRIGGER', diff.trigger.Name, diff.trigger.Definition, 'SQL Original Statement');
 
 
             } else if (diff.type === 'extra_trigger') {
@@ -467,14 +475,40 @@ export const applyDifferences = async (connection, database, differences) => {
                 throw new Error(`Unknown difference type: ${diff.type}`);
             }
         } catch (e) {
-            console.error(`Failed to apply ${describeDifference(diff)}: ${e.message}`);
-            logger(diff);
-            failures.push({ type: diff.type, tableName: diff.tableName, description: describeDifference(diff), message: e.message });
+            if (['missing_view', 'mismatched_view'].includes(diff.type) && isViewDependencyError(e)) deferredViews.push({ diff, error: e });
+            else fail(diff, e);
         }
     }
 
+    // Templates may list a view before the view it selects from. Retry only
+    // known dependency errors and only while another view made progress. Cycles,
+    // missing objects, permission failures and syntax errors remain failures.
+    while (deferredViews.length && completedViews > 0) {
+        const pending = deferredViews;
+        deferredViews = [];
+        completedViews = 0;
+        for (const { diff } of pending) {
+            current = diff;
+            try {
+                await query(`USE ${quoteIdentifier(diff[targetDatabase] || database)}`);
+                await query(diff.definition.replace(/^\s*CREATE\s+(?:OR\s+REPLACE\s+)?/i, 'CREATE OR REPLACE '));
+                completedViews++;
+            } catch (error) {
+                if (isViewDependencyError(error)) deferredViews.push({ diff, error });
+                else fail(diff, error);
+            }
+        }
+    }
+    for (const { diff, error } of deferredViews) fail(diff, error);
+
     return { attempted: differences.length, failures, warnings };
 }
+
+// Used by the global view phase so a view in schema A can depend on one in Z.
+export const applyViewsAcrossDatabases = (connection, allDifferences) => applyDifferences(connection, null,
+    Object.entries(allDifferences).flatMap(([database, differences]) => differences
+        .filter(diff => ['missing_view', 'mismatched_view', 'extra_view'].includes(diff.type))
+        .map(diff => ({ ...diff, [targetDatabase]: database }))));
 
 // One line summing up the failures from applyDifferences, for errors and logs
 export const describeFailures = ({ attempted, failures }) =>

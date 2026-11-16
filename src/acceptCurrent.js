@@ -37,11 +37,17 @@ const joinCreateSQL = ({ head, body, tail }) => [head, ...body.map((line, i) => 
  * it, remove it when the live table doesn't have it, or add it after the element
  * that precedes it in the live table.
  */
-export const replaceCreateSQLElement = (templateSQL, liveSQL, key) => {
+export const replaceCreateSQLElement = (templateSQL, liveSQL, key, { move = false } = {}) => {
     const template = splitCreateSQL(templateSQL);
     const live = splitCreateSQL(liveSQL);
-    const templateIndex = template.body.findIndex(line => elementKey(line) === key);
+    let templateIndex = template.body.findIndex(line => elementKey(line) === key);
     const liveIndex = live.body.findIndex(line => elementKey(line) === key);
+
+    // A column kept for its position is taken out and put back where the live table has it
+    if (move && liveIndex !== -1 && templateIndex !== -1) {
+        template.body.splice(templateIndex, 1);
+        templateIndex = -1;
+    }
 
     if (liveIndex === -1) {
         if (templateIndex !== -1) template.body.splice(templateIndex, 1);
@@ -93,7 +99,8 @@ const acceptTableElement = (template, current, diff, files) => {
 
     const isField = diff.type.endsWith('_field');
     const name = isField ? diff.field.Field : (diff.indexName ?? diff.index?.Name);
-    const createSQL = replaceCreateSQLElement(templateTable.createSQL, currentTable.createSQL, `${isField ? 'col' : 'idx'}:${name}`);
+    const createSQL = replaceCreateSQLElement(templateTable.createSQL, currentTable.createSQL, `${isField ? 'col' : 'idx'}:${name}`,
+        { move: isField && !!diff.changes?.includes('Position') });
     const parsed = parseCreateTableSQL(createSQL);
 
     templateTable.createSQL = createSQL;

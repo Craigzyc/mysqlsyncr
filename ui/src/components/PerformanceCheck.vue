@@ -1,5 +1,5 @@
 <template>
-  <q-card class="q-mb-lg">
+  <q-card class="q-mb-lg" flat bordered>
     <q-card-section class="bg-primary text-white">
       <div class="row items-center justify-between">
         <div class="row items-center">
@@ -209,6 +209,7 @@
 import { computed, ref, watch } from 'vue'
 import { useQuasar } from 'quasar'
 import { api } from '../boot/axios'
+import { performanceNotice } from '../workspaceState'
 
 const props = defineProps({ config: { type: Object, required: true }, enabled: Boolean })
 const $q = useQuasar()
@@ -230,6 +231,24 @@ const aiConnection = ref('')
 const aiLoading = ref(false)
 const aiError = ref('')
 const aiResults = ref({})
+let generation = 0
+function clearReport() {
+  generation++
+  report.value = null
+  baselineId.value = null
+  selectedRow.value = null
+  detailsOpen.value = false
+  aiResults.value = {}
+  aiError.value = ''
+  error.value = ''
+  loading.value = false
+  aiLoading.value = false
+}
+watch(() => JSON.stringify(props.config), () => {
+  schema.value = props.config.database || ''
+  clearReport()
+}, { flush: 'sync' })
+watch(schema, clearReport, { flush: 'sync' })
 const aiErrorMessage = err => err.response?.status === 404
   ? 'The running backend does not have the AI endpoint. Restart mysqlsyncr, then refresh this page.'
   : err.response?.data?.message || err.message
@@ -311,7 +330,6 @@ const performanceTree = computed(() => {
     return { id, label: database, icon: 'storage', iconColor: 'primary', count, children }
   })
 })
-watch(() => props.config.database, value => { schema.value = value || '' })
 function openQuery(row) {
   selectedRow.value = row
   aiError.value = ''
@@ -328,6 +346,8 @@ async function checkAi() {
   } finally { aiChecking.value = false }
 }
 async function analyzeQuery() {
+  if (!props.enabled || aiLoading.value || !selectedRow.value) return
+  const currentGeneration = generation
   const row = selectedRow.value
   const key = queryKey(row)
   aiLoading.value = true
@@ -337,12 +357,14 @@ async function analyzeQuery() {
     const { data } = await api.post('/api/performance/ai', {
       config: props.config, database: row.database_name, digest: row.digest, model: aiModel.value,
     }, { timeout: 150000 })
-    aiResults.value[key] = data
+    if (generation === currentGeneration) aiResults.value[key] = data
   } catch (err) {
-    if (selectedRow.value && queryKey(selectedRow.value) === key) aiError.value = aiErrorMessage(err)
-  } finally { aiLoading.value = false }
+    if (generation === currentGeneration && selectedRow.value && queryKey(selectedRow.value) === key) aiError.value = aiErrorMessage(err)
+  } finally { if (generation === currentGeneration) aiLoading.value = false }
 }
 async function check() {
+  if (!props.enabled || loading.value) return
+  const currentGeneration = ++generation
   loading.value = true
   error.value = ''
   detailsOpen.value = false
@@ -352,23 +374,21 @@ async function check() {
       throw new Error('Duration threshold must be a number of seconds between 1 and 86400.')
     }
     const response = await api.post('/api/performance', {
-      config: props.config,
+      config: { ...props.config },
       options: { ...options.value, slowMs: slowSeconds.value * 1000, database: schema.value.trim(), baselineId: baselineId.value },
     })
+    if (generation !== currentGeneration) return
     report.value = response.data
     baselineId.value = response.data.snapshotId || null
     aiResults.value = {}
     expandedNodes.value = []
-    const issues = (response.data.notifications || []).filter(note => ['critical', 'warning'].includes(note.status))
-    const critical = issues.some(note => note.status === 'critical')
-    $q.notify(issues.length
-      ? { type: critical ? 'negative' : 'warning', message: `${issues.length} performance issue(s) found`, caption: issues.map(note => note.area).join(', '), position: 'top-right', timeout: 8000 }
-      : { type: 'positive', message: 'No performance issues found', position: 'top-right' })
+    $q.notify({ ...performanceNotice(response.data), position: 'top-right', timeout: 8000 })
   } catch (err) {
+    if (generation !== currentGeneration) return
     report.value = null
     error.value = err.response?.data?.message || err.message
   } finally {
-    loading.value = false
+    if (generation === currentGeneration) loading.value = false
   }
 }
 </script>

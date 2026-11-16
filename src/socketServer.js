@@ -1,343 +1,172 @@
 import express from 'express';
 import http from 'http';
-import { dumpAllDatabases, getDatabasesFromExistingDumps } from './dump.js'; // Import necessary functions
-import { compareAllDatabases } from './compare.js';
+import { join, resolve } from 'path';
+import { readdir, mkdir } from 'fs/promises';
+import { dumpAllDatabases, getDatabasesFromExistingDumps } from './dump.js';
+import { compareAllDatabases, applyAllDifferences } from './compare.js';
 import { DBStructureChecker } from './DBStructureChecker.js';
 import { applyDifferences } from './apply.js';
 import { packageRoot, assertOutsidePackage } from './paths.js';
 import { acceptCurrentIntoTemplate } from './acceptCurrent.js';
 import { getVersionInfo } from './versions.js';
 import { findTemplateDrift, resolveTemplateDrift } from './templateDrift.js';
-import cors from 'cors';
-import { join } from 'path';
-import { readdir, mkdir } from 'fs/promises';
-import { resolve } from 'path';
 import { checkPerformance } from './performance.js';
 import { analyzePerformanceQuery, getAiStatus } from './aiAnalysis.js';
 
-
-const setConfig = (config, argv) => {
-    if(!config.host && argv.host){
-        config.host = argv.host;
-    }
-    if(!config.port && argv.port){
-        config.port = argv.port;
-    }
-    if(!config.user && argv.user){
-        config.user = argv.user;
-    }
-    if(!config.password && argv.password){
-        config.password = argv.password;
-    }
-    if(!config.output && argv.output !=='../db-dump'){
-        config.output = argv.output;
+export const setConfig = (input = {}, argv = {}) => {
+    if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('config must be an object.');
+    const config = { ...input };
+    for (const key of ['host', 'port', 'user', 'password', 'database', 'output']) {
+        if (config[key] == null && argv[key] != null) config[key] = argv[key];
     }
     return config;
-}
+};
 
+const withDatabase = async (config, action) => {
+    const checker = new DBStructureChecker(config);
+    let operationError;
+    try {
+        await checker.ready();
+        return await action(checker.connection);
+    } catch (error) {
+        operationError = error;
+        throw error;
+    } finally {
+        try { await checker.closeConnection(); }
+        catch (error) { if (!operationError) throw error; operationError.closeError = error.message; }
+    }
+};
 
-export const startApiServer = (port, argv) => {
+export const startApiServer = (port, argv = {}) => {
     const app = express();
-    app.use(cors({ origin: '*' }));
     const server = http.createServer(app);
-    app.use(express.json({ limit: '50mb' })); 
-    app.use(express.urlencoded({ limit: '50mb', extended: true })); 
-
+    // A web page must not borrow this local tool's startup DB credentials.
+    // Non-browser clients omit Origin; browser clients must use this UI origin.
+    app.use('/api', (req, res, next) => {
+        const localOnly = !argv.uiHost || ['127.0.0.1', 'localhost', '::1'].includes(argv.uiHost);
+        if (localOnly && !['127.0.0.1', 'localhost', '[::1]', '::1'].includes(req.hostname)) {
+            return res.status(403).json({ message: 'Use a loopback hostname to access this local mysqlsyncr server.' });
+        }
+        const origin = req.get('origin');
+        if (origin) {
+            const sameOrigin = origin === `${req.protocol}://${req.get('host')}`;
+            if (!sameOrigin) return res.status(403).json({ message: 'Use the mysqlsyncr UI on this server to access its API.' });
+        }
+        next();
+    });
+    app.use(express.json({ limit: '50mb' }));
+    app.use(express.urlencoded({ limit: '50mb', extended: true }));
+    app.use('/api', (req, res, next) => {
+        if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) {
+            return res.status(400).json({ message: 'Request body must be an object.' });
+        }
+        if ('config' in (req.body || {}) && (!req.body.config || typeof req.body.config !== 'object' || Array.isArray(req.body.config))) {
+            return res.status(400).json({ message: 'config must be an object.' });
+        }
+        if (['/apply', '/acceptCurrent'].includes(req.path)
+            && (typeof req.body.database !== 'string' || !req.body.database || !Array.isArray(req.body.diffs)
+                || req.body.diffs.some(d => !d || typeof d.type !== 'string'))) {
+            return res.status(400).json({ message: 'database and an array of diffs are required.' });
+        }
+        if (['/apply', '/acceptCurrent'].includes(req.path)
+            && req.body.diffs.some(diff => diff.type === 'missing_database' && diff.database !== req.body.database)) {
+            return res.status(400).json({ message: 'A missing_database difference must match its database scope.' });
+        }
+        next();
+    });
     console.log(`Serving UI from ${join(packageRoot, 'ui/dist/spa')}`);
     app.use(express.static(join(packageRoot, 'ui/dist/spa')));
-
-    app.post('/api/performance/ai/status', async (req, res) => {
-        try { res.json(await getAiStatus(req.body?.model)); }
-        catch (error) { res.status(error.code === 'INVALID_AI_REQUEST' ? 400 : 503).json({ message: error.message }); }
+    const configFor = body => {
+        const config = setConfig(body.config, argv);
+        if (body.database !== undefined) config.database = body.database;
+        return config;
+    };
+    // Express 4 does not forward rejected async route promises automatically.
+    const post = (url, action) => app.post(url, (req, res, next) => {
+        Promise.resolve().then(() => action(req.body || {})).then(result => res.json(result), next);
     });
+    const badRequest = message => Object.assign(new Error(message), { status: 400 });
 
-    app.post('/api/performance/ai', async (req, res) => {
-        try {
-            const { config = {}, database, digest, model } = req.body || {};
-            if (!config || typeof config !== 'object' || Array.isArray(config)) return res.status(400).json({ message: 'config must be an object.' });
-            res.json(await analyzePerformanceQuery(setConfig({ ...config }, argv), { database, digest, model }));
-        } catch (error) {
-            res.status(error.code === 'INVALID_AI_REQUEST' ? 400 : 503).json({ message: error.message });
+    post('/api/getDatabasesFromExistingDumps', body => getDatabasesFromExistingDumps(configFor(body)));
+    post('/api/dump', async body => {
+        const config = configFor(body);
+        await withDatabase(config, connection => dumpAllDatabases(connection, 'dump', config));
+        return { message: 'Dump completed successfully' };
+    });
+    post('/api/compare', body => {
+        const config = configFor(body);
+        return withDatabase(config, connection => compareAllDatabases(connection, config.output, false, 'compare', config));
+    });
+    post('/api/apply', async body => {
+        const result = await withDatabase(configFor(body), connection => applyDifferences(connection, body.database, body.diffs));
+        if (result.failures.length) {
+            throw Object.assign(new Error(`Applied ${result.attempted - result.failures.length} of ${result.attempted}. ${result.failures.map(f => `${f.description} (${f.message})`).join('; ')}`), result);
         }
+        return { message: `Applied ${result.attempted} of ${result.attempted}.`, warnings: result.warnings };
     });
-
-    app.post('/api/performance', async (req, res) => {
-        try {
-            const { config = {}, options = {} } = req.body || {};
-            if (!config || typeof config !== 'object' || Array.isArray(config) || !options || typeof options !== 'object' || Array.isArray(options)) {
-                return res.status(400).json({ message: 'config and options must be objects.' });
-            }
-            res.json(await checkPerformance(setConfig({ ...config }, argv), options));
-        } catch (error) {
-            res.status(error.code === 'INVALID_PERFORMANCE_OPTIONS' ? 400 : 500).json({ message: error.message });
+    post('/api/applyAll', async body => {
+        const { differences } = body;
+        if (!differences || typeof differences !== 'object' || Array.isArray(differences)
+            || Object.values(differences).some(diffs => !Array.isArray(diffs) || diffs.some(d => !d || typeof d.type !== 'string'))) {
+            throw badRequest('differences must map database names to arrays of differences.');
         }
-    });
-
-    app.post('/api/getDatabasesFromExistingDumps', async (req, res) => {
-        try {
-            let { config = {} } = req.body || {};
-            config = setConfig(config, argv);
-            res.json(await getDatabasesFromExistingDumps(config));
-        } catch (error) {
-            res.status(500).json({ message: `Unable to read database dumps: ${error.message}` });
+        const config = configFor(body);
+        if (config.database && Object.keys(differences).some(db => db !== config.database)) throw badRequest('Differences include a database outside the selected scope.');
+        if (Object.entries(differences).some(([database, diffs]) => diffs.some(diff => diff.type === 'missing_database' && diff.database !== database))) {
+            throw badRequest('A missing_database difference must match its database scope.');
         }
+        const result = await withDatabase(config, connection => applyAllDifferences(connection, differences));
+        return { ...result, message: `Applied ${result.attempted} difference(s). Compare again to verify.` };
     });
-
-    // API endpoint to dump the database
-    app.post('/api/dump', async (req, res) => {
-        let { config, database } = req.body;
-        config = setConfig(config, argv);
-        const checker = new DBStructureChecker(config, database);
-
-        checker.connection.on('error', (err) => {
-            console.error('Database connection error in route dump:', err);
-            res.status(500).json({ message: 'Database connection failed', error: err.message });
-        });
-
-        checker.connection.on('connect', async () => {
-            console.log('Connected to the database');
-            checker.targetDatabase = database;
-            checker.command = 'dump';
-            checker.options = req.body;
-            try {
-                console.log('Dumping the database structure to files');
-                await dumpAllDatabases(checker.connection, 'dump', config);
-                res.json({ message: 'Dump completed successfully' });
-            } catch (err) {
-                res.status(500).json({ message: err.message });
-            } finally {
-                await checker.closeConnection();
-            }
-        });
+    post('/api/versions', body => {
+        const config = configFor(body);
+        return withDatabase(config, connection => getVersionInfo(connection, config.output));
     });
-
-    // API endpoint to compare the database
-    app.post('/api/compare', async (req, res) => {
-        let { config, database } = req.body;
-        config = setConfig(config, argv);
-        const checker = new DBStructureChecker(config, database);
-
-        checker.connection.on('error', (err) => {
-            console.error('Database connection error in route compare:', err);
-            res.status(500).json({ message: 'Database connection failed', error: err.message });
-        });
-
-        checker.connection.on('connect', async () => {
-            console.log('Connected to the database');
-            checker.targetDatabase = config.database;
-            checker.command = 'compare';
-            checker.options = req.body;
-            try {
-                delete req.body.output;
-                console.log('Comparing the database structure with JSON dumps (dry run)');
-                let diffs = await compareAllDatabases(checker.connection, config.output, false, 'compare', config);
-                res.json(diffs);
-            } catch (err) {
-                console.log(err);
-                res.status(500).json({ message: err.message });
-            } finally {
-                await checker.closeConnection();
-            }
-        })
-
+    post('/api/acceptCurrent', async body => {
+        const config = configFor(body);
+        if (!config.output) throw badRequest('No template folder selected');
+        assertOutsidePackage(config.output);
+        await withDatabase(config, connection => acceptCurrentIntoTemplate(connection, config.output, body.database, body.diffs));
+        return { message: 'Template updated with the current values' };
     });
-
-    // API endpoint to apply differences
-    app.post('/api/apply', async (req, res) => {
-        let { config, database, diffs } = req.body;
-        config = setConfig(config, argv);
-        console.log('Applying differences:', diffs);
-        const checker = new DBStructureChecker(config, database);
-
-        checker.connection.on('error', (err) => {
-            console.error('Database connection error in route apply:', err);
-            res.status(500).json({ message: 'Database connection failed', error: err.message });
-        });
-
-        checker.connection.on('connect', async () => {
-            console.log('Connected to the database');
-            checker.targetDatabase = database;
-            checker.command = 'apply';
-            checker.options = req.body;
-            try {
-                console.log('Applying the database structure based on JSON dumps');
-                const { attempted, failures, warnings } = await applyDifferences(checker.connection, database, diffs);
-                const warningText = warnings.length
-                    ? ` ${warnings.length} applied with changes: ` + warnings.map(w => `${w.description} (${w.message})`).join('; ')
-                    : '';
-                if (failures.length) {
-                    // Reporting success here would be a lie: the same differences come
-                    // back on the next compare with no indication of why.
-                    res.status(500).json({
-                        message: `Applied ${attempted - failures.length} of ${attempted}. ${failures.length} failed: `
-                            + failures.map(f => `${f.description} (${f.message})`).join('; ') + warningText,
-                        failures,
-                        warnings,
-                    });
-                } else {
-                    res.json({
-                        message: `Applied ${attempted} of ${attempted}.` + warningText,
-                        warnings,
-                    });
-                }
-            } catch (err) {
-                res.status(500).json({ message: err.message });
-            } finally {
-                await checker.closeConnection();
-            }
-        });
+    post('/api/templateDrift', body => {
+        const config = configFor(body);
+        if (!config.output) throw badRequest('No template folder selected');
+        return findTemplateDrift(config.output);
     });
-
-    // API endpoint for tables whose tables/<table>.sql disagrees with the createSQL in the
-    // template's JSON. Reads only the template, so no database connection is needed
-    app.post('/api/templateDrift', async (req, res) => {
-        const config = setConfig(req.body.config || {}, argv);
-        if (!config.output) return res.status(400).json({ message: 'No template folder selected' });
-        try {
-            res.json(await findTemplateDrift(config.output));
-        } catch (err) {
-            res.status(500).json({ message: err.message });
-        }
+    post('/api/resolveTemplateDrift', async body => {
+        const config = configFor(body);
+        if (!config.output) throw badRequest('No template folder selected');
+        await resolveTemplateDrift(config.output, body.database, body.table, body.keep);
+        return { message: `${body.database}.${body.table}: kept the ${body.keep === 'json' ? 'JSON' : '.sql file'} version` };
     });
-
-    // API endpoint to make one table's JSON createSQL and .sql file agree, keeping 'json' or 'sql'
-    app.post('/api/resolveTemplateDrift', async (req, res) => {
-        const { database, table, keep } = req.body;
-        const config = setConfig(req.body.config || {}, argv);
-        if (!config.output) return res.status(400).json({ message: 'No template folder selected' });
-        try {
-            await resolveTemplateDrift(config.output, database, table, keep);
-            res.json({ message: `${database}.${table}: kept the ${keep === 'json' ? 'JSON' : '.sql file'} version` });
-        } catch (err) {
-            res.status(500).json({ message: err.message });
-        }
+    post('/api/performance', body => {
+        const options = body.options ?? {};
+        if (typeof options !== 'object' || Array.isArray(options)) throw badRequest('options must be an object.');
+        return checkPerformance(configFor(body), options);
     });
-
-    // API endpoint for the server's and the template's MySQL versions
-    app.post('/api/versions', async (req, res) => {
-        let { config } = req.body;
-        config = setConfig(config || {}, argv);
-        const checker = new DBStructureChecker(config);
-
-        checker.connection.on('error', (err) => {
-            if (!res.headersSent) res.status(500).json({ message: 'Database connection failed', error: err.message });
-        });
-
-        checker.connection.on('connect', async () => {
-            try {
-                res.json(await getVersionInfo(checker.connection, config.output));
-            } catch (err) {
-                res.status(500).json({ message: err.message });
-            } finally {
-                await checker.closeConnection();
-            }
-        });
+    post('/api/performance/ai/status', body => getAiStatus(body.model));
+    post('/api/performance/ai', body => analyzePerformanceQuery(configFor(body), { database: body.database, digest: body.digest, model: body.model }));
+    post('/api/browse-folders', async body => {
+        const currentPath = resolve(body.currentPath || process.cwd());
+        const contents = await readdir(currentPath, { withFileTypes: true });
+        const items = contents.map(entry => ({ name: entry.name, path: join(currentPath, entry.name), isDirectory: entry.isDirectory(), isParent: false }));
+        items.sort((a, b) => a.isDirectory === b.isDirectory ? a.name.localeCompare(b.name) : a.isDirectory ? -1 : 1);
+        if (currentPath !== resolve(currentPath, '..')) items.unshift({ name: '..', path: resolve(currentPath, '..'), isDirectory: true, isParent: true });
+        return { currentPath, items };
     });
-
-    // API endpoint to overwrite the template with the database's current values
-    app.post('/api/acceptCurrent', async (req, res) => {
-        let { config, database, diffs } = req.body;
-        config = setConfig(config, argv);
-        if (!config.output) {
-            return res.status(400).json({ message: 'No template folder selected' });
-        }
-        try {
-            assertOutsidePackage(config.output);
-        } catch (err) {
-            return res.status(400).json({ message: err.message });
-        }
-        const checker = new DBStructureChecker(config, database);
-
-        checker.connection.on('error', (err) => {
-            console.error('Database connection error in route acceptCurrent:', err);
-            if (!res.headersSent) res.status(500).json({ message: 'Database connection failed', error: err.message });
-        });
-
-        checker.connection.on('connect', async () => {
-            try {
-                console.log(`Keeping current values in the template for ${diffs?.length ?? 0} difference(s) in ${database}`);
-                await acceptCurrentIntoTemplate(checker.connection, config.output, database, diffs || []);
-                res.json({ message: 'Template updated with the current values' });
-            } catch (err) {
-                res.status(500).json({ message: err.message });
-            } finally {
-                await checker.closeConnection();
-            }
-        });
+    post('/api/create-folder', async body => {
+        if (typeof body.folderPath !== 'string' || !body.folderPath) throw badRequest('folderPath is required.');
+        const folderPath = resolve(body.folderPath);
+        assertOutsidePackage(folderPath);
+        await mkdir(folderPath, { recursive: true });
+        return { success: true, path: folderPath };
     });
-
-    app.post('/api/browse-folders', async (req, res) => {
-        try {
-            // Start where mysqlsyncr was run from, not in the package folder
-            const { currentPath = process.cwd() } = req.body;
-            console.log('Browsing folder:', currentPath);
-
-            const resolvedPath = currentPath.startsWith('/') || currentPath.match(/^[A-Z]:\\/)
-                ? resolve(currentPath)
-                : resolve(currentPath);
-
-            console.log('Resolved path:', resolvedPath);
-
-            const contents = await readdir(resolvedPath, { withFileTypes: true });
-
-            // Separate directories and files
-            const items = contents.map(dirent => ({
-                name: dirent.name,
-                path: join(resolvedPath, dirent.name),
-                isDirectory: dirent.isDirectory(),
-                isParent: false
-            }));
-
-            // Sort items: directories first, then files, both alphabetically
-            const sortedItems = items.sort((a, b) => {
-                if (a.isDirectory === b.isDirectory) {
-                    return a.name.localeCompare(b.name);
-                }
-                return a.isDirectory ? -1 : 1;
-            });
-
-            // Add parent directory option if not at root
-            if (resolvedPath !== resolve(resolvedPath, '..')) {
-                sortedItems.unshift({
-                    name: '..',
-                    path: resolve(resolvedPath, '..'),
-                    isDirectory: true,
-                    isParent: true
-                });
-            }
-
-            res.json({
-                currentPath: resolvedPath,
-                items: sortedItems
-            });
-        } catch (error) {
-            res.status(500).json({ error: error.message });
-        }
+    app.use((error, req, res, next) => {
+        if (res.headersSent) return next(error);
+        const status = error.status || (['INVALID_PERFORMANCE_OPTIONS', 'INVALID_AI_REQUEST'].includes(error.code) ? 400 : 500);
+        res.status(status).json({ message: error.message, error: error.message, failures: error.failures, warnings: error.warnings });
     });
-
-    app.post('/api/create-folder', async (req, res) => {
-        try {
-            const { folderPath } = req.body;
-            console.log('Creating folder:', folderPath);
-
-            const resolvedPath = folderPath.startsWith('/') || folderPath.match(/^[A-Z]:\\/)
-                ? resolve(folderPath)
-                : resolve(process.cwd(), folderPath);
-            assertOutsidePackage(resolvedPath);
-
-            await mkdir(resolvedPath, { recursive: true });
-
-            res.json({
-                success: true,
-                path: resolvedPath
-            });
-        } catch (error) {
-            res.status(500).json({ error: error.message });
-        }
-    });
-
-    // Start the server
-    server.listen(port, () => {
-        console.log(`Server is running on http://localhost:${port}`);
-    });
+    server.listen(port, argv.uiHost || '127.0.0.1', () => console.log(`Server is running on http://${argv.uiHost || '127.0.0.1'}:${server.address().port}`));
+    return server;
 };

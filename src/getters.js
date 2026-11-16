@@ -17,15 +17,12 @@ export const getDatabases = async (connection) => {
  *                     autoIncrement option is applied to its saved CREATE TABLE,
  *                     and the definer option to procedures, triggers and views
  */
-export const getDatabaseStructure = async (connection, database, command, options, syncOptions = {}) => {
-    if (connection.state === 'disconnected') {
-        await connection.reconnect(); // Ensure the connection is open
-    }
+export const getDatabaseStructure = async (connection, database, command, options = {}, syncOptions = {}) => {
     await connection.query(`USE \`${database}\``); // Switch to the target database
     const tables = {};
     const procedures = [];
     const views = {};
-    const dbDir = path.join(options.output, database); // Use argv.output for the base path
+    const dbDir = path.join(options.output || '.', database);
 
     // Create the output directory for the database if it doesn't exist
     if (command === 'dump') {
@@ -143,8 +140,7 @@ export const getDatabaseStructure = async (connection, database, command, option
                 logger(`View definition saved to: ${filePath}`);
             }
         } catch (error) {
-            logger(`Error retrieving definition for view ${viewName}:`, error.message);
-            logger(row)
+            throw new Error(`Cannot read view ${database}.${viewName}: ${error.message}`, { cause: error });
         }
     }
 

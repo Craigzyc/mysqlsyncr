@@ -1,6 +1,3 @@
-import DumpDatabase from 'pages/DumpDatabase.vue';
-import CompareDatabase from 'pages/CompareDatabase.vue';
-import ApplyChanges from 'pages/ApplyChanges.vue';
 import MainComponent from 'pages/MainComponent.vue';
 
 const routes = [
@@ -9,11 +6,12 @@ const routes = [
     component: () => import('layouts/MainLayout.vue'),
     children: [
       { path: '', component: MainComponent },
-      { path: '/dump', component: DumpDatabase },
-      { path: '/compare', component: CompareDatabase },
-      { path: '/apply', component: ApplyChanges },
+      { path: '/dump', redirect: '/' },
+      { path: '/compare', redirect: '/' },
+      { path: '/apply', redirect: '/' },
     ],
   },
+  { path: '/:catchAll(.*)*', component: () => import('pages/ErrorNotFound.vue') },
 ];
 
 

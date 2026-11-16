@@ -1,0 +1,136 @@
+[
+  {
+    "tag": "57",
+    "port": 3357,
+    "startedAt": "2026-11-16T16:19:25.606Z",
+    "version": "5.7.44",
+    "tests": [
+      {
+        "name": "quoted NULL, function-looking and expression-looking defaults survive repair",
+        "durationMs": 71
+      },
+      {
+        "name": "generated expressions, comments and ON UPDATE are repaired without losing stored data",
+        "durationMs": 617
+      },
+      {
+        "name": "index prefix, column order and FULLTEXT semantics are restored",
+        "durationMs": 460
+      },
+      {
+        "name": "extra columns and their indexes are removed together without stale DROP failures",
+        "durationMs": 606
+      },
+      {
+        "name": "foreign-key actions are repaired and enforced",
+        "durationMs": 300
+      },
+      {
+        "name": "invalid existing FK data produces a failure and remains intact",
+        "durationMs": 198
+      },
+      {
+        "name": "an invalid view replacement preserves the existing working view",
+        "durationMs": 19
+      },
+      {
+        "name": "invalid procedure and trigger replacements recover the working originals",
+        "durationMs": 43
+      },
+      {
+        "name": "unsafe narrowing fails without truncating existing values",
+        "durationMs": 340
+      },
+      {
+        "name": "repeat apply after convergence is an empty operation",
+        "durationMs": 27
+      },
+      {
+        "name": "5.7 reports unsupported expression defaults without false success",
+        "durationMs": 6
+      },
+      {
+        "name": "extra table FK cycles and references from retained tables are removed safely",
+        "durationMs": 578
+      },
+      {
+        "name": "reverse-ordered view chains converge while unresolved dependencies remain failures",
+        "durationMs": 26
+      },
+      {
+        "name": "global apply schedules dependent views across schemas before reporting success",
+        "durationMs": 20
+      }
+    ],
+    "status": "passed"
+  },
+  {
+    "tag": "80",
+    "port": 3380,
+    "startedAt": "2026-11-16T16:19:29.953Z",
+    "version": "8.0.46",
+    "tests": [
+      {
+        "name": "quoted NULL, function-looking and expression-looking defaults survive repair",
+        "durationMs": 156
+      },
+      {
+        "name": "generated expressions, comments and ON UPDATE are repaired without losing stored data",
+        "durationMs": 1709
+      },
+      {
+        "name": "index prefix, column order and FULLTEXT semantics are restored",
+        "durationMs": 744
+      },
+      {
+        "name": "extra columns and their indexes are removed together without stale DROP failures",
+        "durationMs": 1610
+      },
+      {
+        "name": "foreign-key actions are repaired and enforced",
+        "durationMs": 608
+      },
+      {
+        "name": "invalid existing FK data produces a failure and remains intact",
+        "durationMs": 355
+      },
+      {
+        "name": "an invalid view replacement preserves the existing working view",
+        "durationMs": 13
+      },
+      {
+        "name": "invalid procedure and trigger replacements recover the working originals",
+        "durationMs": 140
+      },
+      {
+        "name": "unsafe narrowing fails without truncating existing values",
+        "durationMs": 636
+      },
+      {
+        "name": "repeat apply after convergence is an empty operation",
+        "durationMs": 9
+      },
+      {
+        "name": "8.0 expression defaults create and repair correctly",
+        "durationMs": 161
+      },
+      {
+        "name": "8.0 descending, functional and invisible indexes survive repair",
+        "durationMs": 502
+      },
+      {
+        "name": "extra table FK cycles and references from retained tables are removed safely",
+        "durationMs": 1019
+      },
+      {
+        "name": "reverse-ordered view chains converge while unresolved dependencies remain failures",
+        "durationMs": 70
+      },
+      {
+        "name": "global apply schedules dependent views across schemas before reporting success",
+        "durationMs": 96
+      }
+    ],
+    "status": "passed"
+  }
+]

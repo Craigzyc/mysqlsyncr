@@ -15,6 +15,10 @@ export function inspectSample(sql, defaultSchema) {
         token.lastIndex = offset;
         const match = token.exec(text);
         if (!match) return null;
+        // Performance Schema samples do not carry their original sql_mode.
+        // Backslash escapes change string boundaries/values with
+        // NO_BACKSLASH_ESCAPES, so do not plan them in a different session.
+        if (match[0].startsWith("'") && match[0].includes('\\')) return null;
         offset = token.lastIndex;
         if (!/^\s+$/.test(match[0])) tokens.push(match[0]);
     }
@@ -125,7 +129,7 @@ function groupIndexes(rows) {
 
 export async function assessQueryIndexes(connection, row, sample, minimumScanRows = 1000) {
     const parsed = inspectSample(sample, row.database_name);
-    if (!parsed) return unknown('No supported complete SELECT sample is available. Simple SELECTs and nested IN/EXISTS subqueries with distinct aliases are supported; functions, views, derived tables, repeated aliases, writes, and complex syntax are skipped.');
+    if (!parsed) return unknown('No supported complete SELECT sample is available. Simple SELECTs and nested IN/EXISTS subqueries with distinct aliases are supported; functions, views, derived tables, repeated aliases, writes, mode-dependent string escapes, and complex syntax are skipped.');
     try {
         const existing = new Map();
         for (const table of parsed.tables) {
