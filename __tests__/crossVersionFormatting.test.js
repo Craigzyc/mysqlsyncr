@@ -305,3 +305,8 @@ describe('final review regressions', () => {
         await fs.rm(dir, { recursive: true, force: true });
     });
 });
+
+test('a collation-only table change does not report an unchanged charset', () => {
+    expect(formatDifference({ type: 'mismatched_table_options', tableName: 'ft', options: { collate: 'utf8mb4_general_ci', charset: 'utf8mb4' }, currentOptions: { engine: 'InnoDB', charset: 'utf8mb4', collate: 'utf8mb4_0900_ai_ci' } }).Details)
+        .toBe('Table ft options: collate is "utf8mb4_0900_ai_ci", expected "utf8mb4_general_ci"');
+});

@@ -1954,13 +1954,21 @@ var indexChanges = function indexChanges(diff) {
     return "".concat(key, " is ").concat(show(current[key]), ", expected ").concat(show(expected[key]));
   }).join('; ');
 };
+
+// The charset is restated with a collation change; only list options that differ.
 var optionChanges = function optionChanges(diff) {
-  return Object.entries(diff.options || {}).map(function (_ref) {
-    var _diff$currentOptions;
+  return Object.entries(diff.options || {}).filter(function (_ref) {
+    var _diff$currentOptions$, _diff$currentOptions;
     var _ref2 = _slicedToArray(_ref, 2),
       key = _ref2[0],
       value = _ref2[1];
-    return "".concat(key, " is ").concat(show((_diff$currentOptions = diff.currentOptions) === null || _diff$currentOptions === void 0 ? void 0 : _diff$currentOptions[key]), ", expected ").concat(show(value));
+    return String((_diff$currentOptions$ = (_diff$currentOptions = diff.currentOptions) === null || _diff$currentOptions === void 0 ? void 0 : _diff$currentOptions[key]) !== null && _diff$currentOptions$ !== void 0 ? _diff$currentOptions$ : '').toLowerCase() !== String(value).toLowerCase();
+  }).map(function (_ref3) {
+    var _diff$currentOptions2;
+    var _ref4 = _slicedToArray(_ref3, 2),
+      key = _ref4[0],
+      value = _ref4[1];
+    return "".concat(key, " is ").concat(show((_diff$currentOptions2 = diff.currentOptions) === null || _diff$currentOptions2 === void 0 ? void 0 : _diff$currentOptions2[key]), ", expected ").concat(show(value));
   }).join('; ');
 };
 var describe = function describe(diff) {

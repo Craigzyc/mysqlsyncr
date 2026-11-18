@@ -39,7 +39,9 @@ const indexChanges = (diff) => {
     return (changed.length ? changed : ['columns']).map(key => `${key} is ${show(current[key])}, expected ${show(expected[key])}`).join('; ');
 };
 
+// The charset is restated with a collation change; only list options that differ.
 const optionChanges = (diff) => Object.entries(diff.options || {})
+    .filter(([key, value]) => String(diff.currentOptions?.[key] ?? '').toLowerCase() !== String(value).toLowerCase())
     .map(([key, value]) => `${key} is ${show(diff.currentOptions?.[key])}, expected ${show(value)}`).join('; ');
 
 const describe = (diff) => {
