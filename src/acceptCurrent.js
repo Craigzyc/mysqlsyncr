@@ -175,6 +175,28 @@ const acceptDifference = (template, current, diff, { database, syncOptions, file
     }
 }
 
+// Moving columns to their live positions converges on the live order only when
+// the moves run in live column order: each column is then placed after a
+// predecessor that is already where it belongs. Extra live columns are added
+// after the moves, also in live order, so their predecessors are in place too.
+// Other differences keep their places in the list.
+export const orderColumnMoves = (differences, current) => {
+    const isMove = diff => diff.type === 'mismatched_field' && diff.changes?.includes('Position');
+    const placed = diff => isMove(diff) || diff.type === 'extra_field';
+    const liveIndex = diff => (current.tables?.[diff.tableName]?.columns || []).findIndex(c => c.Field === diff.field?.Field);
+    const rank = diff => (isMove(diff) ? 0 : 1);
+    const slots = differences.flatMap((diff, i) => placed(diff) ? [i] : []);
+    const ordered = [...differences];
+    // Sort per table so placements of different tables keep their relative slots.
+    const byTable = new Map();
+    for (const i of slots) byTable.set(differences[i].tableName, [...(byTable.get(differences[i].tableName) || []), i]);
+    for (const tableSlots of byTable.values()) {
+        const sorted = tableSlots.map(i => differences[i]).sort((x, y) => rank(x) - rank(y) || liveIndex(x) - liveIndex(y));
+        tableSlots.forEach((slot, n) => { ordered[slot] = sorted[n]; });
+    }
+    return ordered;
+};
+
 const describeDifference = (diff) => {
     const name = diff.tableName || diff.viewName || diff.Name || diff.database || '';
     const detail = diff.field?.Field || diff.indexName || diff.trigger?.Name || '';
@@ -201,7 +223,7 @@ export const acceptCurrentIntoTemplate = async (connection, templateDir, databas
     // relative path -> new file content, or null to delete the file
     const files = new Map();
     const errors = [];
-    for (const diff of differences) {
+    for (const diff of orderColumnMoves(differences, current)) {
         try {
             acceptDifference(template, current, diff, { database, syncOptions, files });
         } catch (e) {

@@ -70,7 +70,8 @@ export const getTemplateVersion = async (dir) => {
             if (!entry.isDirectory()) continue;
             try {
                 const structure = JSON.parse(await fs.readFile(path.join(dir, entry.name, `${entry.name}.json`), 'utf-8'));
-                sql += Object.values(structure.tables || {}).map(t => t.createSQL || '').join('\n');
+                // Only code counts: a COMMENT or name may say 'utf8mb3' or 'int(11)'.
+                sql += Object.values(structure.tables || {}).map(t => sqlCodeOnly(t.createSQL || '')).join('\n');
             } catch {
                 // Not a database folder
             }
@@ -102,7 +103,7 @@ export const versionNotes = (templateVersion, serverVersion) => {
     ];
     if (isBefore80(serverVersion) && !isBefore80(templateVersion)) {
         notes.push(`MySQL ${server} has no utf8mb4_0900 collations. Compatibility replacements are approximations: ai_ci and as_ci use utf8mb4_unicode_ci, and other suffixes use utf8mb4_bin. Sort order and trailing-space comparisons can differ; as_ci also loses accent sensitivity.`);
-        notes.push(`MySQL ${server} does not support index visibility. Invisible template indexes are created and compared as visible indexes on this server.`);
+        notes.push(`MySQL ${server} does not support index visibility or descending indexes. Invisible and DESC template indexes are created and compared as visible, ascending indexes on this server.`);
         notes.push(`Expression defaults such as DEFAULT (...) need MySQL 8.0.13 or later and fail on MySQL ${server}.`);
     }
     return notes;
@@ -132,5 +133,39 @@ export const adaptSQLForServer = (sql, serverVersion) => {
     if (typeof sql !== 'string' || !isBefore80(serverVersion)) return sql;
     return transformSQLCode(sql, code => code
         .replace(/\b\w+?_0900_\w+/gi, (collation) => portableCollation(collation) ?? collation)
-        .replace(/\butf8mb3_(\w+)/gi, 'utf8_$1'));
+        .replace(/\butf8mb3_(\w+)/gi, 'utf8_$1')
+        // 8.0 prints geometrycollection as geomcollection, which 5.7 rejects
+        .replace(/\bgeomcollection\b/gi, 'geometrycollection'));
 }
+
+// The only charset whose default collation changed between 5.7 and 8.0.
+const LEGACY_DEFAULTS = { utf8mb4: 'utf8mb4_general_ci' };
+export const isLegacyTemplate = (templateVersion) => isBefore80(templateVersion);
+
+/**
+ * Default collations for resolving what a template means. A 5.7 template
+ * leaves utf8mb4_general_ci implicit because it was 5.7's default; on 8.0 the
+ * same text would mean utf8mb4_0900_ai_ci. With an unknown template version
+ * the server's defaults are used, as before.
+ */
+export const templateDefaultCollations = (templateVersion, serverDefaults = {}) =>
+    isLegacyTemplate(templateVersion) ? { ...serverDefaults, ...LEGACY_DEFAULTS } : serverDefaults;
+
+/**
+ * Make a 5.7 template's implicit utf8mb4 collation explicit before running its
+ * CREATE TABLE on 8.0, so the restored table keeps 5.7's collation instead of
+ * silently taking 8.0's default.
+ */
+export const pinTemplateCollations = (sql, templateVersion, serverVersion) => {
+    if (typeof sql !== 'string' || !isLegacyTemplate(templateVersion) || !serverVersion || isBefore80(serverVersion)) return sql;
+    return transformSQLCode(sql, code => code
+        .replace(/(\bCHARSET\s*=\s*utf8mb4\b)(?!\s+COLLATE)/gi, `$1 COLLATE=${LEGACY_DEFAULTS.utf8mb4}`)
+        .replace(/(\bCHARACTER SET\s+utf8mb4\b)(?!\s+COLLATE)/gi, `$1 COLLATE ${LEGACY_DEFAULTS.utf8mb4}`));
+};
+
+// The SQL code of a statement with string literals, quoted names and comments removed.
+const sqlCodeOnly = (sql) => {
+    let code = '';
+    transformSQLCode(sql, segment => { code += `${segment} `; return segment; });
+    return code;
+};

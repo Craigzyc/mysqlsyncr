@@ -1,6 +1,6 @@
 {
   "name": "mysqlsyncr",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "description": "",
   "main": "dist/index.cjs",
   "module": "dist/index.js",
@@ -18,7 +18,9 @@
     "test:browser": "playwright test",
     "test:integration": "node integration/docker-matrix.mjs",
     "start": "node src/index.js",
-    "build": "rollup -c"
+    "build": "rollup -c",
+    "test:cross-version": "node integration/cross-version-types.mjs",
+    "test:cross-version-hunt": "node integration/cross-version-hunt.mjs"
   },
   "bin": {
     "mysqlsyncr": "dist/index.cjs"

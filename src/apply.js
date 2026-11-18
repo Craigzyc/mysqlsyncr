@@ -6,6 +6,8 @@ import { randomBytes } from 'node:crypto';
 // Cross-schema scheduling is internal: a caller-supplied JSON property cannot
 // redirect an operation outside the database selected by the API.
 const targetDatabase = Symbol('targetDatabase');
+// ER_BAD_FT_COLUMN: every column of a FULLTEXT index must share one charset/collation
+const isFulltextColumnError = error => error?.code === 'ER_BAD_FT_COLUMN' || error?.errno === 1283 || /cannot be part of FULLTEXT index/i.test(error?.message || '');
 const isViewDependencyError = error => ['ER_NO_SUCH_TABLE', 'ER_VIEW_INVALID'].includes(error.code) || [1146, 1356].includes(error.errno);
 
 const quoteString = (value) => `'${String(value).replace(/\\/g, '\\\\').replace(/'/g, "''")}'`;
@@ -154,6 +156,59 @@ const compatRewrites = [
  * (e.g. an 8.0 collation on 5.7), each as { type, tableName, description, message }.
  */
 export const applyDifferences = async (connection, database, differences) => {
+    const { serverVersion, restore } = await matchMySQL8TimestampDefaults(connection);
+    try {
+        return await applyInSession(connection, database, differences, serverVersion);
+    } finally {
+        await restore();
+    }
+}
+
+// A dump written by MySQL 8 assumes explicit_defaults_for_timestamp is on, where a
+// `timestamp NOT NULL` column with no DEFAULT is just a column with no default. With
+// the MySQL 5.7 default of off, the server instead assigns every TIMESTAMP NOT NULL
+// column after the first an implicit '0000-00-00 00:00:00', which strict mode then
+// rejects at CREATE TABLE time. Matching MySQL 8 for the repair applies that DDL as
+// written; DDL that states its defaults - everything SHOW CREATE TABLE emits, on
+// either version - parses the same way with the setting on or off.
+// The connection belongs to the caller (the CAM monitor, the API server) and is
+// reused afterwards, so the session's own value is put back when the repair ends,
+// whether it succeeded or not. The value is read with the server version (MySQL 8
+// templates need that too) in one round trip. Returns the version and the restore.
+const matchMySQL8TimestampDefaults = async (connection) => {
+    const unchanged = async () => {};
+    let session;
+    try {
+        [session] = await connection.query('SELECT VERSION() AS version, @@SESSION.explicit_defaults_for_timestamp AS explicit_defaults_for_timestamp');
+    } catch (e) {
+        logger(`Could not read explicit_defaults_for_timestamp for this session: ${e.message}`);
+        return { serverVersion: await getServerVersion(connection), restore: unchanged };
+    }
+    const serverVersion = session?.version ?? null;
+    const previous = session?.explicit_defaults_for_timestamp;
+    // Without the prior value the change couldn't be undone, so leave the session alone
+    if (previous === undefined || previous === null) return { serverVersion, restore: unchanged };
+    if (Number(previous)) return { serverVersion, restore: unchanged };
+    try {
+        await connection.query('SET SESSION explicit_defaults_for_timestamp = 1');
+    } catch (e) {
+        logger(`Could not set explicit_defaults_for_timestamp for this session: ${e.message}`);
+        return { serverVersion, restore: unchanged };
+    }
+    return {
+        serverVersion,
+        restore: async () => {
+            try {
+                await connection.query('SET SESSION explicit_defaults_for_timestamp = 0');
+            } catch (e) {
+                console.error(`Could not restore explicit_defaults_for_timestamp = 0 for this session: ${e.message}`);
+                logger(`Could not restore explicit_defaults_for_timestamp = 0 for this session: ${e.message}`);
+            }
+        },
+    };
+};
+
+const applyInSession = async (connection, database, differences, serverVersion) => {
     const failures = [];
     const warnings = [];
     let deferredViews = [];
@@ -168,6 +223,17 @@ export const applyDifferences = async (connection, database, differences) => {
     const removedColumns = new Map();
     const indexRemovedWithColumns = (tableName, index) => index?.ColumnName?.length && index.ColumnName.every(column =>
         removedColumns.get(tableName)?.has(column.replace(/\s+(?:ASC|DESC)$/i, '').replace(/\(\d+\)$/, '')));
+    // The ALTER clauses for one missing_field/mismatched_field. MySQL requires
+    // AUTO_INCREMENT to be indexed in the same ALTER that introduces it - a separate
+    // later ADD KEY fails - so that index's clause comes along.
+    const fieldClauses = diff => {
+        const { tableName, field } = diff;
+        const requiredKey = field.AutoIncrement && differences.find(candidate => candidate.type === 'missing_index' && candidate.tableName === tableName && candidate.index.ColumnName[0]?.replace(/\(\d+\)$/, '') === field.Field);
+        const column = diff.type === 'missing_field'
+            ? `ADD COLUMN ${quoteIdentifier(field.Field)} ${columnDefinition(field)}${columnPosition(diff)}`
+            : `CHANGE ${quoteIdentifier(field.Field)} ${quoteIdentifier(field.Field)} ${columnDefinition(field, diff.currentField)}${columnPosition(diff)}`;
+        return { column, requiredKey, clauses: requiredKey ? [column, addIndexClause(requiredKey.index)] : [column] };
+    };
     let current = null; // the difference being applied, for warnings from query()
     const warn = (diff, message) => {
         console.warn(`Applied ${describeDifference(diff)} with a change: ${message}`);
@@ -175,7 +241,6 @@ export const applyDifferences = async (connection, database, differences) => {
     };
 
     // Template SQL from MySQL 8.0 can name collations a 5.7 server doesn't have
-    const serverVersion = await getServerVersion(connection);
     const query = async (sql, values) => {
         const adapted = adaptSQLForServer(sql, serverVersion);
         if (adapted !== sql) {
@@ -220,19 +285,7 @@ export const applyDifferences = async (connection, database, differences) => {
         }
     };
 
-    // A dump written by MySQL 8 assumes explicit_defaults_for_timestamp is on, where a
-    // `timestamp NOT NULL` column with no DEFAULT is just a column with no default. With
-    // the MySQL 5.7 default of off, the server instead assigns every TIMESTAMP NOT NULL
-    // column after the first an implicit '0000-00-00 00:00:00', which strict mode then
-    // rejects at CREATE TABLE time. Matching MySQL 8 for this session applies that DDL as
-    // written; DDL that states its defaults - everything SHOW CREATE TABLE emits, on
-    // either version - parses the same way with the setting on or off.
-    try {
-        await connection.query('SET SESSION explicit_defaults_for_timestamp = 1');
-    } catch (e) {
-        logger(`Could not set explicit_defaults_for_timestamp for this session: ${e.message}`);
-    }
-   
+
     differences.sort((a, b) => {
         //Sort to make sure we apply the differences in a logical order.
         const typePriority = {
@@ -324,8 +377,8 @@ export const applyDifferences = async (connection, database, differences) => {
 
             } else if (diff.type === 'missing_field') {
                 // Existing rows get the column's default, or the type's implicit default for NOT NULL without one
-                const requiredKey = diff.field.AutoIncrement && differences.find(candidate => candidate.type === 'missing_index' && candidate.tableName === diff.tableName && candidate.index.ColumnName[0]?.replace(/\(\d+\)$/, '') === diff.field.Field);
-                const addFieldSQL = `ALTER TABLE ${quoteIdentifier(diff.tableName)} ADD COLUMN ${quoteIdentifier(diff.field.Field)} ${columnDefinition(diff.field)}${columnPosition(diff)}${requiredKey ? `, ${addIndexClause(requiredKey.index)}` : ''};`;
+                const { clauses, requiredKey } = fieldClauses(diff);
+                const addFieldSQL = `ALTER TABLE ${quoteIdentifier(diff.tableName)} ${clauses.join(', ')};`;
                 console.log(`Executing: ${addFieldSQL}`);
                 await query(addFieldSQL);
                 if (requiredKey) appliedTogether.add(requiredKey);
@@ -338,15 +391,45 @@ export const applyDifferences = async (connection, database, differences) => {
                 removedColumns.get(diff.tableName).add(diff.field.Field);
 
             } else if (diff.type === 'mismatched_field') {
-                const { tableName, field, currentField } = diff;
-
-                // MySQL requires AUTO_INCREMENT to be indexed in the same
-                // ALTER that introduces it. A separate later ADD KEY fails.
-                const requiredKey = field.AutoIncrement && differences.find(candidate => candidate.type === 'missing_index' && candidate.tableName === tableName && candidate.index.ColumnName[0]?.replace(/\(\d+\)$/, '') === field.Field);
-                const modifyFieldSQL = `ALTER TABLE ${quoteIdentifier(tableName)} CHANGE ${quoteIdentifier(field.Field)} ${quoteIdentifier(field.Field)} ${columnDefinition(field, currentField)}${columnPosition(diff)}${requiredKey ? `, ${addIndexClause(requiredKey.index)}` : ''};`;
+                const { tableName } = diff;
+                const { clauses, requiredKey } = fieldClauses(diff);
+                const modifyFieldSQL = `ALTER TABLE ${quoteIdentifier(tableName)} ${clauses.join(', ')};`;
                 console.log(`Executing: ${modifyFieldSQL}`);
-                await query(modifyFieldSQL);
-                if (requiredKey) appliedTogether.add(requiredKey);
+                try {
+                    await query(modifyFieldSQL);
+                    if (requiredKey) appliedTogether.add(requiredKey);
+                } catch (error) {
+                    // Every column of a FULLTEXT index must share one charset and collation,
+                    // so converting the columns of a multi-column FULLTEXT index one CHANGE
+                    // at a time can never succeed: each intermediate state is rejected.
+                    // Only for that error, retry with the rest of this table's column
+                    // changes in the same ALTER. They are adjacent in the sorted list and
+                    // in template column order, and MySQL applies an ALTER's clauses left
+                    // to right, so AFTER placements resolve as they would one statement at
+                    // a time. If the combined ALTER also fails nothing has changed, and the
+                    // remaining columns are still tried on their own as before.
+                    if (!isFulltextColumnError(error)) throw error;
+                    const group = [diff];
+                    for (let i = differences.indexOf(diff) + 1; i < differences.length; i++) {
+                        const next = differences[i];
+                        if (!['missing_field', 'mismatched_field'].includes(next.type) || next.tableName !== tableName
+                            || next[targetDatabase] !== diff[targetDatabase] || appliedTogether.has(next)) break;
+                        group.push(next);
+                    }
+                    if (group.length === 1) throw error;
+                    const parts = group.map(fieldClauses);
+                    const keys = [...new Set(parts.map(part => part.requiredKey).filter(key => key && !appliedTogether.has(key)))];
+                    const combinedSQL = `ALTER TABLE ${quoteIdentifier(tableName)} ${[...parts.map(part => part.column), ...keys.map(key => addIndexClause(key.index))].join(', ')};`;
+                    console.log(`Retrying as one statement: ${combinedSQL}`);
+                    try {
+                        await query(combinedSQL);
+                    } catch (combinedError) {
+                        error.message += `; retrying together with ${group.slice(1).map(describeDifference).join(', ')} in one ALTER also failed: ${combinedError.message}`;
+                        throw error;
+                    }
+                    for (const applied of group.slice(1)) appliedTogether.add(applied);
+                    for (const key of keys) appliedTogether.add(key);
+                }
 
             } else if (diff.type === 'missing_index') {
                 const existingColumns = await query(`SHOW COLUMNS FROM \`${diff.tableName}\``);
@@ -415,7 +498,11 @@ export const applyDifferences = async (connection, database, differences) => {
 
             } else if (diff.type === 'mismatched_table_options') {
                 const clauses = [];
-                for (const [key, value] of Object.entries(diff.options || {})) {
+                // A charset clause resets the collation to that charset's default, so
+                // COLLATE has to come after it whatever order the options arrived in
+                const order = ['engine', 'charset', 'collate'];
+                const options = Object.entries(diff.options || {}).sort(([a], [b]) => (order.indexOf(a) + 1 || 99) - (order.indexOf(b) + 1 || 99));
+                for (const [key, value] of options) {
                     if (!/^[a-zA-Z0-9_]+$/.test(value)) throw new Error(`Invalid table option ${key}: ${value}`);
                     const keyword = { engine: 'ENGINE', charset: 'DEFAULT CHARACTER SET', collate: 'COLLATE' }[key];
                     if (!keyword) throw new Error(`Unknown table option ${key}`);

@@ -1919,150 +1919,126 @@ var logger = function logger() {
     (_console = console).log.apply(_console, arguments); // Log all arguments if verbose is enabled
   }
 };
+var show = function show(value) {
+  return value === undefined || value === null ? 'none' : JSON.stringify(value);
+};
+
+// One clause per changed attribute, using the values the comparison used.
+// Differences saved before `comparison` existed fall back to the raw columns.
+var fieldChanges = function fieldChanges(diff) {
+  var _diff$changes;
+  var changes = (_diff$changes = diff.changes) !== null && _diff$changes !== void 0 && _diff$changes.length ? diff.changes : [diff.info].filter(Boolean);
+  return changes.map(function (change) {
+    var _diff$comparison, _diff$currentField, _diff$field;
+    var compared = (_diff$comparison = diff.comparison) === null || _diff$comparison === void 0 ? void 0 : _diff$comparison[change];
+    if (compared) return "".concat(change, " is ").concat(show(compared.current), ", expected ").concat(show(compared.expected));
+    var property = change === 'Null' ? 'NotNull' : change;
+    return "".concat(change, " is ").concat(show((_diff$currentField = diff.currentField) === null || _diff$currentField === void 0 ? void 0 : _diff$currentField[property]), ", expected ").concat(show((_diff$field = diff.field) === null || _diff$field === void 0 ? void 0 : _diff$field[property]));
+  }).join('; ');
+};
+
+// Name every compared index property that differs (columns, unique, type, visibility).
+var indexProperties = function indexProperties(index) {
+  return index && {
+    columns: "(".concat((index.ColumnName || []).join(', '), ")"),
+    unique: !!index.Unique || !!index.Primary || index.Name === 'PRIMARY',
+    type: index.Type || 'BTREE',
+    visible: index.Visible !== false
+  };
+};
+var indexChanges = function indexChanges(diff) {
+  var expected = indexProperties(diff.index);
+  var current = indexProperties(diff.currentIndex);
+  if (!current) return "is mismatched, expected ".concat(expected.columns);
+  var changed = Object.keys(expected).filter(function (key) {
+    return expected[key] !== current[key];
+  });
+  return (changed.length ? changed : ['columns']).map(function (key) {
+    return "".concat(key, " is ").concat(show(current[key]), ", expected ").concat(show(expected[key]));
+  }).join('; ');
+};
+var optionChanges = function optionChanges(diff) {
+  return Object.entries(diff.options || {}).map(function (_ref) {
+    var _diff$currentOptions;
+    var _ref2 = _slicedToArray(_ref, 2),
+      key = _ref2[0],
+      value = _ref2[1];
+    return "".concat(key, " is ").concat(show((_diff$currentOptions = diff.currentOptions) === null || _diff$currentOptions === void 0 ? void 0 : _diff$currentOptions[key]), ", expected ").concat(show(value));
+  }).join('; ');
+};
+var describe = function describe(diff) {
+  var table = diff.tableName;
+  switch (diff.type) {
+    case 'missing_database':
+      return [diff.database, "Database ".concat(diff.database, " is missing"), 'Database is missing'];
+    case 'missing_table':
+      return [table, "Table ".concat(table, " is missing"), 'Table is missing'];
+    case 'extra_table':
+      return [table, "Table ".concat(table, " is extra"), 'Table is extra'];
+    case 'mismatched_table_options':
+      return [table, "Table ".concat(table, " options: ").concat(optionChanges(diff)), 'Table options are mismatched'];
+    case 'missing_field':
+      return [table, "Field ".concat(diff.field.Field, " is missing"), 'Field is missing'];
+    case 'extra_field':
+      return [table, "Field ".concat(diff.field.Field, " is extra"), 'Field is extra'];
+    case 'mismatched_field':
+      return [table, "Field ".concat(diff.field.Field, " ").concat(fieldChanges(diff)), 'Field is mismatched'];
+    case 'missing_index':
+      return [table, "Index ".concat(diff.index.Name, " is missing"), 'Index is missing'];
+    case 'extra_index':
+      return [table, "Index ".concat(diff.index.Name, " is extra"), 'Index is extra'];
+    case 'mismatched_index':
+      return [table, "Index ".concat(diff.index.Name, " ").concat(indexChanges(diff)), 'Index is mismatched'];
+    case 'missing_constraint':
+      return [table, "Foreign key ".concat(diff.constraintName, " is missing"), 'Foreign key is missing'];
+    case 'extra_constraint':
+      return [table, "Foreign key ".concat(diff.constraintName, " is extra"), 'Foreign key is extra'];
+    case 'mismatched_constraint':
+      return [table, "Foreign key ".concat(diff.constraintName, " is mismatched"), 'Foreign key is mismatched'];
+    case 'missing_trigger':
+      return [table, "Trigger ".concat(diff.trigger.Name, " is missing"), 'Trigger is missing'];
+    case 'extra_trigger':
+      return [table, "Trigger ".concat(diff.trigger.Name, " is extra"), 'Trigger is extra'];
+    case 'mismatched_trigger':
+      return [table, "Trigger ".concat(diff.trigger.Name, " is mismatched"), 'Trigger is mismatched'];
+    case 'missing_procedure':
+      return [diff.Name, "Procedure ".concat(diff.Name, " is missing"), 'Procedure is missing'];
+    case 'mismatched_procedure':
+      return [diff.Name, "Procedure ".concat(diff.Name, " is mismatched"), 'Procedure is mismatched'];
+    case 'missing_view':
+      return [diff.viewName, "View ".concat(diff.viewName, " is missing"), 'View is missing'];
+    case 'extra_view':
+      return [diff.viewName, "View ".concat(diff.viewName, " is extra"), 'View is extra'];
+    case 'mismatched_view':
+      return [diff.viewName, "View ".concat(diff.viewName, " is mismatched"), 'View is mismatched'];
+    case 'missing_row':
+      return [table, "Row ".concat(JSON.stringify(diff.key), " is missing"), 'Row is missing'];
+    default:
+      return [table || diff.Name || diff.viewName || '', "Unhandled difference type: ".concat(diff.type), ''];
+  }
+};
+
+/** A readable row for one difference: { Type, Name, Details, Action }. */
+var formatDifference = function formatDifference(diff) {
+  var _describe = describe(diff),
+    _describe2 = _slicedToArray(_describe, 3),
+    Name = _describe2[0],
+    Details = _describe2[1],
+    Action = _describe2[2];
+  return {
+    Type: diff.type,
+    Name: Name !== null && Name !== void 0 ? Name : '',
+    Details: Details,
+    Action: Action
+  };
+};
 var logDifferences = function logDifferences(differences, database, dryRun) {
-  var formattedDifferences = differences.map(function (diff) {
-    switch (diff.type) {
-      case 'missing_procedure':
-        return {
-          Type: diff.type,
-          Name: diff.Name,
-          Details: "Procedure ".concat(diff.Name, " is missing"),
-          Action: 'Procedure is missing'
-        };
-      case 'mismatched_procedure':
-        return {
-          Type: diff.type,
-          Name: diff.Name,
-          Details: "Mismatched procedure ".concat(diff.Name),
-          Action: 'Mismatched procedure'
-        };
-      case 'missing_field':
-        return {
-          Type: diff.type,
-          Name: diff.tableName,
-          Details: "Field ".concat(diff.field.Field, " is missing"),
-          Action: 'Field is missing'
-        };
-      case 'mismatched_field':
-        {
-          var _diff$currentField, _diff$field;
-          // `info` names the check that failed; Null is stored as NotNull.
-          var property = diff.info === 'Null' ? 'NotNull' : diff.info;
-          return {
-            Type: diff.type,
-            Name: diff.tableName,
-            Details: "Field ".concat(diff.field.Field, " ").concat(diff.info, " is ").concat(JSON.stringify((_diff$currentField = diff.currentField) === null || _diff$currentField === void 0 ? void 0 : _diff$currentField[property]), ", expected ").concat(JSON.stringify((_diff$field = diff.field) === null || _diff$field === void 0 ? void 0 : _diff$field[property])),
-            Action: 'Field is mismatched'
-          };
-        }
-      case 'missing_table':
-        return {
-          Type: diff.type,
-          Name: diff.tableName,
-          Details: "Table ".concat(diff.tableName, " is missing"),
-          Action: 'Table is missing'
-        };
-      case 'extra_field':
-        return {
-          Type: diff.type,
-          Name: diff.tableName,
-          Details: "Field ".concat(diff.field.Field, " is extra"),
-          Action: 'Field is extra'
-        };
-      case 'extra_table':
-        return {
-          Type: diff.type,
-          Name: diff.tableName,
-          Details: "Table ".concat(diff.tableName, " is extra"),
-          Action: 'Table is extra'
-        };
-      case 'missing_view':
-        return {
-          Type: diff.type,
-          Name: diff.viewName,
-          Details: "View ".concat(diff.viewName, " is missing"),
-          Action: 'View is missing'
-        };
-      case 'extra_index':
-        return {
-          Type: diff.type,
-          Name: diff.tableName,
-          Details: "Index ".concat(diff.index.Name, " is extra"),
-          Action: 'Index is extra'
-        };
-      case 'missing_index':
-        return {
-          Type: diff.type,
-          TableName: diff.tableName,
-          Name: diff.index.Name,
-          Details: "Index ".concat(diff.index.Name, " is missing"),
-          Action: 'Index is missing'
-        };
-      case 'mismatched_index':
-        return {
-          Type: diff.type,
-          TableName: diff.tableName,
-          Name: diff.index.Name,
-          From: diff.from,
-          Details: "Index ".concat(diff.index.Name, " is mismatched"),
-          Action: 'Index is mismatched'
-        };
-      case 'extra_trigger':
-        return {
-          Type: diff.type,
-          Name: diff.trigger.Name,
-          Details: "Trigger ".concat(diff.trigger.Name, " is extra"),
-          Action: 'Trigger is extra'
-        };
-      case 'mismatched_trigger':
-        return {
-          Type: diff.type,
-          Name: diff.trigger.Name,
-          Details: "Trigger ".concat(diff.trigger.Name, " is mismatched"),
-          Action: 'Trigger is mismatched'
-        };
-      case 'missing_trigger':
-        logger('missing_trigger', diff);
-        return {
-          Type: diff.type,
-          Name: diff.trigger.Name,
-          Details: "Trigger ".concat(diff.trigger.Name, " is missing"),
-          Action: 'Trigger is missing'
-        };
-      case 'missing_row':
-        return {
-          Type: diff.type,
-          Name: diff.tableName,
-          Details: "Row ".concat(JSON.stringify(diff.key), " is missing"),
-          Action: 'Row is missing'
-        };
-      default:
-        return {
-          Type: diff.type,
-          Details: "Unhandled difference type: ".concat(diff.type)
-        };
-    }
-  });
-
-  // Filter out any undefined or null entries
-  var filteredDifferences = formattedDifferences.filter(function (diff) {
-    return diff;
-  });
-
-  // Log the differences in a table format
-  if (filteredDifferences.length > 0) {
-    if (dryRun) {
-      logger("Dry Run: Differences for database ".concat(database, ":"));
-    } else {
-      logger("Differences applied for database ".concat(database, ":"));
-    }
-    console.table(filteredDifferences);
+  var formattedDifferences = differences.map(formatDifference);
+  if (formattedDifferences.length > 0) {
+    logger(dryRun ? "Dry Run: Differences for database ".concat(database, ":") : "Differences applied for database ".concat(database, ":"));
+    console.table(formattedDifferences);
   } else {
-    if (dryRun) {
-      logger("Dry Run: No differences found. Database: ".concat(database));
-    } else {
-      logger("No differences found. Database: ".concat(database));
-    }
+    logger(dryRun ? "Dry Run: No differences found. Database: ".concat(database) : "No differences found. Database: ".concat(database));
   }
 };
 
@@ -3425,14 +3401,138 @@ var normalizeVersionFormatting = function normalizeVersionFormatting(sql) {
   });
 };
 
-// A column type compared across MySQL versions
+// A column type compared across MySQL versions. 8.0 prints geometrycollection
+// as geomcollection.
 var normalizeColumnType = function normalizeColumnType(type) {
-  return normalizeVersionFormatting(type);
+  var _normalizeVersionForm;
+  return (_normalizeVersionForm = normalizeVersionFormatting(type)) === null || _normalizeVersionForm === void 0 ? void 0 : _normalizeVersionForm.replace(/^geometrycollection\b/i, 'geomcollection');
 };
+
+// Procedure and trigger bodies are stored as written: compare them as SQL.
 var normalizeSQLDefinition = function normalizeSQLDefinition(definition) {
   return transformSQLCode(normalizeVersionFormatting(definition), function (code) {
     return code.replace(/\s+/g, ' ');
   }).trim();
+};
+
+// 8.0 rewrites generated-column expressions, expression defaults and views and
+// stores the session charset as an introducer on their string literals
+// (concat(_utf8mb4'p-',`qty`)), where 5.7 stores the literal as written. Only
+// for that server-rewritten SQL, drop the introducer when comparing. Only real
+// charset names count (a column named _x before a string alias is not one), and
+// _binary stays: it makes the literal a binary string, which changes results.
+var CHARSETS = 'armscii8|ascii|big5|cp1250|cp1251|cp1256|cp1257|cp850|cp852|cp866|cp932|dec8|eucjpms|euckr|gb18030|gb2312|gbk|geostd8|greek|hebrew|hp8|keybcs2|koi8r|koi8u|latin1|latin2|latin5|latin7|macce|macroman|sjis|swe7|tis620|ucs2|ujis|utf16le|utf16|utf32|utf8mb3|utf8mb4|utf8';
+var introducer = new RegExp("(^|[^\\w$`])_(?:".concat(CHARSETS, ")\\s*$"), 'i');
+
+// 8.0 prints the boolean literals TRUE/FALSE as true/false where 5.7 stores 1/0.
+// They differ against JSON values in 8.0, so only treat them as equal when asked
+// to (comparing a template and a server of different major versions).
+var normalizeServerExpression = function normalizeServerExpression(definition) {
+  var _ref = arguments.length > 1 && arguments[1] !== undefined ? arguments[1] : {},
+    _ref$booleans = _ref.booleans,
+    booleans = _ref$booleans === void 0 ? false : _ref$booleans;
+  return transformSQLCode(normalizeVersionFormatting(definition), function (code, nextToken) {
+    var result = nextToken !== null && nextToken !== void 0 && nextToken.startsWith("'") ? code.replace(introducer, '$1') : code;
+    if (booleans) result = result.replace(/(^|[^\w$.@])(true|false)(?![\w$(])/gi, function (match, before, word) {
+      return before + (word.toLowerCase() === 'true' ? '1' : '0');
+    });
+    return result.replace(/\s+/g, ' ');
+  }).trim();
+};
+
+// The select list of `rest` (the text after SELECT): where each top-level item
+// ends, and where the list can end (a top-level FROM or UNION, or the end).
+// Quotes, names and comments are skipped, so `,`, `(` or `from` inside a string
+// don't count.
+var selectListShape = function selectListShape(rest) {
+  var commas = [];
+  var ends = [];
+  var depth = 0;
+  var offset = 0;
+  transformSQLCode(rest, function (code, token) {
+    for (var i = 0; i < code.length; i++) {
+      if (code[i] === '(') depth++;else if (code[i] === ')') depth--;else if (depth === 0 && code[i] === ',') commas.push(offset + i);else if (depth === 0 && /\s/.test(code[i]) && /^\s(?:from|union)\b/i.test(code.slice(i))) ends.push(offset + i);
+    }
+    offset += code.length + ((token === null || token === void 0 ? void 0 : token.length) || 0);
+    return code;
+  });
+  ends.push(rest.length);
+  return {
+    commas: commas,
+    ends: ends
+  };
+};
+
+/**
+ * A view as SHOW CREATE VIEW prints it. Given an explicit column list,
+ * CREATE VIEW v (c1, c2) AS SELECT id, name ..., 8.0 keeps the list and the
+ * select's own aliases, while 5.7 drops the list and aliases the select
+ * columns as c1, c2. Rewrite the 8.0 form into the 5.7 form, then compare as
+ * server-rewritten SQL. Anything that doesn't parse is compared as printed.
+ */
+var normalizeViewDefinition = function normalizeViewDefinition(definition) {
+  var options = arguments.length > 1 && arguments[1] !== undefined ? arguments[1] : {};
+  if (typeof definition !== 'string') return definition;
+  var header = definition.match(/^([\s\S]*?\bVIEW\s+(?:`(?:[^`]|``)+`\s*\.\s*)?`(?:[^`]|``)+`\s*)\(((?:\s*`(?:[^`]|``)+`\s*,?)+)\)(\s*AS\s+select\s+)([\s\S]*)$/i);
+  if (!header) return normalizeServerExpression(definition, options);
+  var _header = _slicedToArray(header, 5),
+    head = _header[1],
+    list = _header[2],
+    as = _header[3],
+    rest = _header[4];
+  var names = _toConsumableArray(list.matchAll(/`((?:[^`]|``)+)`/g)).map(function (m) {
+    return m[0];
+  });
+  var _selectListShape = selectListShape(rest),
+    commas = _selectListShape.commas,
+    ends = _selectListShape.ends;
+  // The first end with exactly one item per listed column.
+  var end = ends.find(function (position) {
+    return commas.filter(function (comma) {
+      return comma < position;
+    }).length === names.length - 1;
+  });
+  if (end === undefined) return normalizeServerExpression(definition, options);
+  var bounds = [-1].concat(_toConsumableArray(commas.filter(function (comma) {
+    return comma < end;
+  })), [end]);
+  var items = names.map(function (name, i) {
+    var item = rest.slice(bounds[i] + 1, bounds[i + 1]);
+    var aliased = item.match(/^([\s\S]*?)\s+AS\s+`(?:[^`]|``)+`\s*$/i);
+    return "".concat(aliased ? aliased[1] : item.trim(), " AS ").concat(name);
+  });
+  return normalizeServerExpression("".concat(head.trimEnd(), " ").concat(as.trim(), " ").concat(items.join(',')).concat(rest.slice(end)), options);
+};
+
+// 8.0 SHOW CREATE TRIGGER quotes the trigger and table names in the header
+// (TRIGGER `t` BEFORE INSERT ON `tbl`); 5.7 returns the header as written.
+// Compare a canonical header plus the normalized body.
+var identifier = "(?:`(?:[^`]|``)+`|[\\w$\\u0080-\\uffff]+)";
+var account = "(?:`(?:[^`]|``)*`|'(?:[^']|'')*'|[^\\s@`']+)";
+var definerClause = "(CURRENT_USER(?:\\s*\\(\\s*\\))?|".concat(account, "(?:\\s*@\\s*").concat(account, ")?)");
+var triggerHeader = new RegExp("^CREATE\\s+(?:DEFINER\\s*=\\s*".concat(definerClause, "\\s+)?TRIGGER\\s+(?:").concat(identifier, "\\s*\\.\\s*)?(").concat(identifier, ")\\s+(BEFORE|AFTER)\\s+(INSERT|UPDATE|DELETE)\\s+ON\\s+(?:").concat(identifier, "\\s*\\.\\s*)?(").concat(identifier, ")\\s+FOR\\s+EACH\\s+ROW\\s+(?:(FOLLOWS|PRECEDES)\\s+(").concat(identifier, ")\\s+)?"), 'i');
+var unquoteIdentifier = function unquoteIdentifier(name) {
+  return name.startsWith('`') ? name.slice(1, -1).replace(/``/g, '`') : name;
+};
+// User names are case-sensitive; only the quoting style is formatting.
+var canonicalDefiner = function canonicalDefiner(definer) {
+  return definer.replace(/\s*@\s*/, '@').replace(/[`']/g, '');
+};
+var normalizeTriggerDefinition = function normalizeTriggerDefinition(definition) {
+  if (typeof definition !== 'string') return definition;
+  var trimmed = definition.trim();
+  var header = trimmed.match(triggerHeader);
+  if (!header) return normalizeSQLDefinition(trimmed);
+  var _header2 = _slicedToArray(header, 8),
+    whole = _header2[0],
+    definer = _header2[1],
+    name = _header2[2],
+    timing = _header2[3],
+    event = _header2[4],
+    table = _header2[5],
+    order = _header2[6],
+    other = _header2[7];
+  return JSON.stringify([definer ? canonicalDefiner(definer) : null, unquoteIdentifier(name), timing.toUpperCase(), event.toUpperCase(), unquoteIdentifier(table), order ? "".concat(order.toUpperCase(), " ").concat(unquoteIdentifier(other)) : null, normalizeSQLDefinition(trimmed.slice(whole.length))]);
 };
 
 // '8.0.36-log' -> { major: 8, minor: 0 }; also takes '5.7'
@@ -3600,8 +3700,9 @@ var getTemplateVersion = /*#__PURE__*/function () {
         case 29:
           _context3.t6 = _context3.sent;
           structure = _context3.t5.parse.call(_context3.t5, _context3.t6);
+          // Only code counts: a COMMENT or name may say 'utf8mb3' or 'int(11)'.
           sql += Object.values(structure.tables || {}).map(function (t) {
-            return t.createSQL || '';
+            return sqlCodeOnly(t.createSQL || '');
           }).join('\n');
           _context3.next = 36;
           break;
@@ -3682,7 +3783,7 @@ var versionNotes = function versionNotes(templateVersion, serverVersion) {
   var notes = ["The template is from MySQL ".concat(template, " and the server is MySQL ").concat(server, ". Integer display widths (int(11) vs int), YEAR(4) and utf8 vs utf8mb3 are printed differently by these versions and are ignored when comparing.")];
   if (isBefore80(serverVersion) && !isBefore80(templateVersion)) {
     notes.push("MySQL ".concat(server, " has no utf8mb4_0900 collations. Compatibility replacements are approximations: ai_ci and as_ci use utf8mb4_unicode_ci, and other suffixes use utf8mb4_bin. Sort order and trailing-space comparisons can differ; as_ci also loses accent sensitivity."));
-    notes.push("MySQL ".concat(server, " does not support index visibility. Invisible template indexes are created and compared as visible indexes on this server."));
+    notes.push("MySQL ".concat(server, " does not support index visibility or descending indexes. Invisible and DESC template indexes are created and compared as visible, ascending indexes on this server."));
     notes.push("Expression defaults such as DEFAULT (...) need MySQL 8.0.13 or later and fail on MySQL ".concat(server, "."));
   }
   return notes;
@@ -3737,8 +3838,51 @@ var adaptSQLForServer = function adaptSQLForServer(sql, serverVersion) {
     return code.replace(/\b\w+?_0900_\w+/gi, function (collation) {
       var _portableCollation;
       return (_portableCollation = portableCollation(collation)) !== null && _portableCollation !== void 0 ? _portableCollation : collation;
-    }).replace(/\butf8mb3_(\w+)/gi, 'utf8_$1');
+    }).replace(/\butf8mb3_(\w+)/gi, 'utf8_$1')
+    // 8.0 prints geometrycollection as geomcollection, which 5.7 rejects
+    .replace(/\bgeomcollection\b/gi, 'geometrycollection');
   });
+};
+
+// The only charset whose default collation changed between 5.7 and 8.0.
+var LEGACY_DEFAULTS = {
+  utf8mb4: 'utf8mb4_general_ci'
+};
+var isLegacyTemplate = function isLegacyTemplate(templateVersion) {
+  return isBefore80(templateVersion);
+};
+
+/**
+ * Default collations for resolving what a template means. A 5.7 template
+ * leaves utf8mb4_general_ci implicit because it was 5.7's default; on 8.0 the
+ * same text would mean utf8mb4_0900_ai_ci. With an unknown template version
+ * the server's defaults are used, as before.
+ */
+var templateDefaultCollations = function templateDefaultCollations(templateVersion) {
+  var serverDefaults = arguments.length > 1 && arguments[1] !== undefined ? arguments[1] : {};
+  return isLegacyTemplate(templateVersion) ? _objectSpread2(_objectSpread2({}, serverDefaults), LEGACY_DEFAULTS) : serverDefaults;
+};
+
+/**
+ * Make a 5.7 template's implicit utf8mb4 collation explicit before running its
+ * CREATE TABLE on 8.0, so the restored table keeps 5.7's collation instead of
+ * silently taking 8.0's default.
+ */
+var pinTemplateCollations = function pinTemplateCollations(sql, templateVersion, serverVersion) {
+  if (typeof sql !== 'string' || !isLegacyTemplate(templateVersion) || !serverVersion || isBefore80(serverVersion)) return sql;
+  return transformSQLCode(sql, function (code) {
+    return code.replace(/(\bCHARSET\s*=\s*utf8mb4\b)(?!\s+COLLATE)/gi, "$1 COLLATE=".concat(LEGACY_DEFAULTS.utf8mb4)).replace(/(\bCHARACTER SET\s+utf8mb4\b)(?!\s+COLLATE)/gi, "$1 COLLATE ".concat(LEGACY_DEFAULTS.utf8mb4));
+  });
+};
+
+// The SQL code of a statement with string literals, quoted names and comments removed.
+var sqlCodeOnly = function sqlCodeOnly(sql) {
+  var code = '';
+  transformSQLCode(sql, function (segment) {
+    code += "".concat(segment, " ");
+    return segment;
+  });
+  return code;
 };
 
 // A dump is a directory containing <directory-name>.json. Root-level config
@@ -3992,6 +4136,11 @@ var COLUMN_DETAILS = ['OnUpdate', 'Charset', 'Collate', 'Comment', 'Generated'];
 var normalizedDefault = function normalizedDefault(field) {
   return field.Default === undefined && !field.NotNull ? 'NULL' : field.Default;
 };
+// An expression default (8.0.13+) is SQL: compare it the way other SQL is compared.
+var comparableDefault = function comparableDefault(field) {
+  var value = normalizedDefault(field);
+  return !field.DefaultQuoted && typeof value === 'string' && value.startsWith('(') ? normalizeServerExpression(value) : value;
+};
 var isPrimaryIndex$1 = function isPrimaryIndex(index) {
   return !!index.Primary || index.Name === 'PRIMARY';
 };
@@ -4022,13 +4171,24 @@ var parseTable = function parseTable(contents, serverVersion) {
     }
     return details;
   });
+  // 5.7 accepts INVISIBLE (via a compatibility rewrite) and DESC key parts but
+  // stores every index visible and ascending. Compare what 5.7 can hold, or
+  // the difference could never be repaired.
+  var before80 = Number(String(serverVersion).split('.')[0]) < 8;
   var indexes = parsed.indexes.map(function (index) {
-    if (Number(String(serverVersion).split('.')[0]) < 8 && index.Visible === false) {
-      var compatible = _objectSpread2({}, index);
-      delete compatible.Visible;
-      return compatible;
-    }
-    return index;
+    // InnoDB and MyISAM only build BTREE indexes: 5.7 prints a requested
+    // USING HASH, 8.0 omits it. It is not a difference on those engines.
+    if (index.Type === 'HASH' && /^(?:InnoDB|MyISAM)$/i.test(parsed.engine || '')) index = _objectSpread2(_objectSpread2({}, index), {}, {
+      Type: undefined
+    });
+    if (!before80) return index;
+    var compatible = _objectSpread2(_objectSpread2({}, index), {}, {
+      ColumnName: index.ColumnName.map(function (part) {
+        return part.startsWith('(') ? part : part.replace(/\s+DESC$/i, '');
+      })
+    });
+    if (compatible.Visible === false) delete compatible.Visible;
+    return compatible;
   });
   return _objectSpread2(_objectSpread2(_objectSpread2({}, contents), parsed), {}, {
     columns: columns,
@@ -4047,10 +4207,52 @@ var collationOf = function collationOf(field, table, defaults) {
   return normalizeVersionFormatting(field.Collate || (!field.Charset ? table.collate : null) || defaults[charsetOf(field, table)] || null);
 };
 var normalizedExpression = function normalizedExpression(expression) {
-  return expression ? normalizeSQLDefinition(expression) : null;
+  return expression ? normalizeServerExpression(expression) : null;
 };
 
-/** The fourth argument supplies serverVersion for 8.0 -> 5.7 compatibility. */
+// The common columns that have to move for the live order to match the template:
+// those outside a longest common subsequence of the two orders. Moving one column
+// therefore reports that column, not every column it was moved past.
+var movedColumns = function movedColumns(expected, current) {
+  var rows = expected.length;
+  var cols = current.length;
+  var lcs = Array.from({
+    length: rows + 1
+  }, function () {
+    return new Uint32Array(cols + 1);
+  });
+  for (var i = rows - 1; i >= 0; i--) for (var j = cols - 1; j >= 0; j--) {
+    lcs[i][j] = expected[i] === current[j] ? lcs[i + 1][j + 1] + 1 : Math.max(lcs[i + 1][j], lcs[i][j + 1]);
+  }
+  var kept = new Set();
+  for (var _i2 = 0, _j = 0; _i2 < rows && _j < cols;) {
+    if (expected[_i2] === current[_j]) {
+      kept.add(expected[_i2]);
+      _i2++;
+      _j++;
+    } else if (lcs[_i2 + 1][_j] >= lcs[_i2][_j + 1]) _i2++;else _j++;
+  }
+  return new Set(expected.filter(function (name) {
+    return !kept.has(name);
+  }));
+};
+
+// Readable expected/current values for each reported change, so a report shows
+// the values that were actually compared (effective charset, NULL/NOT NULL, the
+// preceding column) rather than raw parser properties that may be absent.
+var shown = function shown(value) {
+  return value === undefined || value === null || value === '' ? null : value;
+};
+var placement = function placement(after) {
+  return after === null ? 'FIRST' : "AFTER ".concat(after);
+};
+
+/**
+ * The fourth argument supplies serverVersion for 8.0 -> 5.7 compatibility, the
+ * live server's defaultCollations, and templateVersion (the MySQL version the
+ * template was dumped from), which decides what an implicit collation in the
+ * template means.
+ */
 var findDifferences = function findDifferences(expected, current) {
   var getTableOptions = arguments.length > 2 && arguments[2] !== undefined ? arguments[2] : function () {
     return {};
@@ -4059,18 +4261,32 @@ var findDifferences = function findDifferences(expected, current) {
     serverVersion = _ref.serverVersion,
     database = _ref.database,
     _ref$defaultCollation = _ref.defaultCollations,
-    defaultCollations = _ref$defaultCollation === void 0 ? {} : _ref$defaultCollation;
-  var defaults = Object.fromEntries(Object.entries(defaultCollations).map(function (_ref2) {
-    var _ref3 = _slicedToArray(_ref2, 2),
-      charset = _ref3[0],
-      collation = _ref3[1];
-    return [normalizeVersionFormatting(charset), normalizeVersionFormatting(collation)];
-  }));
+    defaultCollations = _ref$defaultCollation === void 0 ? {} : _ref$defaultCollation,
+    templateVersion = _ref.templateVersion;
+  var normalizeDefaults = function normalizeDefaults(collations) {
+    return Object.fromEntries(Object.entries(collations).map(function (_ref2) {
+      var _ref3 = _slicedToArray(_ref2, 2),
+        charset = _ref3[0],
+        collation = _ref3[1];
+      return [normalizeVersionFormatting(charset), normalizeVersionFormatting(collation)];
+    }));
+  };
+  var defaults = normalizeDefaults(defaultCollations);
+  // What the template's implicit collations meant on the server it came from.
+  var templateDefaults = normalizeDefaults(templateDefaultCollations(templateVersion, defaultCollations));
+  var legacyTemplate = isLegacyTemplate(templateVersion);
+  // 5.7 stores TRUE/FALSE as 1/0, losing the distinction; only when comparing a
+  // template and a server of different major versions are they the same.
+  var major = function major(version) {
+    var _String$match;
+    return (_String$match = String(version !== null && version !== void 0 ? version : '').match(/^(\d+)\./)) === null || _String$match === void 0 ? void 0 : _String$match[1];
+  };
+  var booleans = !!major(templateVersion) && !!major(serverVersion) && major(templateVersion) !== major(serverVersion);
   if (!expected.tables) throw new Error('No tables found in expected');
   if (!current.tables) throw new Error('No tables found in current');
   var differences = [];
-  for (var _i2 = 0, _Object$keys = Object.keys(current.tables); _i2 < _Object$keys.length; _i2++) {
-    var tableName = _Object$keys[_i2];
+  for (var _i3 = 0, _Object$keys = Object.keys(current.tables); _i3 < _Object$keys.length; _i3++) {
+    var tableName = _Object$keys[_i3];
     if (!expected.tables[tableName]) {
       // Remove references owned by tables being dropped before dropping
       // any table. This also handles cycles without disabling FK checks.
@@ -4098,7 +4314,7 @@ var findDifferences = function findDifferences(expected, current) {
     }
   }
   var _loop = function _loop() {
-    var _Object$entries$_i = _slicedToArray(_Object$entries[_i3], 2),
+    var _Object$entries$_i = _slicedToArray(_Object$entries[_i4], 2),
       tableName = _Object$entries$_i[0],
       stored = _Object$entries$_i[1];
     var contents = parseTable(stored, serverVersion);
@@ -4107,7 +4323,7 @@ var findDifferences = function findDifferences(expected, current) {
       constraints = contents.constraints,
       triggers = contents.triggers;
     if (!current.tables[tableName]) {
-      var createSQL = applyAutoIncrementOption(stored.createSQL, getTableOptions(tableName).autoIncrement);
+      var createSQL = pinTemplateCollations(applyAutoIncrementOption(stored.createSQL, getTableOptions(tableName).autoIncrement), templateVersion, serverVersion);
       var plan = splitTableForeignKeys(createSQL);
       differences.push({
         type: 'missing_table',
@@ -4165,7 +4381,7 @@ var findDifferences = function findDifferences(expected, current) {
           type: 'missing_trigger',
           tableName: tableName,
           trigger: trigger
-        });else if (trigger.Definition !== undefined && normalizeSQLDefinition((_currentTrigger$Defin = currentTrigger.Definition) !== null && _currentTrigger$Defin !== void 0 ? _currentTrigger$Defin : '') !== normalizeSQLDefinition(adaptSQLForServer(trigger.Definition, serverVersion))) differences.push({
+        });else if (trigger.Definition !== undefined && normalizeTriggerDefinition((_currentTrigger$Defin = currentTrigger.Definition) !== null && _currentTrigger$Defin !== void 0 ? _currentTrigger$Defin : '') !== normalizeTriggerDefinition(adaptSQLForServer(trigger.Definition, serverVersion))) differences.push({
           type: 'mismatched_trigger',
           tableName: tableName,
           trigger: trigger,
@@ -4202,9 +4418,12 @@ var findDifferences = function findDifferences(expected, current) {
       _iterator5.f();
     }
     var tableOptions = {};
-    for (var _i4 = 0, _arr = ['engine', 'charset', 'collate']; _i4 < _arr.length; _i4++) {
-      var key = _arr[_i4];
-      if (contents[key] && normalizeVersionFormatting(contents[key]).toLowerCase() !== normalizeVersionFormatting(live[key] || (key === 'collate' ? defaults[normalizeVersionFormatting(live.charset)] : '') || '').toLowerCase()) tableOptions[key] = contents[key];
+    // A legacy (5.7) template's implicit table collation is its charset's 5.7 default.
+    var expectedOptions = _objectSpread2({}, contents);
+    if (legacyTemplate && !contents.collate && contents.charset) expectedOptions.collate = templateDefaults[normalizeVersionFormatting(contents.charset)] || null;
+    for (var _i5 = 0, _arr = ['engine', 'charset', 'collate']; _i5 < _arr.length; _i5++) {
+      var key = _arr[_i5];
+      if (expectedOptions[key] && normalizeVersionFormatting(expectedOptions[key]).toLowerCase() !== normalizeVersionFormatting(live[key] || (key === 'collate' ? defaults[normalizeVersionFormatting(live.charset)] : '') || '').toLowerCase()) tableOptions[key] = expectedOptions[key];
     }
     if (Object.keys(tableOptions).length) {
       if (tableOptions.collate && contents.charset) tableOptions.charset = contents.charset;
@@ -4225,12 +4444,11 @@ var findDifferences = function findDifferences(expected, current) {
     var currentNames = live.columns.map(function (field) {
       return field.Field;
     });
-    var expectedCommon = expectedNames.filter(function (name) {
+    var moved = movedColumns(expectedNames.filter(function (name) {
       return currentNames.includes(name);
-    });
-    var currentCommon = currentNames.filter(function (name) {
+    }), currentNames.filter(function (name) {
       return expectedNames.includes(name);
-    });
+    }));
     var _iterator6 = _createForOfIteratorHelper(live.columns),
       _step6;
     try {
@@ -4259,36 +4477,61 @@ var findDifferences = function findDifferences(expected, current) {
           return f.Field === field.Field;
         });
         if (!currentField) {
+          // Like a CHANGE, an ADD must state a legacy template's implicit collation.
+          var added = legacyTemplate && textColumn(field) && !field.Collate && charsetOf(field, expectedOptions) ? _objectSpread2(_objectSpread2({}, field), {}, {
+            Charset: charsetOf(field, expectedOptions),
+            Collate: collationOf(field, expectedOptions, templateDefaults)
+          }) : field;
           differences.push({
             type: 'missing_field',
             tableName: tableName,
-            field: field,
+            field: added,
             after: after
           });
           return 1; // continue
         }
         var changed = [];
-        if (!!field.NotNull !== !!currentField.NotNull) changed.push('Null');
-        if (normalizedDefault(field) !== normalizedDefault(currentField) || !!field.DefaultQuoted !== !!currentField.DefaultQuoted) changed.push('Default');
-        if (normalizeColumnType(field.Type) !== normalizeColumnType(currentField.Type) && !(field.Type === 'varchar' && currentField.Type.startsWith('varchar('))) changed.push('Type');
-        if (!!field.AutoIncrement !== !!currentField.AutoIncrement) changed.push('AutoIncrement');
-        if (normalizedExpression(field.OnUpdate) !== normalizedExpression(currentField.OnUpdate)) changed.push('OnUpdate');
-        if (normalizedExpression(field.Generated) !== normalizedExpression(currentField.Generated)) changed.push('Generated');
-        if ((field.Comment || '') !== (currentField.Comment || '')) changed.push('Comment');
+        var comparison = {};
+        var change = function change(name, expectedValue, currentValue) {
+          changed.push(name);
+          comparison[name] = {
+            expected: shown(expectedValue),
+            current: shown(currentValue)
+          };
+        };
+        var nullability = function nullability(column) {
+          return column.NotNull ? 'NOT NULL' : 'NULL';
+        };
+        var defaultText = function defaultText(column) {
+          return column.DefaultQuoted ? "'".concat(column.Default, "'") : normalizedDefault(column);
+        };
+        if (!!field.NotNull !== !!currentField.NotNull) change('Null', nullability(field), nullability(currentField));
+        if (comparableDefault(field) !== comparableDefault(currentField) || !!field.DefaultQuoted !== !!currentField.DefaultQuoted) change('Default', defaultText(field), defaultText(currentField));
+        if (normalizeColumnType(field.Type) !== normalizeColumnType(currentField.Type) && !(field.Type === 'varchar' && currentField.Type.startsWith('varchar('))) change('Type', field.Type, currentField.Type);
+        if (!!field.AutoIncrement !== !!currentField.AutoIncrement) change('AutoIncrement', !!field.AutoIncrement, !!currentField.AutoIncrement);
+        if (normalizedExpression(field.OnUpdate) !== normalizedExpression(currentField.OnUpdate)) change('OnUpdate', field.OnUpdate, currentField.OnUpdate);
+        if (normalizedExpression(field.Generated) !== normalizedExpression(currentField.Generated)) change('Generated', field.Generated, currentField.Generated);
+        if ((field.Comment || '') !== (currentField.Comment || '')) change('Comment', field.Comment, currentField.Comment);
         if (textColumn(field)) {
-          if (charsetOf(field, contents) && charsetOf(field, contents) !== charsetOf(currentField, live)) changed.push('Charset');
-          if (collationOf(field, contents, defaults) && collationOf(field, contents, defaults) !== collationOf(currentField, live, defaults)) changed.push('Collate');
+          var charset = charsetOf(field, contents);
+          var collation = collationOf(field, expectedOptions, templateDefaults);
+          if (charset && charset !== charsetOf(currentField, live)) change('Charset', charset, charsetOf(currentField, live));
+          if (collation && collation !== collationOf(currentField, live, defaults)) change('Collate', collation, collationOf(currentField, live, defaults));
         }
-        if (expectedCommon.indexOf(field.Field) !== currentCommon.indexOf(field.Field)) changed.push('Position');
+        if (moved.has(field.Field)) {
+          var livePosition = live.columns.indexOf(currentField);
+          change('Position', placement(after), placement(livePosition ? live.columns[livePosition - 1].Field : null));
+        }
         if (changed.length) {
           // Restate effective defaults so CHANGE cannot inherit a drifted charset.
           var desired = _objectSpread2({}, field);
           if (textColumn(field) && charsetOf(field, contents)) desired.Charset = charsetOf(field, contents);
-          if (textColumn(field) && collationOf(field, contents, defaults)) desired.Collate = collationOf(field, contents, defaults);
+          if (textColumn(field) && collationOf(field, expectedOptions, templateDefaults)) desired.Collate = collationOf(field, expectedOptions, templateDefaults);
           differences.push({
             type: 'mismatched_field',
             info: changed[0],
             changes: changed,
+            comparison: comparison,
             tableName: tableName,
             field: desired,
             currentField: currentField,
@@ -4410,7 +4653,7 @@ var findDifferences = function findDifferences(expected, current) {
       _iterator1.f();
     }
   };
-  for (var _i3 = 0, _Object$entries = Object.entries(expected.tables); _i3 < _Object$entries.length; _i3++) {
+  for (var _i4 = 0, _Object$entries = Object.entries(expected.tables); _i4 < _Object$entries.length; _i4++) {
     if (_loop()) continue;
   }
   var _iterator10 = _createForOfIteratorHelper(expected.procedures || []),
@@ -4437,25 +4680,29 @@ var findDifferences = function findDifferences(expected, current) {
   } finally {
     _iterator10.f();
   }
-  for (var _i5 = 0, _Object$entries2 = Object.entries(expected.views || {}); _i5 < _Object$entries2.length; _i5++) {
+  for (var _i6 = 0, _Object$entries2 = Object.entries(expected.views || {}); _i6 < _Object$entries2.length; _i6++) {
     var _current$views;
-    var _Object$entries2$_i = _slicedToArray(_Object$entries2[_i5], 2),
+    var _Object$entries2$_i = _slicedToArray(_Object$entries2[_i6], 2),
       viewName = _Object$entries2$_i[0],
       definition = _Object$entries2$_i[1];
     if (!((_current$views = current.views) !== null && _current$views !== void 0 && _current$views[viewName])) differences.push({
       type: 'missing_view',
       viewName: viewName,
       definition: definition
-    });else if (normalizeSQLDefinition(current.views[viewName]) !== normalizeSQLDefinition(adaptSQLForServer(definition, serverVersion))) differences.push({
+    });else if (normalizeViewDefinition(current.views[viewName], {
+      booleans: booleans
+    }) !== normalizeViewDefinition(adaptSQLForServer(definition, serverVersion), {
+      booleans: booleans
+    })) differences.push({
       type: 'mismatched_view',
       viewName: viewName,
       definition: definition,
       current: current.views[viewName]
     });
   }
-  for (var _i6 = 0, _Object$keys2 = Object.keys(current.views || {}); _i6 < _Object$keys2.length; _i6++) {
+  for (var _i7 = 0, _Object$keys2 = Object.keys(current.views || {}); _i7 < _Object$keys2.length; _i7++) {
     var _expected$views;
-    var _viewName = _Object$keys2[_i6];
+    var _viewName = _Object$keys2[_i7];
     if (!((_expected$views = expected.views) !== null && _expected$views !== void 0 && _expected$views[_viewName])) differences.push({
       type: 'extra_view',
       viewName: _viewName
@@ -4467,6 +4714,10 @@ var findDifferences = function findDifferences(expected, current) {
 // Cross-schema scheduling is internal: a caller-supplied JSON property cannot
 // redirect an operation outside the database selected by the API.
 var targetDatabase = Symbol('targetDatabase');
+// ER_BAD_FT_COLUMN: every column of a FULLTEXT index must share one charset/collation
+var isFulltextColumnError = function isFulltextColumnError(error) {
+  return (error === null || error === void 0 ? void 0 : error.code) === 'ER_BAD_FT_COLUMN' || (error === null || error === void 0 ? void 0 : error.errno) === 1283 || /cannot be part of FULLTEXT index/i.test((error === null || error === void 0 ? void 0 : error.message) || '');
+};
 var isViewDependencyError = function isViewDependencyError(error) {
   return ['ER_NO_SUCH_TABLE', 'ER_VIEW_INVALID'].includes(error.code) || [1146, 1356].includes(error.errno);
 };
@@ -4608,10 +4859,174 @@ var compatRewrites = [function (sql, errorMessage) {
  * (e.g. an 8.0 collation on 5.7), each as { type, tableName, description, message }.
  */
 var applyDifferences = /*#__PURE__*/function () {
-  var _ref = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee3(connection, database, differences) {
-    var failures, warnings, deferredViews, completedViews, scope, fail, appliedTogether, removedColumns, indexRemovedWithColumns, current, warn, serverVersion, query, replaceStoredObject, _iterator, _step, _loop, _ret, pending, _iterator2, _step2, diff, _i3, _deferredViews, _deferredViews$_i, _diff, error;
-    return _regeneratorRuntime().wrap(function _callee3$(_context5) {
-      while (1) switch (_context5.prev = _context5.next) {
+  var _ref = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee(connection, database, differences) {
+    var _yield$matchMySQL8Tim, serverVersion, restore;
+    return _regeneratorRuntime().wrap(function _callee$(_context) {
+      while (1) switch (_context.prev = _context.next) {
+        case 0:
+          _context.next = 2;
+          return matchMySQL8TimestampDefaults(connection);
+        case 2:
+          _yield$matchMySQL8Tim = _context.sent;
+          serverVersion = _yield$matchMySQL8Tim.serverVersion;
+          restore = _yield$matchMySQL8Tim.restore;
+          _context.prev = 5;
+          _context.next = 8;
+          return applyInSession(connection, database, differences, serverVersion);
+        case 8:
+          return _context.abrupt("return", _context.sent);
+        case 9:
+          _context.prev = 9;
+          _context.next = 12;
+          return restore();
+        case 12:
+          return _context.finish(9);
+        case 13:
+        case "end":
+          return _context.stop();
+      }
+    }, _callee, null, [[5,, 9, 13]]);
+  }));
+  return function applyDifferences(_x, _x2, _x3) {
+    return _ref.apply(this, arguments);
+  };
+}();
+
+// A dump written by MySQL 8 assumes explicit_defaults_for_timestamp is on, where a
+// `timestamp NOT NULL` column with no DEFAULT is just a column with no default. With
+// the MySQL 5.7 default of off, the server instead assigns every TIMESTAMP NOT NULL
+// column after the first an implicit '0000-00-00 00:00:00', which strict mode then
+// rejects at CREATE TABLE time. Matching MySQL 8 for the repair applies that DDL as
+// written; DDL that states its defaults - everything SHOW CREATE TABLE emits, on
+// either version - parses the same way with the setting on or off.
+// The connection belongs to the caller (the CAM monitor, the API server) and is
+// reused afterwards, so the session's own value is put back when the repair ends,
+// whether it succeeded or not. The value is read with the server version (MySQL 8
+// templates need that too) in one round trip. Returns the version and the restore.
+var matchMySQL8TimestampDefaults = /*#__PURE__*/function () {
+  var _ref2 = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee4(connection) {
+    var _session$version, _session, _session2;
+    var unchanged, session, _yield$connection$que, _yield$connection$que2, serverVersion, previous;
+    return _regeneratorRuntime().wrap(function _callee4$(_context4) {
+      while (1) switch (_context4.prev = _context4.next) {
+        case 0:
+          unchanged = /*#__PURE__*/function () {
+            var _ref3 = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee2() {
+              return _regeneratorRuntime().wrap(function _callee2$(_context2) {
+                while (1) switch (_context2.prev = _context2.next) {
+                  case 0:
+                  case "end":
+                    return _context2.stop();
+                }
+              }, _callee2);
+            }));
+            return function unchanged() {
+              return _ref3.apply(this, arguments);
+            };
+          }();
+          _context4.prev = 1;
+          _context4.next = 4;
+          return connection.query('SELECT VERSION() AS version, @@SESSION.explicit_defaults_for_timestamp AS explicit_defaults_for_timestamp');
+        case 4:
+          _yield$connection$que = _context4.sent;
+          _yield$connection$que2 = _slicedToArray(_yield$connection$que, 1);
+          session = _yield$connection$que2[0];
+          _context4.next = 17;
+          break;
+        case 9:
+          _context4.prev = 9;
+          _context4.t0 = _context4["catch"](1);
+          logger("Could not read explicit_defaults_for_timestamp for this session: ".concat(_context4.t0.message));
+          _context4.next = 14;
+          return getServerVersion(connection);
+        case 14:
+          _context4.t1 = _context4.sent;
+          _context4.t2 = unchanged;
+          return _context4.abrupt("return", {
+            serverVersion: _context4.t1,
+            restore: _context4.t2
+          });
+        case 17:
+          serverVersion = (_session$version = (_session = session) === null || _session === void 0 ? void 0 : _session.version) !== null && _session$version !== void 0 ? _session$version : null;
+          previous = (_session2 = session) === null || _session2 === void 0 ? void 0 : _session2.explicit_defaults_for_timestamp; // Without the prior value the change couldn't be undone, so leave the session alone
+          if (!(previous === undefined || previous === null)) {
+            _context4.next = 21;
+            break;
+          }
+          return _context4.abrupt("return", {
+            serverVersion: serverVersion,
+            restore: unchanged
+          });
+        case 21:
+          if (!Number(previous)) {
+            _context4.next = 23;
+            break;
+          }
+          return _context4.abrupt("return", {
+            serverVersion: serverVersion,
+            restore: unchanged
+          });
+        case 23:
+          _context4.prev = 23;
+          _context4.next = 26;
+          return connection.query('SET SESSION explicit_defaults_for_timestamp = 1');
+        case 26:
+          _context4.next = 32;
+          break;
+        case 28:
+          _context4.prev = 28;
+          _context4.t3 = _context4["catch"](23);
+          logger("Could not set explicit_defaults_for_timestamp for this session: ".concat(_context4.t3.message));
+          return _context4.abrupt("return", {
+            serverVersion: serverVersion,
+            restore: unchanged
+          });
+        case 32:
+          return _context4.abrupt("return", {
+            serverVersion: serverVersion,
+            restore: function () {
+              var _restore = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee3() {
+                return _regeneratorRuntime().wrap(function _callee3$(_context3) {
+                  while (1) switch (_context3.prev = _context3.next) {
+                    case 0:
+                      _context3.prev = 0;
+                      _context3.next = 3;
+                      return connection.query('SET SESSION explicit_defaults_for_timestamp = 0');
+                    case 3:
+                      _context3.next = 9;
+                      break;
+                    case 5:
+                      _context3.prev = 5;
+                      _context3.t0 = _context3["catch"](0);
+                      console.error("Could not restore explicit_defaults_for_timestamp = 0 for this session: ".concat(_context3.t0.message));
+                      logger("Could not restore explicit_defaults_for_timestamp = 0 for this session: ".concat(_context3.t0.message));
+                    case 9:
+                    case "end":
+                      return _context3.stop();
+                  }
+                }, _callee3, null, [[0, 5]]);
+              }));
+              function restore() {
+                return _restore.apply(this, arguments);
+              }
+              return restore;
+            }()
+          });
+        case 33:
+        case "end":
+          return _context4.stop();
+      }
+    }, _callee4, null, [[1, 9], [23, 28]]);
+  }));
+  return function matchMySQL8TimestampDefaults(_x4) {
+    return _ref2.apply(this, arguments);
+  };
+}();
+var applyInSession = /*#__PURE__*/function () {
+  var _ref4 = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee7(connection, database, differences, serverVersion) {
+    var failures, warnings, deferredViews, completedViews, scope, fail, appliedTogether, removedColumns, indexRemovedWithColumns, fieldClauses, current, warn, query, replaceStoredObject, _iterator, _step, _loop, _ret, pending, _iterator2, _step2, diff, _i3, _deferredViews, _deferredViews$_i, _diff, error;
+    return _regeneratorRuntime().wrap(function _callee7$(_context9) {
+      while (1) switch (_context9.prev = _context9.next) {
         case 0:
           failures = [];
           warnings = [];
@@ -4642,6 +5057,22 @@ var applyDifferences = /*#__PURE__*/function () {
               var _removedColumns$get;
               return (_removedColumns$get = removedColumns.get(tableName)) === null || _removedColumns$get === void 0 ? void 0 : _removedColumns$get.has(column.replace(/\s+(?:ASC|DESC)$/i, '').replace(/\(\d+\)$/, ''));
             });
+          }; // The ALTER clauses for one missing_field/mismatched_field. MySQL requires
+          // AUTO_INCREMENT to be indexed in the same ALTER that introduces it - a separate
+          // later ADD KEY fails - so that index's clause comes along.
+          fieldClauses = function fieldClauses(diff) {
+            var tableName = diff.tableName,
+              field = diff.field;
+            var requiredKey = field.AutoIncrement && differences.find(function (candidate) {
+              var _candidate$index$Colu;
+              return candidate.type === 'missing_index' && candidate.tableName === tableName && ((_candidate$index$Colu = candidate.index.ColumnName[0]) === null || _candidate$index$Colu === void 0 ? void 0 : _candidate$index$Colu.replace(/\(\d+\)$/, '')) === field.Field;
+            });
+            var column = diff.type === 'missing_field' ? "ADD COLUMN ".concat(quoteIdentifier(field.Field), " ").concat(columnDefinition(field)).concat(columnPosition(diff)) : "CHANGE ".concat(quoteIdentifier(field.Field), " ").concat(quoteIdentifier(field.Field), " ").concat(columnDefinition(field, diff.currentField)).concat(columnPosition(diff));
+            return {
+              column: column,
+              requiredKey: requiredKey,
+              clauses: requiredKey ? [column, addIndexClause(requiredKey.index)] : [column]
+            };
           };
           current = null; // the difference being applied, for warnings from query()
           warn = function warn(diff, message) {
@@ -4653,162 +5084,141 @@ var applyDifferences = /*#__PURE__*/function () {
               message: message
             }));
           }; // Template SQL from MySQL 8.0 can name collations a 5.7 server doesn't have
-          _context5.next = 13;
-          return getServerVersion(connection);
-        case 13:
-          serverVersion = _context5.sent;
           query = /*#__PURE__*/function () {
-            var _ref2 = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee(sql, values) {
+            var _ref5 = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee5(sql, values) {
               var adapted;
-              return _regeneratorRuntime().wrap(function _callee$(_context) {
-                while (1) switch (_context.prev = _context.next) {
+              return _regeneratorRuntime().wrap(function _callee5$(_context5) {
+                while (1) switch (_context5.prev = _context5.next) {
                   case 0:
                     adapted = adaptSQLForServer(sql, serverVersion);
                     if (adapted !== sql) {
                       console.log("Adapted for MySQL ".concat(serverVersion, ": ").concat(adapted));
                       if (current) warn(current, "MySQL ".concat(serverVersion, " required a charset/collation compatibility replacement; collation replacements are approximations and can change sort, accent/case and trailing-space comparisons"));
                     }
-                    return _context.abrupt("return", connection.query(adapted, values));
+                    return _context5.abrupt("return", connection.query(adapted, values));
                   case 3:
                   case "end":
-                    return _context.stop();
+                    return _context5.stop();
                 }
-              }, _callee);
+              }, _callee5);
             }));
-            return function query(_x4, _x5) {
-              return _ref2.apply(this, arguments);
+            return function query(_x9, _x0) {
+              return _ref5.apply(this, arguments);
             };
           }(); // MySQL has no atomic CREATE OR REPLACE for procedures/triggers. Preserve
           // the live definition before dropping it, and recover it if CREATE fails.
           replaceStoredObject = /*#__PURE__*/function () {
-            var _ref3 = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee2(kind, name, definition, definitionKey) {
+            var _ref6 = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee6(kind, name, definition, definitionKey) {
               var _yield$query, _yield$query2, original, previous, session, _yield$query3, _yield$query4, _i, _arr, setting, _i2, _arr2, _setting;
-              return _regeneratorRuntime().wrap(function _callee2$(_context2) {
-                while (1) switch (_context2.prev = _context2.next) {
+              return _regeneratorRuntime().wrap(function _callee6$(_context6) {
+                while (1) switch (_context6.prev = _context6.next) {
                   case 0:
-                    _context2.next = 2;
+                    _context6.next = 2;
                     return query("SHOW CREATE ".concat(kind, " ").concat(quoteIdentifier(name)));
                   case 2:
-                    _yield$query = _context2.sent;
+                    _yield$query = _context6.sent;
                     _yield$query2 = _slicedToArray(_yield$query, 1);
                     original = _yield$query2[0];
                     previous = original === null || original === void 0 ? void 0 : original[definitionKey];
                     if (previous) {
-                      _context2.next = 8;
+                      _context6.next = 8;
                       break;
                     }
                     throw new Error("Cannot replace ".concat(kind.toLowerCase(), " ").concat(name, ": its current definition could not be read"));
                   case 8:
-                    _context2.next = 10;
+                    _context6.next = 10;
                     return query("DROP ".concat(kind, " ").concat(quoteIdentifier(name)));
                   case 10:
-                    _context2.prev = 10;
-                    _context2.next = 13;
+                    _context6.prev = 10;
+                    _context6.next = 13;
                     return query(definition);
                   case 13:
-                    _context2.next = 60;
+                    _context6.next = 60;
                     break;
                   case 15:
-                    _context2.prev = 15;
-                    _context2.t0 = _context2["catch"](10);
-                    _context2.prev = 17;
+                    _context6.prev = 15;
+                    _context6.t0 = _context6["catch"](10);
+                    _context6.prev = 17;
                     if (!(original.sql_mode !== undefined)) {
-                      _context2.next = 33;
+                      _context6.next = 33;
                       break;
                     }
-                    _context2.next = 21;
+                    _context6.next = 21;
                     return query('SELECT @@SESSION.sql_mode AS sql_mode, @@SESSION.character_set_client AS character_set_client, @@SESSION.collation_connection AS collation_connection');
                   case 21:
-                    _yield$query3 = _context2.sent;
+                    _yield$query3 = _context6.sent;
                     _yield$query4 = _slicedToArray(_yield$query3, 1);
                     session = _yield$query4[0];
                     _i = 0, _arr = ['sql_mode', 'character_set_client', 'collation_connection'];
                   case 25:
                     if (!(_i < _arr.length)) {
-                      _context2.next = 33;
+                      _context6.next = 33;
                       break;
                     }
                     setting = _arr[_i];
                     if (!(original[setting] !== undefined)) {
-                      _context2.next = 30;
+                      _context6.next = 30;
                       break;
                     }
-                    _context2.next = 30;
+                    _context6.next = 30;
                     return query("SET SESSION ".concat(setting, " = ?"), [original[setting]]);
                   case 30:
                     _i++;
-                    _context2.next = 25;
+                    _context6.next = 25;
                     break;
                   case 33:
-                    _context2.next = 35;
+                    _context6.next = 35;
                     return query(previous);
                   case 35:
-                    _context2.t0.message += "; original ".concat(kind.toLowerCase(), " restored");
-                    _context2.next = 42;
+                    _context6.t0.message += "; original ".concat(kind.toLowerCase(), " restored");
+                    _context6.next = 42;
                     break;
                   case 38:
-                    _context2.prev = 38;
-                    _context2.t1 = _context2["catch"](17);
-                    _context2.t0.message += "; restoring the original ".concat(kind.toLowerCase(), " also failed: ").concat(_context2.t1.message);
-                    _context2.t0.recoverySQL = previous;
+                    _context6.prev = 38;
+                    _context6.t1 = _context6["catch"](17);
+                    _context6.t0.message += "; restoring the original ".concat(kind.toLowerCase(), " also failed: ").concat(_context6.t1.message);
+                    _context6.t0.recoverySQL = previous;
                   case 42:
-                    _context2.prev = 42;
+                    _context6.prev = 42;
                     if (!session) {
-                      _context2.next = 58;
+                      _context6.next = 58;
                       break;
                     }
                     _i2 = 0, _arr2 = ['sql_mode', 'character_set_client', 'collation_connection'];
                   case 45:
                     if (!(_i2 < _arr2.length)) {
-                      _context2.next = 58;
+                      _context6.next = 58;
                       break;
                     }
                     _setting = _arr2[_i2];
-                    _context2.prev = 47;
-                    _context2.next = 50;
+                    _context6.prev = 47;
+                    _context6.next = 50;
                     return query("SET SESSION ".concat(_setting, " = ?"), [session[_setting]]);
                   case 50:
-                    _context2.next = 55;
+                    _context6.next = 55;
                     break;
                   case 52:
-                    _context2.prev = 52;
-                    _context2.t2 = _context2["catch"](47);
-                    _context2.t0.message += "; could not restore session ".concat(_setting, ": ").concat(_context2.t2.message);
+                    _context6.prev = 52;
+                    _context6.t2 = _context6["catch"](47);
+                    _context6.t0.message += "; could not restore session ".concat(_setting, ": ").concat(_context6.t2.message);
                   case 55:
                     _i2++;
-                    _context2.next = 45;
+                    _context6.next = 45;
                     break;
                   case 58:
-                    return _context2.finish(42);
+                    return _context6.finish(42);
                   case 59:
-                    throw _context2.t0;
+                    throw _context6.t0;
                   case 60:
                   case "end":
-                    return _context2.stop();
+                    return _context6.stop();
                 }
-              }, _callee2, null, [[10, 15], [17, 38, 42, 59], [47, 52]]);
+              }, _callee6, null, [[10, 15], [17, 38, 42, 59], [47, 52]]);
             }));
-            return function replaceStoredObject(_x6, _x7, _x8, _x9) {
-              return _ref3.apply(this, arguments);
+            return function replaceStoredObject(_x1, _x10, _x11, _x12) {
+              return _ref6.apply(this, arguments);
             };
-          }(); // A dump written by MySQL 8 assumes explicit_defaults_for_timestamp is on, where a
-          // `timestamp NOT NULL` column with no DEFAULT is just a column with no default. With
-          // the MySQL 5.7 default of off, the server instead assigns every TIMESTAMP NOT NULL
-          // column after the first an implicit '0000-00-00 00:00:00', which strict mode then
-          // rejects at CREATE TABLE time. Matching MySQL 8 for this session applies that DDL as
-          // written; DDL that states its defaults - everything SHOW CREATE TABLE emits, on
-          // either version - parses the same way with the setting on or off.
-          _context5.prev = 16;
-          _context5.next = 19;
-          return connection.query('SET SESSION explicit_defaults_for_timestamp = 1');
-        case 19:
-          _context5.next = 24;
-          break;
-        case 21:
-          _context5.prev = 21;
-          _context5.t0 = _context5["catch"](16);
-          logger("Could not set explicit_defaults_for_timestamp for this session: ".concat(_context5.t0.message));
-        case 24:
+          }();
           differences.sort(function (a, b) {
             //Sort to make sure we apply the differences in a logical order.
             var typePriority = {
@@ -4839,194 +5249,272 @@ var applyDifferences = /*#__PURE__*/function () {
             return (typePriority[a.type] || 999) - (typePriority[b.type] || 999);
           });
           _iterator = _createForOfIteratorHelper(differences);
-          _context5.prev = 26;
+          _context9.prev = 16;
           _loop = /*#__PURE__*/_regeneratorRuntime().mark(function _loop() {
-            var diff, createDatabaseSQL, tableName, createSQL, sql, _error, changes, _loop2, _tableName, dropTableSQL, requiredKey, addFieldSQL, dropFieldSQL, _tableName2, field, currentField, _requiredKey, modifyFieldSQL, existingColumns, columnNames, missingColumns, addIndexSQL, dropIndexSQL, _tableName3, index, replaceIndexSQL, _diff$currentConstrai2, _diff$currentConstrai, temporary, finalize, clauses, _clauses, _i4, _Object$entries, _Object$entries$_i, key, value, keyword, createViewSQL, dropViewSQL, createTriggerSQL, dropTriggerSQL, columns, insertRowSQL, _createDatabaseSQL;
-            return _regeneratorRuntime().wrap(function _loop$(_context4) {
-              while (1) switch (_context4.prev = _context4.next) {
+            var diff, createDatabaseSQL, tableName, createSQL, sql, _error, changes, _loop2, _tableName, dropTableSQL, _fieldClauses, clauses, requiredKey, addFieldSQL, dropFieldSQL, _tableName2, _fieldClauses2, _clauses, _requiredKey, modifyFieldSQL, group, i, next, parts, keys, combinedSQL, _iterator3, _step3, applied, _iterator4, _step4, key, existingColumns, columnNames, missingColumns, addIndexSQL, dropIndexSQL, _tableName3, index, replaceIndexSQL, _diff$currentConstrai2, _diff$currentConstrai, temporary, finalize, _clauses2, _clauses3, order, options, _iterator5, _step5, _step5$value, _key, value, keyword, createViewSQL, dropViewSQL, createTriggerSQL, dropTriggerSQL, columns, insertRowSQL, _createDatabaseSQL;
+            return _regeneratorRuntime().wrap(function _loop$(_context8) {
+              while (1) switch (_context8.prev = _context8.next) {
                 case 0:
                   diff = _step.value;
                   if (!appliedTogether.has(diff)) {
-                    _context4.next = 3;
+                    _context8.next = 3;
                     break;
                   }
-                  return _context4.abrupt("return", 0);
+                  return _context8.abrupt("return", 0);
                 case 3:
                   current = diff;
-                  _context4.prev = 4;
+                  _context8.prev = 4;
                   if (!(diff.type == 'missing_database')) {
-                    _context4.next = 11;
+                    _context8.next = 11;
                     break;
                   }
                   createDatabaseSQL = "CREATE DATABASE `".concat(diff.database, "`;");
                   console.log("Executing: ".concat(createDatabaseSQL));
-                  _context4.next = 10;
+                  _context8.next = 10;
                   return query(createDatabaseSQL);
                 case 10:
-                  return _context4.abrupt("return", 0);
+                  return _context8.abrupt("return", 0);
                 case 11:
-                  _context4.next = 13;
+                  _context8.next = 13;
                   return query("USE ".concat(quoteIdentifier(diff[targetDatabase] || database)));
                 case 13:
                   if (!(diff.type === 'missing_table')) {
-                    _context4.next = 39;
+                    _context8.next = 39;
                     break;
                   }
                   tableName = diff.tableName, createSQL = diff.createSQL;
                   logger("Creating missing table ".concat(tableName));
                   console.log("Executing: ".concat(createSQL));
-                  _context4.prev = 17;
-                  _context4.next = 20;
+                  _context8.prev = 17;
+                  _context8.next = 20;
                   return query(createSQL);
                 case 20:
-                  _context4.next = 37;
+                  _context8.next = 37;
                   break;
                 case 22:
-                  _context4.prev = 22;
-                  _context4.t0 = _context4["catch"](17);
+                  _context8.prev = 22;
+                  _context8.t0 = _context8["catch"](17);
                   // The dump can name things this server has never heard of - a MySQL 8
                   // collation, index visibility. Amend the statement for whatever the
                   // server objected to and retry, one objection at a time, since it only
                   // reports the first. The table then exists, but not exactly as dumped,
                   // so record every change rather than calling it a clean success.
                   sql = createSQL;
-                  _error = _context4.t0;
+                  _error = _context8.t0;
                   changes = [];
                   _loop2 = /*#__PURE__*/_regeneratorRuntime().mark(function _loop2() {
                     var message, rewrite;
-                    return _regeneratorRuntime().wrap(function _loop2$(_context3) {
-                      while (1) switch (_context3.prev = _context3.next) {
+                    return _regeneratorRuntime().wrap(function _loop2$(_context7) {
+                      while (1) switch (_context7.prev = _context7.next) {
                         case 0:
                           message = _error.message;
                           rewrite = compatRewrites.reduce(function (found, fn) {
                             return found || fn(sql, message);
                           }, null);
                           if (rewrite) {
-                            _context3.next = 4;
+                            _context7.next = 4;
                             break;
                           }
-                          return _context3.abrupt("return", 1);
+                          return _context7.abrupt("return", 1);
                         case 4:
                           sql = rewrite.sql;
                           changes.push(rewrite.message);
                           console.log("Retrying: ".concat(sql));
-                          _context3.prev = 7;
-                          _context3.next = 10;
+                          _context7.prev = 7;
+                          _context7.next = 10;
                           return query(sql);
                         case 10:
                           _error = null;
-                          _context3.next = 16;
+                          _context7.next = 16;
                           break;
                         case 13:
-                          _context3.prev = 13;
-                          _context3.t0 = _context3["catch"](7);
-                          _error = _context3.t0;
+                          _context7.prev = 13;
+                          _context7.t0 = _context7["catch"](7);
+                          _error = _context7.t0;
                         case 16:
                         case "end":
-                          return _context3.stop();
+                          return _context7.stop();
                       }
                     }, _loop2, null, [[7, 13]]);
                   });
                 case 28:
                   if (!(_error && changes.length < compatRewrites.length)) {
-                    _context4.next = 34;
+                    _context8.next = 34;
                     break;
                   }
-                  return _context4.delegateYield(_loop2(), "t1", 30);
+                  return _context8.delegateYield(_loop2(), "t1", 30);
                 case 30:
-                  if (!_context4.t1) {
-                    _context4.next = 32;
+                  if (!_context8.t1) {
+                    _context8.next = 32;
                     break;
                   }
-                  return _context4.abrupt("break", 34);
+                  return _context8.abrupt("break", 34);
                 case 32:
-                  _context4.next = 28;
+                  _context8.next = 28;
                   break;
                 case 34:
                   if (!_error) {
-                    _context4.next = 36;
+                    _context8.next = 36;
                     break;
                   }
                   throw _error;
                 case 36:
                   warn(diff, changes.join('; '));
                 case 37:
-                  _context4.next = 222;
+                  _context8.next = 269;
                   break;
                 case 39:
                   if (!(diff.type === 'extra_table')) {
-                    _context4.next = 48;
+                    _context8.next = 48;
                     break;
                   }
                   _tableName = diff.tableName;
                   logger("Dropping extra table ".concat(_tableName));
                   dropTableSQL = "DROP TABLE `".concat(_tableName, "`;");
                   console.log("Executing: ".concat(dropTableSQL));
-                  _context4.next = 46;
+                  _context8.next = 46;
                   return query(dropTableSQL);
                 case 46:
-                  _context4.next = 222;
+                  _context8.next = 269;
                   break;
                 case 48:
                   if (!(diff.type === 'missing_field')) {
-                    _context4.next = 57;
+                    _context8.next = 57;
                     break;
                   }
                   // Existing rows get the column's default, or the type's implicit default for NOT NULL without one
-                  requiredKey = diff.field.AutoIncrement && differences.find(function (candidate) {
-                    var _candidate$index$Colu;
-                    return candidate.type === 'missing_index' && candidate.tableName === diff.tableName && ((_candidate$index$Colu = candidate.index.ColumnName[0]) === null || _candidate$index$Colu === void 0 ? void 0 : _candidate$index$Colu.replace(/\(\d+\)$/, '')) === diff.field.Field;
-                  });
-                  addFieldSQL = "ALTER TABLE ".concat(quoteIdentifier(diff.tableName), " ADD COLUMN ").concat(quoteIdentifier(diff.field.Field), " ").concat(columnDefinition(diff.field)).concat(columnPosition(diff)).concat(requiredKey ? ", ".concat(addIndexClause(requiredKey.index)) : '', ";");
+                  _fieldClauses = fieldClauses(diff), clauses = _fieldClauses.clauses, requiredKey = _fieldClauses.requiredKey;
+                  addFieldSQL = "ALTER TABLE ".concat(quoteIdentifier(diff.tableName), " ").concat(clauses.join(', '), ";");
                   console.log("Executing: ".concat(addFieldSQL));
-                  _context4.next = 54;
+                  _context8.next = 54;
                   return query(addFieldSQL);
                 case 54:
                   if (requiredKey) appliedTogether.add(requiredKey);
-                  _context4.next = 222;
+                  _context8.next = 269;
                   break;
                 case 57:
                   if (!(diff.type === 'extra_field')) {
-                    _context4.next = 66;
+                    _context8.next = 66;
                     break;
                   }
                   dropFieldSQL = "ALTER TABLE `".concat(diff.tableName, "` DROP COLUMN `").concat(diff.field.Field, "`;");
                   console.log("Executing: ".concat(dropFieldSQL));
-                  _context4.next = 62;
+                  _context8.next = 62;
                   return query(dropFieldSQL);
                 case 62:
                   if (!removedColumns.has(diff.tableName)) removedColumns.set(diff.tableName, new Set());
                   removedColumns.get(diff.tableName).add(diff.field.Field);
-                  _context4.next = 222;
+                  _context8.next = 269;
                   break;
                 case 66:
                   if (!(diff.type === 'mismatched_field')) {
-                    _context4.next = 76;
+                    _context8.next = 112;
                     break;
                   }
-                  _tableName2 = diff.tableName, field = diff.field, currentField = diff.currentField; // MySQL requires AUTO_INCREMENT to be indexed in the same
-                  // ALTER that introduces it. A separate later ADD KEY fails.
-                  _requiredKey = field.AutoIncrement && differences.find(function (candidate) {
-                    var _candidate$index$Colu2;
-                    return candidate.type === 'missing_index' && candidate.tableName === _tableName2 && ((_candidate$index$Colu2 = candidate.index.ColumnName[0]) === null || _candidate$index$Colu2 === void 0 ? void 0 : _candidate$index$Colu2.replace(/\(\d+\)$/, '')) === field.Field;
-                  });
-                  modifyFieldSQL = "ALTER TABLE ".concat(quoteIdentifier(_tableName2), " CHANGE ").concat(quoteIdentifier(field.Field), " ").concat(quoteIdentifier(field.Field), " ").concat(columnDefinition(field, currentField)).concat(columnPosition(diff)).concat(_requiredKey ? ", ".concat(addIndexClause(_requiredKey.index)) : '', ";");
+                  _tableName2 = diff.tableName;
+                  _fieldClauses2 = fieldClauses(diff), _clauses = _fieldClauses2.clauses, _requiredKey = _fieldClauses2.requiredKey;
+                  modifyFieldSQL = "ALTER TABLE ".concat(quoteIdentifier(_tableName2), " ").concat(_clauses.join(', '), ";");
                   console.log("Executing: ".concat(modifyFieldSQL));
-                  _context4.next = 73;
+                  _context8.prev = 71;
+                  _context8.next = 74;
                   return query(modifyFieldSQL);
-                case 73:
+                case 74:
                   if (_requiredKey) appliedTogether.add(_requiredKey);
-                  _context4.next = 222;
+                  _context8.next = 110;
                   break;
-                case 76:
-                  if (!(diff.type === 'missing_index')) {
-                    _context4.next = 92;
+                case 77:
+                  _context8.prev = 77;
+                  _context8.t2 = _context8["catch"](71);
+                  if (isFulltextColumnError(_context8.t2)) {
+                    _context8.next = 81;
                     break;
                   }
-                  _context4.next = 79;
+                  throw _context8.t2;
+                case 81:
+                  group = [diff];
+                  i = differences.indexOf(diff) + 1;
+                case 83:
+                  if (!(i < differences.length)) {
+                    _context8.next = 91;
+                    break;
+                  }
+                  next = differences[i];
+                  if (!(!['missing_field', 'mismatched_field'].includes(next.type) || next.tableName !== _tableName2 || next[targetDatabase] !== diff[targetDatabase] || appliedTogether.has(next))) {
+                    _context8.next = 87;
+                    break;
+                  }
+                  return _context8.abrupt("break", 91);
+                case 87:
+                  group.push(next);
+                case 88:
+                  i++;
+                  _context8.next = 83;
+                  break;
+                case 91:
+                  if (!(group.length === 1)) {
+                    _context8.next = 93;
+                    break;
+                  }
+                  throw _context8.t2;
+                case 93:
+                  parts = group.map(fieldClauses);
+                  keys = _toConsumableArray(new Set(parts.map(function (part) {
+                    return part.requiredKey;
+                  }).filter(function (key) {
+                    return key && !appliedTogether.has(key);
+                  })));
+                  combinedSQL = "ALTER TABLE ".concat(quoteIdentifier(_tableName2), " ").concat([].concat(_toConsumableArray(parts.map(function (part) {
+                    return part.column;
+                  })), _toConsumableArray(keys.map(function (key) {
+                    return addIndexClause(key.index);
+                  }))).join(', '), ";");
+                  console.log("Retrying as one statement: ".concat(combinedSQL));
+                  _context8.prev = 97;
+                  _context8.next = 100;
+                  return query(combinedSQL);
+                case 100:
+                  _context8.next = 106;
+                  break;
+                case 102:
+                  _context8.prev = 102;
+                  _context8.t3 = _context8["catch"](97);
+                  _context8.t2.message += "; retrying together with ".concat(group.slice(1).map(describeDifference$1).join(', '), " in one ALTER also failed: ").concat(_context8.t3.message);
+                  throw _context8.t2;
+                case 106:
+                  _iterator3 = _createForOfIteratorHelper(group.slice(1));
+                  try {
+                    for (_iterator3.s(); !(_step3 = _iterator3.n()).done;) {
+                      applied = _step3.value;
+                      appliedTogether.add(applied);
+                    }
+                  } catch (err) {
+                    _iterator3.e(err);
+                  } finally {
+                    _iterator3.f();
+                  }
+                  _iterator4 = _createForOfIteratorHelper(keys);
+                  try {
+                    for (_iterator4.s(); !(_step4 = _iterator4.n()).done;) {
+                      key = _step4.value;
+                      appliedTogether.add(key);
+                    }
+                  } catch (err) {
+                    _iterator4.e(err);
+                  } finally {
+                    _iterator4.f();
+                  }
+                case 110:
+                  _context8.next = 269;
+                  break;
+                case 112:
+                  if (!(diff.type === 'missing_index')) {
+                    _context8.next = 128;
+                    break;
+                  }
+                  _context8.next = 115;
                   return query("SHOW COLUMNS FROM `".concat(diff.tableName, "`"));
-                case 79:
-                  existingColumns = _context4.sent;
+                case 115:
+                  existingColumns = _context8.sent;
                   columnNames = existingColumns.map(function (col) {
                     return col.Field;
                   }); // Check if all columns for the index exist
@@ -5034,80 +5522,80 @@ var applyDifferences = /*#__PURE__*/function () {
                     return !col.startsWith('(') && !columnNames.includes(col.replace(/\s+(?:ASC|DESC)$/i, '').replace(/\(\d+\)$/, ''));
                   }) : [];
                   if (!(missingColumns.length > 0)) {
-                    _context4.next = 84;
+                    _context8.next = 120;
                     break;
                   }
                   throw new Error("Cannot create index ".concat(diff.index.Name, " on ").concat(diff.tableName, ". Missing columns: ").concat(missingColumns.join(', ')));
-                case 84:
+                case 120:
                   if (!(!Array.isArray(diff.index.ColumnName) || diff.index.ColumnName.length === 0)) {
-                    _context4.next = 86;
+                    _context8.next = 122;
                     break;
                   }
                   throw new Error("Cannot create index ".concat(diff.index.Name, " on ").concat(diff.tableName, ". ColumnName is undefined or empty."));
-                case 86:
+                case 122:
                   addIndexSQL = "ALTER TABLE `".concat(diff.tableName, "` ").concat(addIndexClause(diff.index), ";");
                   console.log("Executing: ".concat(addIndexSQL));
-                  _context4.next = 90;
+                  _context8.next = 126;
                   return query(addIndexSQL);
-                case 90:
-                  _context4.next = 222;
+                case 126:
+                  _context8.next = 269;
                   break;
-                case 92:
+                case 128:
                   if (!(diff.type === 'extra_index')) {
-                    _context4.next = 101;
+                    _context8.next = 137;
                     break;
                   }
                   if (!indexRemovedWithColumns(diff.tableName, diff.index)) {
-                    _context4.next = 95;
+                    _context8.next = 131;
                     break;
                   }
-                  return _context4.abrupt("return", 0);
-                case 95:
+                  return _context8.abrupt("return", 0);
+                case 131:
                   dropIndexSQL = "ALTER TABLE `".concat(diff.tableName, "` ").concat(dropIndexClause(diff.index), ";");
                   console.log("Executing: ".concat(dropIndexSQL));
-                  _context4.next = 99;
+                  _context8.next = 135;
                   return query(dropIndexSQL);
-                case 99:
-                  _context4.next = 222;
+                case 135:
+                  _context8.next = 269;
                   break;
-                case 101:
+                case 137:
                   if (!(diff.type === 'mismatched_index')) {
-                    _context4.next = 116;
+                    _context8.next = 152;
                     break;
                   }
                   _tableName3 = diff.tableName, index = diff.index;
                   if (!(diff.currentIndex && indexStructure(diff.currentIndex) === indexStructure(index) && diff.currentIndex.Visible !== false !== (index.Visible !== false))) {
-                    _context4.next = 107;
+                    _context8.next = 143;
                     break;
                   }
-                  _context4.next = 106;
+                  _context8.next = 142;
                   return query("ALTER TABLE ".concat(quoteIdentifier(_tableName3), " ALTER INDEX ").concat(quoteIdentifier(index.Name), " ").concat(index.Visible === false ? 'INVISIBLE' : 'VISIBLE', ";"));
-                case 106:
-                  return _context4.abrupt("return", 0);
-                case 107:
+                case 142:
+                  return _context8.abrupt("return", 0);
+                case 143:
                   // Drop and re-add in one statement: the index is never missing if the add fails,
                   // and a primary key on an AUTO_INCREMENT column can be replaced
                   replaceIndexSQL = "ALTER TABLE `".concat(_tableName3, "` ").concat(indexRemovedWithColumns(_tableName3, diff.currentIndex) ? '' : "".concat(dropIndexClause(index), ", ")).concat(addIndexClause(index), ";");
                   console.log("Executing: ".concat(replaceIndexSQL));
-                  _context4.next = 111;
+                  _context8.next = 147;
                   return query(replaceIndexSQL);
-                case 111:
+                case 147:
                   if (!(index.Visible === false)) {
-                    _context4.next = 114;
+                    _context8.next = 150;
                     break;
                   }
-                  _context4.next = 114;
+                  _context8.next = 150;
                   return query("ALTER TABLE ".concat(quoteIdentifier(_tableName3), " ALTER INDEX ").concat(quoteIdentifier(index.Name), " INVISIBLE;"));
-                case 114:
-                  _context4.next = 222;
+                case 150:
+                  _context8.next = 269;
                   break;
-                case 116:
+                case 152:
                   if (!(diff.type === 'missing_constraint' || diff.type === 'mismatched_constraint' || diff.type === 'extra_constraint')) {
-                    _context4.next = 140;
+                    _context8.next = 176;
                     break;
                   }
                   if (!(diff.type === 'mismatched_constraint')) {
-                    _context4.next = 133;
+                    _context8.next = 169;
                     break;
                   }
                   // With FK checks enabled MySQL uses a table-copy ALTER and
@@ -5118,164 +5606,185 @@ var applyDifferences = /*#__PURE__*/function () {
                   temporary = _objectSpread2(_objectSpread2({}, diff.constraint), {}, {
                     Name: "mysqlsyncr_fk_".concat(node_crypto.randomBytes(12).toString('hex'))
                   });
-                  _context4.next = 121;
+                  _context8.next = 157;
                   return query("ALTER TABLE ".concat(quoteIdentifier(diff.tableName), " DROP FOREIGN KEY ").concat(quoteIdentifier(((_diff$currentConstrai = diff.currentConstraint) === null || _diff$currentConstrai === void 0 ? void 0 : _diff$currentConstrai.Name) || diff.constraint.Name), ", ").concat(addConstraintClause(temporary), ";"));
-                case 121:
+                case 157:
                   finalize = "ALTER TABLE ".concat(quoteIdentifier(diff.tableName), " DROP FOREIGN KEY ").concat(quoteIdentifier(temporary.Name), ", ").concat(addConstraintClause(diff.constraint), ";");
-                  _context4.prev = 122;
-                  _context4.next = 125;
+                  _context8.prev = 158;
+                  _context8.next = 161;
                   return query(finalize);
-                case 125:
-                  _context4.next = 132;
+                case 161:
+                  _context8.next = 168;
                   break;
-                case 127:
-                  _context4.prev = 127;
-                  _context4.t2 = _context4["catch"](122);
-                  _context4.t2.message += "; replacement remains enforced as ".concat(temporary.Name, ", but its final name could not be restored");
-                  _context4.t2.recoverySQL = finalize;
-                  throw _context4.t2;
-                case 132:
-                  return _context4.abrupt("return", 0);
-                case 133:
-                  clauses = [];
-                  if (diff.type !== 'missing_constraint') clauses.push("DROP FOREIGN KEY ".concat(quoteIdentifier(((_diff$currentConstrai2 = diff.currentConstraint) === null || _diff$currentConstrai2 === void 0 ? void 0 : _diff$currentConstrai2.Name) || diff.constraint.Name)));
-                  if (diff.type !== 'extra_constraint') clauses.push(addConstraintClause(diff.constraint));
-                  _context4.next = 138;
-                  return query("ALTER TABLE ".concat(quoteIdentifier(diff.tableName), " ").concat(clauses.join(', '), ";"));
-                case 138:
-                  _context4.next = 222;
+                case 163:
+                  _context8.prev = 163;
+                  _context8.t4 = _context8["catch"](158);
+                  _context8.t4.message += "; replacement remains enforced as ".concat(temporary.Name, ", but its final name could not be restored");
+                  _context8.t4.recoverySQL = finalize;
+                  throw _context8.t4;
+                case 168:
+                  return _context8.abrupt("return", 0);
+                case 169:
+                  _clauses2 = [];
+                  if (diff.type !== 'missing_constraint') _clauses2.push("DROP FOREIGN KEY ".concat(quoteIdentifier(((_diff$currentConstrai2 = diff.currentConstraint) === null || _diff$currentConstrai2 === void 0 ? void 0 : _diff$currentConstrai2.Name) || diff.constraint.Name)));
+                  if (diff.type !== 'extra_constraint') _clauses2.push(addConstraintClause(diff.constraint));
+                  _context8.next = 174;
+                  return query("ALTER TABLE ".concat(quoteIdentifier(diff.tableName), " ").concat(_clauses2.join(', '), ";"));
+                case 174:
+                  _context8.next = 269;
                   break;
-                case 140:
+                case 176:
                   if (!(diff.type === 'mismatched_table_options')) {
-                    _context4.next = 160;
+                    _context8.next = 207;
                     break;
                   }
-                  _clauses = [];
-                  _i4 = 0, _Object$entries = Object.entries(diff.options || {});
-                case 143:
-                  if (!(_i4 < _Object$entries.length)) {
-                    _context4.next = 154;
+                  _clauses3 = []; // A charset clause resets the collation to that charset's default, so
+                  // COLLATE has to come after it whatever order the options arrived in
+                  order = ['engine', 'charset', 'collate'];
+                  options = Object.entries(diff.options || {}).sort(function (_ref7, _ref8) {
+                    var _ref9 = _slicedToArray(_ref7, 1),
+                      a = _ref9[0];
+                    var _ref0 = _slicedToArray(_ref8, 1),
+                      b = _ref0[0];
+                    return (order.indexOf(a) + 1 || 99) - (order.indexOf(b) + 1 || 99);
+                  });
+                  _iterator5 = _createForOfIteratorHelper(options);
+                  _context8.prev = 181;
+                  _iterator5.s();
+                case 183:
+                  if ((_step5 = _iterator5.n()).done) {
+                    _context8.next = 193;
                     break;
                   }
-                  _Object$entries$_i = _slicedToArray(_Object$entries[_i4], 2), key = _Object$entries$_i[0], value = _Object$entries$_i[1];
+                  _step5$value = _slicedToArray(_step5.value, 2), _key = _step5$value[0], value = _step5$value[1];
                   if (/^[a-zA-Z0-9_]+$/.test(value)) {
-                    _context4.next = 147;
+                    _context8.next = 187;
                     break;
                   }
-                  throw new Error("Invalid table option ".concat(key, ": ").concat(value));
-                case 147:
+                  throw new Error("Invalid table option ".concat(_key, ": ").concat(value));
+                case 187:
                   keyword = {
                     engine: 'ENGINE',
                     charset: 'DEFAULT CHARACTER SET',
                     collate: 'COLLATE'
-                  }[key];
+                  }[_key];
                   if (keyword) {
-                    _context4.next = 150;
+                    _context8.next = 190;
                     break;
                   }
-                  throw new Error("Unknown table option ".concat(key));
-                case 150:
-                  _clauses.push("".concat(keyword, "=").concat(value));
-                case 151:
-                  _i4++;
-                  _context4.next = 143;
+                  throw new Error("Unknown table option ".concat(_key));
+                case 190:
+                  _clauses3.push("".concat(keyword, "=").concat(value));
+                case 191:
+                  _context8.next = 183;
                   break;
-                case 154:
-                  if (_clauses.length) {
-                    _context4.next = 156;
+                case 193:
+                  _context8.next = 198;
+                  break;
+                case 195:
+                  _context8.prev = 195;
+                  _context8.t5 = _context8["catch"](181);
+                  _iterator5.e(_context8.t5);
+                case 198:
+                  _context8.prev = 198;
+                  _iterator5.f();
+                  return _context8.finish(198);
+                case 201:
+                  if (_clauses3.length) {
+                    _context8.next = 203;
                     break;
                   }
                   throw new Error('No table options to apply');
-                case 156:
-                  _context4.next = 158;
-                  return query("ALTER TABLE ".concat(quoteIdentifier(diff.tableName), " ").concat(_clauses.join(' '), ";"));
-                case 158:
-                  _context4.next = 222;
+                case 203:
+                  _context8.next = 205;
+                  return query("ALTER TABLE ".concat(quoteIdentifier(diff.tableName), " ").concat(_clauses3.join(' '), ";"));
+                case 205:
+                  _context8.next = 269;
                   break;
-                case 160:
+                case 207:
                   if (!(diff.type === 'missing_procedure' || diff.type === 'mismatched_procedure')) {
-                    _context4.next = 170;
+                    _context8.next = 217;
                     break;
                   }
                   if (!(diff.type === 'mismatched_procedure')) {
-                    _context4.next = 166;
+                    _context8.next = 213;
                     break;
                   }
-                  _context4.next = 164;
+                  _context8.next = 211;
                   return replaceStoredObject('PROCEDURE', diff.Name, diff.Definition, 'Create Procedure');
-                case 164:
-                  _context4.next = 168;
+                case 211:
+                  _context8.next = 215;
                   break;
-                case 166:
-                  _context4.next = 168;
+                case 213:
+                  _context8.next = 215;
                   return query(diff.Definition);
-                case 168:
-                  _context4.next = 222;
+                case 215:
+                  _context8.next = 269;
                   break;
-                case 170:
+                case 217:
                   if (!(diff.type === 'missing_view' || diff.type === 'mismatched_view')) {
-                    _context4.next = 178;
+                    _context8.next = 225;
                     break;
                   }
                   // An invalid replacement must leave the existing view intact.
                   createViewSQL = diff.definition.replace(/^\s*CREATE\s+(?:OR\s+REPLACE\s+)?/i, 'CREATE OR REPLACE ');
                   console.log("Executing: ".concat(createViewSQL));
-                  _context4.next = 175;
+                  _context8.next = 222;
                   return query(createViewSQL);
-                case 175:
+                case 222:
                   completedViews++;
-                  _context4.next = 222;
+                  _context8.next = 269;
                   break;
-                case 178:
+                case 225:
                   if (!(diff.type === 'extra_view')) {
-                    _context4.next = 185;
+                    _context8.next = 232;
                     break;
                   }
                   dropViewSQL = "DROP VIEW IF EXISTS `".concat(diff.viewName, "`;");
                   console.log("Executing: ".concat(dropViewSQL));
-                  _context4.next = 183;
+                  _context8.next = 230;
                   return query(dropViewSQL);
-                case 183:
-                  _context4.next = 222;
+                case 230:
+                  _context8.next = 269;
                   break;
-                case 185:
+                case 232:
                   if (!(diff.type === 'missing_trigger')) {
-                    _context4.next = 193;
+                    _context8.next = 240;
                     break;
                   }
                   createTriggerSQL = diff.trigger.Definition;
                   logger('fixing trigger', diff.trigger.Name);
                   console.log("Executing: ".concat(createTriggerSQL));
-                  _context4.next = 191;
+                  _context8.next = 238;
                   return query(createTriggerSQL);
-                case 191:
-                  _context4.next = 222;
+                case 238:
+                  _context8.next = 269;
                   break;
-                case 193:
+                case 240:
                   if (!(diff.type === 'mismatched_trigger')) {
-                    _context4.next = 198;
+                    _context8.next = 245;
                     break;
                   }
-                  _context4.next = 196;
+                  _context8.next = 243;
                   return replaceStoredObject('TRIGGER', diff.trigger.Name, diff.trigger.Definition, 'SQL Original Statement');
-                case 196:
-                  _context4.next = 222;
+                case 243:
+                  _context8.next = 269;
                   break;
-                case 198:
+                case 245:
                   if (!(diff.type === 'extra_trigger')) {
-                    _context4.next = 205;
+                    _context8.next = 252;
                     break;
                   }
                   dropTriggerSQL = "DROP TRIGGER IF EXISTS `".concat(diff.trigger.Name, "`;");
                   console.log("Executing: ".concat(dropTriggerSQL));
-                  _context4.next = 203;
+                  _context8.next = 250;
                   return query(dropTriggerSQL);
-                case 203:
-                  _context4.next = 222;
+                case 250:
+                  _context8.next = 269;
                   break;
-                case 205:
+                case 252:
                   if (!(diff.type === 'missing_row')) {
-                    _context4.next = 213;
+                    _context8.next = 260;
                     break;
                   }
                   columns = Object.keys(diff.row);
@@ -5285,151 +5794,151 @@ var applyDifferences = /*#__PURE__*/function () {
                     return '?';
                   }).join(', '), ");");
                   console.log("Executing: ".concat(insertRowSQL), JSON.stringify(diff.row));
-                  _context4.next = 211;
+                  _context8.next = 258;
                   return query(insertRowSQL, columns.map(function (col) {
                     return diff.row[col];
                   }));
-                case 211:
-                  _context4.next = 222;
+                case 258:
+                  _context8.next = 269;
                   break;
-                case 213:
+                case 260:
                   if (!(diff.type === 'missing_database')) {
-                    _context4.next = 221;
+                    _context8.next = 268;
                     break;
                   }
                   logger('fixing missing database', diff.database);
                   _createDatabaseSQL = "CREATE DATABASE `".concat(diff.database, "`;");
                   console.log("Executing: ".concat(_createDatabaseSQL));
-                  _context4.next = 219;
+                  _context8.next = 266;
                   return query(_createDatabaseSQL);
-                case 219:
-                  _context4.next = 222;
+                case 266:
+                  _context8.next = 269;
                   break;
-                case 221:
+                case 268:
                   throw new Error("Unknown difference type: ".concat(diff.type));
-                case 222:
-                  _context4.next = 227;
+                case 269:
+                  _context8.next = 274;
                   break;
-                case 224:
-                  _context4.prev = 224;
-                  _context4.t3 = _context4["catch"](4);
-                  if (['missing_view', 'mismatched_view'].includes(diff.type) && isViewDependencyError(_context4.t3)) deferredViews.push({
+                case 271:
+                  _context8.prev = 271;
+                  _context8.t6 = _context8["catch"](4);
+                  if (['missing_view', 'mismatched_view'].includes(diff.type) && isViewDependencyError(_context8.t6)) deferredViews.push({
                     diff: diff,
-                    error: _context4.t3
-                  });else fail(diff, _context4.t3);
-                case 227:
+                    error: _context8.t6
+                  });else fail(diff, _context8.t6);
+                case 274:
                 case "end":
-                  return _context4.stop();
+                  return _context8.stop();
               }
-            }, _loop, null, [[4, 224], [17, 22], [122, 127]]);
+            }, _loop, null, [[4, 271], [17, 22], [71, 77], [97, 102], [158, 163], [181, 195, 198, 201]]);
           });
           _iterator.s();
-        case 29:
+        case 19:
           if ((_step = _iterator.n()).done) {
-            _context5.next = 36;
+            _context9.next = 26;
             break;
           }
-          return _context5.delegateYield(_loop(), "t1", 31);
-        case 31:
-          _ret = _context5.t1;
+          return _context9.delegateYield(_loop(), "t0", 21);
+        case 21:
+          _ret = _context9.t0;
           if (!(_ret === 0)) {
-            _context5.next = 34;
+            _context9.next = 24;
             break;
           }
-          return _context5.abrupt("continue", 34);
-        case 34:
-          _context5.next = 29;
+          return _context9.abrupt("continue", 24);
+        case 24:
+          _context9.next = 19;
           break;
-        case 36:
-          _context5.next = 41;
+        case 26:
+          _context9.next = 31;
           break;
-        case 38:
-          _context5.prev = 38;
-          _context5.t2 = _context5["catch"](26);
-          _iterator.e(_context5.t2);
-        case 41:
-          _context5.prev = 41;
+        case 28:
+          _context9.prev = 28;
+          _context9.t1 = _context9["catch"](16);
+          _iterator.e(_context9.t1);
+        case 31:
+          _context9.prev = 31;
           _iterator.f();
-          return _context5.finish(41);
-        case 44:
+          return _context9.finish(31);
+        case 34:
           if (!(deferredViews.length && completedViews > 0)) {
-            _context5.next = 77;
+            _context9.next = 67;
             break;
           }
           pending = deferredViews;
           deferredViews = [];
           completedViews = 0;
           _iterator2 = _createForOfIteratorHelper(pending);
-          _context5.prev = 49;
+          _context9.prev = 39;
           _iterator2.s();
-        case 51:
+        case 41:
           if ((_step2 = _iterator2.n()).done) {
-            _context5.next = 67;
+            _context9.next = 57;
             break;
           }
           diff = _step2.value.diff;
           current = diff;
-          _context5.prev = 54;
-          _context5.next = 57;
+          _context9.prev = 44;
+          _context9.next = 47;
           return query("USE ".concat(quoteIdentifier(diff[targetDatabase] || database)));
-        case 57:
-          _context5.next = 59;
+        case 47:
+          _context9.next = 49;
           return query(diff.definition.replace(/^\s*CREATE\s+(?:OR\s+REPLACE\s+)?/i, 'CREATE OR REPLACE '));
-        case 59:
+        case 49:
           completedViews++;
-          _context5.next = 65;
+          _context9.next = 55;
           break;
-        case 62:
-          _context5.prev = 62;
-          _context5.t3 = _context5["catch"](54);
-          if (isViewDependencyError(_context5.t3)) deferredViews.push({
+        case 52:
+          _context9.prev = 52;
+          _context9.t2 = _context9["catch"](44);
+          if (isViewDependencyError(_context9.t2)) deferredViews.push({
             diff: diff,
-            error: _context5.t3
-          });else fail(diff, _context5.t3);
+            error: _context9.t2
+          });else fail(diff, _context9.t2);
+        case 55:
+          _context9.next = 41;
+          break;
+        case 57:
+          _context9.next = 62;
+          break;
+        case 59:
+          _context9.prev = 59;
+          _context9.t3 = _context9["catch"](39);
+          _iterator2.e(_context9.t3);
+        case 62:
+          _context9.prev = 62;
+          _iterator2.f();
+          return _context9.finish(62);
         case 65:
-          _context5.next = 51;
+          _context9.next = 34;
           break;
         case 67:
-          _context5.next = 72;
-          break;
-        case 69:
-          _context5.prev = 69;
-          _context5.t4 = _context5["catch"](49);
-          _iterator2.e(_context5.t4);
-        case 72:
-          _context5.prev = 72;
-          _iterator2.f();
-          return _context5.finish(72);
-        case 75:
-          _context5.next = 44;
-          break;
-        case 77:
           for (_i3 = 0, _deferredViews = deferredViews; _i3 < _deferredViews.length; _i3++) {
             _deferredViews$_i = _deferredViews[_i3], _diff = _deferredViews$_i.diff, error = _deferredViews$_i.error;
             fail(_diff, error);
           }
-          return _context5.abrupt("return", {
+          return _context9.abrupt("return", {
             attempted: differences.length,
             failures: failures,
             warnings: warnings
           });
-        case 79:
+        case 69:
         case "end":
-          return _context5.stop();
+          return _context9.stop();
       }
-    }, _callee3, null, [[16, 21], [26, 38, 41, 44], [49, 69, 72, 75], [54, 62]]);
+    }, _callee7, null, [[16, 28, 31, 34], [39, 59, 62, 65], [44, 52]]);
   }));
-  return function applyDifferences(_x, _x2, _x3) {
-    return _ref.apply(this, arguments);
+  return function applyInSession(_x5, _x6, _x7, _x8) {
+    return _ref4.apply(this, arguments);
   };
 }();
 
 // Used by the global view phase so a view in schema A can depend on one in Z.
 var applyViewsAcrossDatabases = function applyViewsAcrossDatabases(connection, allDifferences) {
-  return applyDifferences(connection, null, Object.entries(allDifferences).flatMap(function (_ref4) {
-    var _ref5 = _slicedToArray(_ref4, 2),
-      database = _ref5[0],
-      differences = _ref5[1];
+  return applyDifferences(connection, null, Object.entries(allDifferences).flatMap(function (_ref1) {
+    var _ref10 = _slicedToArray(_ref1, 2),
+      database = _ref10[0],
+      differences = _ref10[1];
     return differences.filter(function (diff) {
       return ['missing_view', 'mismatched_view', 'extra_view'].includes(diff.type);
     }).map(function (diff) {
@@ -5439,9 +5948,9 @@ var applyViewsAcrossDatabases = function applyViewsAcrossDatabases(connection, a
 };
 
 // One line summing up the failures from applyDifferences, for errors and logs
-var describeFailures = function describeFailures(_ref6) {
-  var attempted = _ref6.attempted,
-    failures = _ref6.failures;
+var describeFailures = function describeFailures(_ref11) {
+  var attempted = _ref11.attempted,
+    failures = _ref11.failures;
   return "".concat(failures.length, " of ").concat(attempted, " difference(s) failed to apply: ").concat(failures.map(function (f) {
     return "".concat(f.description, " (").concat(f.message, ")");
   }).join('; '));
@@ -5749,6 +6258,7 @@ var applyAllDifferences = /*#__PURE__*/function () {
 }();
 var compareAllDatabases = /*#__PURE__*/function () {
   var _ref3 = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee2(connection, inputDir) {
+    var _yield$getTemplateVer;
     var update,
       options,
       names,
@@ -5761,6 +6271,7 @@ var compareAllDatabases = /*#__PURE__*/function () {
       filename,
       structure,
       existing,
+      templateVersion,
       serverVersion,
       defaultCollations,
       allDifferences,
@@ -5834,39 +6345,61 @@ var compareAllDatabases = /*#__PURE__*/function () {
           return getDatabases(connection);
         case 39:
           existing = _context5.sent;
-          if (!(databases.some(function (db) {
-            return existing.includes(db);
-          }) || update)) {
+          _context5.next = 42;
+          return getTemplateVersion(inputDir);
+        case 42:
+          _context5.t4 = _yield$getTemplateVer = _context5.sent;
+          _context5.t3 = _context5.t4 === null;
+          if (_context5.t3) {
             _context5.next = 46;
             break;
           }
-          _context5.next = 43;
-          return getServerVersion(connection);
-        case 43:
-          _context5.t3 = _context5.sent;
-          _context5.next = 47;
-          break;
+          _context5.t3 = _yield$getTemplateVer === void 0;
         case 46:
-          _context5.t3 = null;
-        case 47:
-          serverVersion = _context5.t3;
-          if (!serverVersion) {
-            _context5.next = 54;
+          if (!_context5.t3) {
+            _context5.next = 50;
             break;
           }
+          _context5.t5 = void 0;
           _context5.next = 51;
-          return getDefaultCollations(connection, serverVersion);
-        case 51:
-          _context5.t4 = _context5.sent;
-          _context5.next = 55;
           break;
-        case 54:
-          _context5.t4 = {};
+        case 50:
+          _context5.t5 = _yield$getTemplateVer.version;
+        case 51:
+          templateVersion = _context5.t5;
+          if (!(databases.some(function (db) {
+            return existing.includes(db);
+          }) || update || isLegacyTemplate(templateVersion))) {
+            _context5.next = 58;
+            break;
+          }
+          _context5.next = 55;
+          return getServerVersion(connection);
         case 55:
-          defaultCollations = _context5.t4;
+          _context5.t6 = _context5.sent;
+          _context5.next = 59;
+          break;
+        case 58:
+          _context5.t6 = null;
+        case 59:
+          serverVersion = _context5.t6;
+          if (!serverVersion) {
+            _context5.next = 66;
+            break;
+          }
+          _context5.next = 63;
+          return getDefaultCollations(connection, serverVersion);
+        case 63:
+          _context5.t7 = _context5.sent;
+          _context5.next = 67;
+          break;
+        case 66:
+          _context5.t7 = {};
+        case 67:
+          defaultCollations = _context5.t7;
           allDifferences = {};
           _iterator2 = _createForOfIteratorHelper(databases);
-          _context5.prev = 58;
+          _context5.prev = 70;
           _loop3 = /*#__PURE__*/_regeneratorRuntime().mark(function _loop3() {
             var database, missing, current, differences;
             return _regeneratorRuntime().wrap(function _loop3$(_context4) {
@@ -5904,7 +6437,8 @@ var compareAllDatabases = /*#__PURE__*/function () {
                   }, {
                     serverVersion: serverVersion,
                     database: database,
-                    defaultCollations: defaultCollations
+                    defaultCollations: defaultCollations,
+                    templateVersion: templateVersion
                   })));
                   _context4.t1 = differences.push;
                   _context4.t2 = differences;
@@ -5924,40 +6458,40 @@ var compareAllDatabases = /*#__PURE__*/function () {
             }, _loop3);
           });
           _iterator2.s();
-        case 61:
-          if ((_step2 = _iterator2.n()).done) {
-            _context5.next = 65;
-            break;
-          }
-          return _context5.delegateYield(_loop3(), "t5", 63);
-        case 63:
-          _context5.next = 61;
-          break;
-        case 65:
-          _context5.next = 70;
-          break;
-        case 67:
-          _context5.prev = 67;
-          _context5.t6 = _context5["catch"](58);
-          _iterator2.e(_context5.t6);
-        case 70:
-          _context5.prev = 70;
-          _iterator2.f();
-          return _context5.finish(70);
         case 73:
-          if (!update) {
-            _context5.next = 76;
+          if ((_step2 = _iterator2.n()).done) {
+            _context5.next = 77;
             break;
           }
-          _context5.next = 76;
-          return applyAllDifferences(connection, allDifferences);
-        case 76:
-          return _context5.abrupt("return", allDifferences);
+          return _context5.delegateYield(_loop3(), "t8", 75);
+        case 75:
+          _context5.next = 73;
+          break;
         case 77:
+          _context5.next = 82;
+          break;
+        case 79:
+          _context5.prev = 79;
+          _context5.t9 = _context5["catch"](70);
+          _iterator2.e(_context5.t9);
+        case 82:
+          _context5.prev = 82;
+          _iterator2.f();
+          return _context5.finish(82);
+        case 85:
+          if (!update) {
+            _context5.next = 88;
+            break;
+          }
+          _context5.next = 88;
+          return applyAllDifferences(connection, allDifferences);
+        case 88:
+          return _context5.abrupt("return", allDifferences);
+        case 89:
         case "end":
           return _context5.stop();
       }
-    }, _callee2, null, [[14, 31, 34, 37], [58, 67, 70, 73]]);
+    }, _callee2, null, [[14, 31, 34, 37], [70, 79, 82, 85]]);
   }));
   return function compareAllDatabases(_x3, _x4) {
     return _ref3.apply(this, arguments);
@@ -6374,10 +6908,76 @@ var acceptDifference = function acceptDifference(template, current, diff, _ref3)
       throw new Error("".concat(diff.type, " can't be kept as the current value; edit the template or sync options instead"));
   }
 };
+
+// Moving columns to their live positions converges on the live order only when
+// the moves run in live column order: each column is then placed after a
+// predecessor that is already where it belongs. Extra live columns are added
+// after the moves, also in live order, so their predecessors are in place too.
+// Other differences keep their places in the list.
+var orderColumnMoves = function orderColumnMoves(differences, current) {
+  var isMove = function isMove(diff) {
+    var _diff$changes2;
+    return diff.type === 'mismatched_field' && ((_diff$changes2 = diff.changes) === null || _diff$changes2 === void 0 ? void 0 : _diff$changes2.includes('Position'));
+  };
+  var placed = function placed(diff) {
+    return isMove(diff) || diff.type === 'extra_field';
+  };
+  var liveIndex = function liveIndex(diff) {
+    var _current$tables2;
+    return (((_current$tables2 = current.tables) === null || _current$tables2 === void 0 || (_current$tables2 = _current$tables2[diff.tableName]) === null || _current$tables2 === void 0 ? void 0 : _current$tables2.columns) || []).findIndex(function (c) {
+      var _diff$field;
+      return c.Field === ((_diff$field = diff.field) === null || _diff$field === void 0 ? void 0 : _diff$field.Field);
+    });
+  };
+  var rank = function rank(diff) {
+    return isMove(diff) ? 0 : 1;
+  };
+  var slots = differences.flatMap(function (diff, i) {
+    return placed(diff) ? [i] : [];
+  });
+  var ordered = _toConsumableArray(differences);
+  // Sort per table so placements of different tables keep their relative slots.
+  var byTable = new Map();
+  var _iterator2 = _createForOfIteratorHelper(slots),
+    _step2;
+  try {
+    for (_iterator2.s(); !(_step2 = _iterator2.n()).done;) {
+      var i = _step2.value;
+      byTable.set(differences[i].tableName, [].concat(_toConsumableArray(byTable.get(differences[i].tableName) || []), [i]));
+    }
+  } catch (err) {
+    _iterator2.e(err);
+  } finally {
+    _iterator2.f();
+  }
+  var _iterator3 = _createForOfIteratorHelper(byTable.values()),
+    _step3;
+  try {
+    var _loop2 = function _loop2() {
+      var tableSlots = _step3.value;
+      var sorted = tableSlots.map(function (i) {
+        return differences[i];
+      }).sort(function (x, y) {
+        return rank(x) - rank(y) || liveIndex(x) - liveIndex(y);
+      });
+      tableSlots.forEach(function (slot, n) {
+        ordered[slot] = sorted[n];
+      });
+    };
+    for (_iterator3.s(); !(_step3 = _iterator3.n()).done;) {
+      _loop2();
+    }
+  } catch (err) {
+    _iterator3.e(err);
+  } finally {
+    _iterator3.f();
+  }
+  return ordered;
+};
 var describeDifference = function describeDifference(diff) {
-  var _diff$field, _diff$trigger;
+  var _diff$field2, _diff$trigger;
   var name = diff.tableName || diff.viewName || diff.Name || diff.database || '';
-  var detail = ((_diff$field = diff.field) === null || _diff$field === void 0 ? void 0 : _diff$field.Field) || diff.indexName || ((_diff$trigger = diff.trigger) === null || _diff$trigger === void 0 ? void 0 : _diff$trigger.Name) || '';
+  var detail = ((_diff$field2 = diff.field) === null || _diff$field2 === void 0 ? void 0 : _diff$field2.Field) || diff.indexName || ((_diff$trigger = diff.trigger) === null || _diff$trigger === void 0 ? void 0 : _diff$trigger.Name) || '';
   return "".concat(diff.type, " ").concat(name).concat(detail ? '.' + detail : '');
 };
 
@@ -6390,7 +6990,7 @@ var describeDifference = function describeDifference(diff) {
  */
 var acceptCurrentIntoTemplate = /*#__PURE__*/function () {
   var _ref4 = _asyncToGenerator(/*#__PURE__*/_regeneratorRuntime().mark(function _callee(connection, templateDir, database, differences) {
-    var dbDir, jsonPath, template, syncOptions, current, files, errors, _iterator2, _step2, diff, _iterator3, _step3, _step3$value, relativePath, content, filePath, error;
+    var dbDir, jsonPath, template, syncOptions, current, files, errors, _iterator4, _step4, diff, _iterator5, _step5, _step5$value, relativePath, content, filePath, error;
     return _regeneratorRuntime().wrap(function _callee$(_context) {
       while (1) switch (_context.prev = _context.next) {
         case 0:
@@ -6420,10 +7020,10 @@ var acceptCurrentIntoTemplate = /*#__PURE__*/function () {
           // relative path -> new file content, or null to delete the file
           files = new Map();
           errors = [];
-          _iterator2 = _createForOfIteratorHelper(differences);
+          _iterator4 = _createForOfIteratorHelper(orderColumnMoves(differences, current));
           try {
-            for (_iterator2.s(); !(_step2 = _iterator2.n()).done;) {
-              diff = _step2.value;
+            for (_iterator4.s(); !(_step4 = _iterator4.n()).done;) {
+              diff = _step4.value;
               try {
                 acceptDifference(template, current, diff, {
                   database: database,
@@ -6439,9 +7039,9 @@ var acceptCurrentIntoTemplate = /*#__PURE__*/function () {
               }
             }
           } catch (err) {
-            _iterator2.e(err);
+            _iterator4.e(err);
           } finally {
-            _iterator2.f();
+            _iterator4.f();
           }
           if (!(errors.length < differences.length)) {
             _context.next = 51;
@@ -6451,15 +7051,15 @@ var acceptCurrentIntoTemplate = /*#__PURE__*/function () {
           _context.next = 26;
           return fs$1.writeFile(jsonPath, JSON.stringify(template, null, 4), 'utf-8');
         case 26:
-          _iterator3 = _createForOfIteratorHelper(files);
+          _iterator5 = _createForOfIteratorHelper(files);
           _context.prev = 27;
-          _iterator3.s();
+          _iterator5.s();
         case 29:
-          if ((_step3 = _iterator3.n()).done) {
+          if ((_step5 = _iterator5.n()).done) {
             _context.next = 43;
             break;
           }
-          _step3$value = _slicedToArray(_step3.value, 2), relativePath = _step3$value[0], content = _step3$value[1];
+          _step5$value = _slicedToArray(_step5.value, 2), relativePath = _step5$value[0], content = _step5$value[1];
           filePath = path.join(dbDir, relativePath);
           if (!(content === null)) {
             _context.next = 37;
@@ -6489,10 +7089,10 @@ var acceptCurrentIntoTemplate = /*#__PURE__*/function () {
         case 45:
           _context.prev = 45;
           _context.t5 = _context["catch"](27);
-          _iterator3.e(_context.t5);
+          _iterator5.e(_context.t5);
         case 48:
           _context.prev = 48;
-          _iterator3.f();
+          _iterator5.f();
           return _context.finish(48);
         case 51:
           if (!(errors.length > 0)) {

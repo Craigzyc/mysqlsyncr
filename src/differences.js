@@ -1,10 +1,15 @@
-import { normalizeSQLDefinition, normalizeColumnType, normalizeVersionFormatting } from './normalizers.js';
+import { normalizeSQLDefinition, normalizeServerExpression, normalizeViewDefinition, normalizeColumnType, normalizeVersionFormatting, normalizeTriggerDefinition } from './normalizers.js';
 import { parseCreateTableSQL, splitTableForeignKeys } from './parsers.js';
 import { applyAutoIncrementOption } from './options.js';
-import { adaptSQLForServer } from './versions.js';
+import { adaptSQLForServer, templateDefaultCollations, pinTemplateCollations, isLegacyTemplate } from './versions.js';
 
 const COLUMN_DETAILS = ['OnUpdate', 'Charset', 'Collate', 'Comment', 'Generated'];
 export const normalizedDefault = field => field.Default === undefined && !field.NotNull ? 'NULL' : field.Default;
+// An expression default (8.0.13+) is SQL: compare it the way other SQL is compared.
+const comparableDefault = field => {
+    const value = normalizedDefault(field);
+    return !field.DefaultQuoted && typeof value === 'string' && value.startsWith('(') ? normalizeServerExpression(value) : value;
+};
 const isPrimaryIndex = index => !!index.Primary || index.Name === 'PRIMARY';
 const indexKey = index => JSON.stringify([index.ColumnName, !!index.Unique || isPrimaryIndex(index), isPrimaryIndex(index), index.Type || 'BTREE', index.Visible !== false]);
 const normalizeAction = action => !action || action === 'RESTRICT' ? 'NO ACTION' : action;
@@ -24,13 +29,18 @@ const parseTable = (contents, serverVersion) => {
         for (const key of COLUMN_DETAILS) if (details[key] === undefined) details[key] = null;
         return details;
     });
+    // 5.7 accepts INVISIBLE (via a compatibility rewrite) and DESC key parts but
+    // stores every index visible and ascending. Compare what 5.7 can hold, or
+    // the difference could never be repaired.
+    const before80 = Number(String(serverVersion).split('.')[0]) < 8;
     const indexes = parsed.indexes.map(index => {
-        if (Number(String(serverVersion).split('.')[0]) < 8 && index.Visible === false) {
-            const compatible = { ...index };
-            delete compatible.Visible;
-            return compatible;
-        }
-        return index;
+        // InnoDB and MyISAM only build BTREE indexes: 5.7 prints a requested
+        // USING HASH, 8.0 omits it. It is not a difference on those engines.
+        if (index.Type === 'HASH' && /^(?:InnoDB|MyISAM)$/i.test(parsed.engine || '')) index = { ...index, Type: undefined };
+        if (!before80) return index;
+        const compatible = { ...index, ColumnName: index.ColumnName.map(part => part.startsWith('(') ? part : part.replace(/\s+DESC$/i, '')) };
+        if (compatible.Visible === false) delete compatible.Visible;
+        return compatible;
     });
     return { ...contents, ...parsed, columns, indexes, triggers: contents.triggers || [] };
 };
@@ -39,11 +49,49 @@ const charsetOf = (field, table) => normalizeVersionFormatting(field.Charset || 
 const collationOf = (field, table, defaults) => normalizeVersionFormatting(field.Collate
     || (!field.Charset ? table.collate : null)
     || defaults[charsetOf(field, table)] || null);
-const normalizedExpression = expression => expression ? normalizeSQLDefinition(expression) : null;
+const normalizedExpression = expression => expression ? normalizeServerExpression(expression) : null;
 
-/** The fourth argument supplies serverVersion for 8.0 -> 5.7 compatibility. */
-export const findDifferences = (expected, current, getTableOptions = () => ({}), { serverVersion, database, defaultCollations = {} } = {}) => {
-    const defaults = Object.fromEntries(Object.entries(defaultCollations).map(([charset, collation]) => [normalizeVersionFormatting(charset), normalizeVersionFormatting(collation)]));
+// The common columns that have to move for the live order to match the template:
+// those outside a longest common subsequence of the two orders. Moving one column
+// therefore reports that column, not every column it was moved past.
+const movedColumns = (expected, current) => {
+    const rows = expected.length;
+    const cols = current.length;
+    const lcs = Array.from({ length: rows + 1 }, () => new Uint32Array(cols + 1));
+    for (let i = rows - 1; i >= 0; i--) for (let j = cols - 1; j >= 0; j--) {
+        lcs[i][j] = expected[i] === current[j] ? lcs[i + 1][j + 1] + 1 : Math.max(lcs[i + 1][j], lcs[i][j + 1]);
+    }
+    const kept = new Set();
+    for (let i = 0, j = 0; i < rows && j < cols;) {
+        if (expected[i] === current[j]) { kept.add(expected[i]); i++; j++; }
+        else if (lcs[i + 1][j] >= lcs[i][j + 1]) i++;
+        else j++;
+    }
+    return new Set(expected.filter(name => !kept.has(name)));
+};
+
+// Readable expected/current values for each reported change, so a report shows
+// the values that were actually compared (effective charset, NULL/NOT NULL, the
+// preceding column) rather than raw parser properties that may be absent.
+const shown = value => value === undefined || value === null || value === '' ? null : value;
+const placement = after => after === null ? 'FIRST' : `AFTER ${after}`;
+
+/**
+ * The fourth argument supplies serverVersion for 8.0 -> 5.7 compatibility, the
+ * live server's defaultCollations, and templateVersion (the MySQL version the
+ * template was dumped from), which decides what an implicit collation in the
+ * template means.
+ */
+export const findDifferences = (expected, current, getTableOptions = () => ({}), { serverVersion, database, defaultCollations = {}, templateVersion } = {}) => {
+    const normalizeDefaults = collations => Object.fromEntries(Object.entries(collations).map(([charset, collation]) => [normalizeVersionFormatting(charset), normalizeVersionFormatting(collation)]));
+    const defaults = normalizeDefaults(defaultCollations);
+    // What the template's implicit collations meant on the server it came from.
+    const templateDefaults = normalizeDefaults(templateDefaultCollations(templateVersion, defaultCollations));
+    const legacyTemplate = isLegacyTemplate(templateVersion);
+    // 5.7 stores TRUE/FALSE as 1/0, losing the distinction; only when comparing a
+    // template and a server of different major versions are they the same.
+    const major = version => String(version ?? '').match(/^(\d+)\./)?.[1];
+    const booleans = !!major(templateVersion) && !!major(serverVersion) && major(templateVersion) !== major(serverVersion);
     if (!expected.tables) throw new Error('No tables found in expected');
     if (!current.tables) throw new Error('No tables found in current');
     const differences = [];
@@ -61,7 +109,7 @@ export const findDifferences = (expected, current, getTableOptions = () => ({}),
         const contents = parseTable(stored, serverVersion);
         const { columns, indexes, constraints, triggers } = contents;
         if (!current.tables[tableName]) {
-            const createSQL = applyAutoIncrementOption(stored.createSQL, getTableOptions(tableName).autoIncrement);
+            const createSQL = pinTemplateCollations(applyAutoIncrementOption(stored.createSQL, getTableOptions(tableName).autoIncrement), templateVersion, serverVersion);
             const plan = splitTableForeignKeys(createSQL);
             differences.push({ type: 'missing_table', tableName, createSQL: plan.createSQL });
             // Add references after all tables exist, including cycles and other
@@ -74,14 +122,17 @@ export const findDifferences = (expected, current, getTableOptions = () => ({}),
         for (const trigger of triggers) {
             const currentTrigger = live.triggers.find(t => t.Name === trigger.Name);
             if (!currentTrigger) differences.push({ type: 'missing_trigger', tableName, trigger });
-            else if (trigger.Definition !== undefined && normalizeSQLDefinition(currentTrigger.Definition ?? '') !== normalizeSQLDefinition(adaptSQLForServer(trigger.Definition, serverVersion))) differences.push({ type: 'mismatched_trigger', tableName, trigger, currentTrigger });
+            else if (trigger.Definition !== undefined && normalizeTriggerDefinition(currentTrigger.Definition ?? '') !== normalizeTriggerDefinition(adaptSQLForServer(trigger.Definition, serverVersion))) differences.push({ type: 'mismatched_trigger', tableName, trigger, currentTrigger });
         }
         for (const trigger of live.triggers) {
             if (!triggers.some(t => t.Name === trigger.Name)) differences.push({ type: 'extra_trigger', tableName, trigger });
         }
         const tableOptions = {};
+        // A legacy (5.7) template's implicit table collation is its charset's 5.7 default.
+        const expectedOptions = { ...contents };
+        if (legacyTemplate && !contents.collate && contents.charset) expectedOptions.collate = templateDefaults[normalizeVersionFormatting(contents.charset)] || null;
         for (const key of ['engine', 'charset', 'collate']) {
-            if (contents[key] && normalizeVersionFormatting(contents[key]).toLowerCase() !== normalizeVersionFormatting(live[key] || (key === 'collate' ? defaults[normalizeVersionFormatting(live.charset)] : '') || '').toLowerCase()) tableOptions[key] = contents[key];
+            if (expectedOptions[key] && normalizeVersionFormatting(expectedOptions[key]).toLowerCase() !== normalizeVersionFormatting(live[key] || (key === 'collate' ? defaults[normalizeVersionFormatting(live.charset)] : '') || '').toLowerCase()) tableOptions[key] = expectedOptions[key];
         }
         if (Object.keys(tableOptions).length) {
             if (tableOptions.collate && contents.charset) tableOptions.charset = contents.charset;
@@ -89,8 +140,7 @@ export const findDifferences = (expected, current, getTableOptions = () => ({}),
         }
         const expectedNames = columns.map(field => field.Field);
         const currentNames = live.columns.map(field => field.Field);
-        const expectedCommon = expectedNames.filter(name => currentNames.includes(name));
-        const currentCommon = currentNames.filter(name => expectedNames.includes(name));
+        const moved = movedColumns(expectedNames.filter(name => currentNames.includes(name)), currentNames.filter(name => expectedNames.includes(name)));
         for (const field of live.columns) {
             if (!expectedNames.includes(field.Field)) differences.push({ type: 'extra_field', tableName, field });
         }
@@ -98,28 +148,43 @@ export const findDifferences = (expected, current, getTableOptions = () => ({}),
             const after = position ? columns[position - 1].Field : null;
             const currentField = live.columns.find(f => f.Field === field.Field);
             if (!currentField) {
-                differences.push({ type: 'missing_field', tableName, field, after });
+                // Like a CHANGE, an ADD must state a legacy template's implicit collation.
+                const added = legacyTemplate && textColumn(field) && !field.Collate && charsetOf(field, expectedOptions)
+                    ? { ...field, Charset: charsetOf(field, expectedOptions), Collate: collationOf(field, expectedOptions, templateDefaults) } : field;
+                differences.push({ type: 'missing_field', tableName, field: added, after });
                 continue;
             }
             const changed = [];
-            if (!!field.NotNull !== !!currentField.NotNull) changed.push('Null');
-            if (normalizedDefault(field) !== normalizedDefault(currentField) || !!field.DefaultQuoted !== !!currentField.DefaultQuoted) changed.push('Default');
-            if (normalizeColumnType(field.Type) !== normalizeColumnType(currentField.Type) && !(field.Type === 'varchar' && currentField.Type.startsWith('varchar('))) changed.push('Type');
-            if (!!field.AutoIncrement !== !!currentField.AutoIncrement) changed.push('AutoIncrement');
-            if (normalizedExpression(field.OnUpdate) !== normalizedExpression(currentField.OnUpdate)) changed.push('OnUpdate');
-            if (normalizedExpression(field.Generated) !== normalizedExpression(currentField.Generated)) changed.push('Generated');
-            if ((field.Comment || '') !== (currentField.Comment || '')) changed.push('Comment');
+            const comparison = {};
+            const change = (name, expectedValue, currentValue) => {
+                changed.push(name);
+                comparison[name] = { expected: shown(expectedValue), current: shown(currentValue) };
+            };
+            const nullability = column => column.NotNull ? 'NOT NULL' : 'NULL';
+            const defaultText = column => column.DefaultQuoted ? `'${column.Default}'` : normalizedDefault(column);
+            if (!!field.NotNull !== !!currentField.NotNull) change('Null', nullability(field), nullability(currentField));
+            if (comparableDefault(field) !== comparableDefault(currentField) || !!field.DefaultQuoted !== !!currentField.DefaultQuoted) change('Default', defaultText(field), defaultText(currentField));
+            if (normalizeColumnType(field.Type) !== normalizeColumnType(currentField.Type) && !(field.Type === 'varchar' && currentField.Type.startsWith('varchar('))) change('Type', field.Type, currentField.Type);
+            if (!!field.AutoIncrement !== !!currentField.AutoIncrement) change('AutoIncrement', !!field.AutoIncrement, !!currentField.AutoIncrement);
+            if (normalizedExpression(field.OnUpdate) !== normalizedExpression(currentField.OnUpdate)) change('OnUpdate', field.OnUpdate, currentField.OnUpdate);
+            if (normalizedExpression(field.Generated) !== normalizedExpression(currentField.Generated)) change('Generated', field.Generated, currentField.Generated);
+            if ((field.Comment || '') !== (currentField.Comment || '')) change('Comment', field.Comment, currentField.Comment);
             if (textColumn(field)) {
-                if (charsetOf(field, contents) && charsetOf(field, contents) !== charsetOf(currentField, live)) changed.push('Charset');
-                if (collationOf(field, contents, defaults) && collationOf(field, contents, defaults) !== collationOf(currentField, live, defaults)) changed.push('Collate');
+                const charset = charsetOf(field, contents);
+                const collation = collationOf(field, expectedOptions, templateDefaults);
+                if (charset && charset !== charsetOf(currentField, live)) change('Charset', charset, charsetOf(currentField, live));
+                if (collation && collation !== collationOf(currentField, live, defaults)) change('Collate', collation, collationOf(currentField, live, defaults));
             }
-            if (expectedCommon.indexOf(field.Field) !== currentCommon.indexOf(field.Field)) changed.push('Position');
+            if (moved.has(field.Field)) {
+                const livePosition = live.columns.indexOf(currentField);
+                change('Position', placement(after), placement(livePosition ? live.columns[livePosition - 1].Field : null));
+            }
             if (changed.length) {
                 // Restate effective defaults so CHANGE cannot inherit a drifted charset.
                 const desired = { ...field };
                 if (textColumn(field) && charsetOf(field, contents)) desired.Charset = charsetOf(field, contents);
-                if (textColumn(field) && collationOf(field, contents, defaults)) desired.Collate = collationOf(field, contents, defaults);
-                differences.push({ type: 'mismatched_field', info: changed[0], changes: changed, tableName, field: desired, currentField, after });
+                if (textColumn(field) && collationOf(field, expectedOptions, templateDefaults)) desired.Collate = collationOf(field, expectedOptions, templateDefaults);
+                differences.push({ type: 'mismatched_field', info: changed[0], changes: changed, comparison, tableName, field: desired, currentField, after });
             }
         }
         const matchedIndexes = new Set();
@@ -152,7 +217,7 @@ export const findDifferences = (expected, current, getTableOptions = () => ({}),
     }
     for (const [viewName, definition] of Object.entries(expected.views || {})) {
         if (!current.views?.[viewName]) differences.push({ type: 'missing_view', viewName, definition });
-        else if (normalizeSQLDefinition(current.views[viewName]) !== normalizeSQLDefinition(adaptSQLForServer(definition, serverVersion))) differences.push({ type: 'mismatched_view', viewName, definition, current: current.views[viewName] });
+        else if (normalizeViewDefinition(current.views[viewName], { booleans }) !== normalizeViewDefinition(adaptSQLForServer(definition, serverVersion), { booleans })) differences.push({ type: 'mismatched_view', viewName, definition, current: current.views[viewName] });
     }
     for (const viewName of Object.keys(current.views || {})) {
         if (!expected.views?.[viewName]) differences.push({ type: 'extra_view', viewName });

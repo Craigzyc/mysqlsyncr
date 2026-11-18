@@ -7,7 +7,7 @@ import { applyDifferences, applyViewsAcrossDatabases, describeFailures } from '.
 import { loadSyncOptions, getTableOptions, applyDefinerOption } from './options.js';
 import { findMissingRows } from './rows.js';
 import { getDatabaseDumpNames } from './dumpFiles.js';
-import { getServerVersion, getDefaultCollations } from './versions.js';
+import { getServerVersion, getDefaultCollations, getTemplateVersion, isLegacyTemplate } from './versions.js';
 
 // Dependencies can cross schema boundaries. Finish each phase in ALL schemas
 // before starting the next; never disable foreign-key validation to restore.
@@ -65,8 +65,10 @@ export const compareAllDatabases = async (connection, inputDir, update = false, 
         expected[database] = applyDefinerOption(structure, syncOptions.definer);
     }
     const existing = await getDatabases(connection);
-    // A missing schema needs no live metadata; skip the version query in that case.
-    const serverVersion = databases.some(db => existing.includes(db)) || update ? await getServerVersion(connection) : null;
+    const templateVersion = (await getTemplateVersion(inputDir))?.version;
+    // A missing schema needs no live metadata, except that a 5.7 template's
+    // CREATE TABLE is pinned to its collations for an 8.0 server.
+    const serverVersion = databases.some(db => existing.includes(db)) || update || isLegacyTemplate(templateVersion) ? await getServerVersion(connection) : null;
     const defaultCollations = serverVersion ? await getDefaultCollations(connection, serverVersion) : {};
     const allDifferences = {};
     for (const database of databases) {
@@ -75,7 +77,7 @@ export const compareAllDatabases = async (connection, inputDir, update = false, 
             : await getDatabaseStructure(connection, database, 'compare', { ...options, output: inputDir });
         const differences = missing ? [{ database, type: 'missing_database', message: 'Database not found' }] : [];
         differences.push(...findDifferences(expected[database], current,
-            table => getTableOptions(syncOptions, database, table), { serverVersion, database, defaultCollations }));
+            table => getTableOptions(syncOptions, database, table), { serverVersion, database, defaultCollations, templateVersion }));
         differences.push(...await findMissingRows(connection, database, expected[database], current, syncOptions));
         allDifferences[database] = differences;
         if (!options.quiet) logDifferences(differences, database, !update);
